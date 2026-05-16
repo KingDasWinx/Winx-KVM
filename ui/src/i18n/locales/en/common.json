@@ -1,0 +1,54 @@
+{
+  "app": {
+    "name": "Winx-KVM",
+    "tagline": "KVM software with shared audio between Windows PCs on your LAN.",
+    "status_planning": "Planning",
+    "version_label": "Version",
+    "protocol_label": "Wire protocol",
+    "loading": "Loading…",
+    "ping_button": "Ping backend",
+    "events_received_one": "{{count}} event received from backend",
+    "events_received_other": "{{count}} events received from backend"
+  },
+  "error": {
+    "identity": {
+      "key_generation_failed": "Failed to generate device key",
+      "peer_not_found": "Peer not found",
+      "username_invalid": "Invalid username"
+    },
+    "pairing": {
+      "pin_expired": "Pairing PIN expired",
+      "pin_mismatch": "PIN does not match",
+      "too_many_attempts": "Too many attempts. Pairing cancelled.",
+      "session_not_found": "Pairing session not found",
+      "session_exists": "A pairing session is already in progress with this peer"
+    },
+    "transport": {
+      "connection_failed": "Connection to peer failed",
+      "protocol_mismatch": "Incompatible protocol versions",
+      "peer_not_trusted": "Peer is not paired with this device"
+    },
+    "input": {
+      "capture_failed": "Failed to capture input",
+      "injection_failed": "Failed to inject input on remote machine",
+      "monitor_not_found": "Monitor not found"
+    },
+    "media": {
+      "vb_cable_missing": "VB-Audio Cable not installed",
+      "device_unavailable": "Audio device unavailable",
+      "codec_failed": "Audio codec error"
+    },
+    "clipboard": {
+      "format_unsupported": "Clipboard format not supported",
+      "payload_too_large": "Clipboard content too large to sync"
+    },
+    "file_transfer": {
+      "hash_mismatch": "File transfer failed integrity check",
+      "cancelled": "File transfer cancelled",
+      "too_large": "File exceeds maximum allowed size"
+    },
+    "general": {
+      "internal_error": "Internal error"
+    }
+  }
+}

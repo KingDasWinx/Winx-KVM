@@ -1,0 +1,21 @@
+[package]
+name        = "winx-domain"
+description = "Camada de domínio puro do Winx-KVM (entidades, value objects, eventos)."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde     = { workspace = true }
+thiserror = { workspace = true }
+uuid      = { workspace = true }
+time      = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

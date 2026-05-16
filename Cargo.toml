@@ -1,0 +1,73 @@
+[workspace]
+members = [
+    "crates/winx-domain",
+    "crates/winx-protocol",
+    "crates/winx-application",
+    "crates/winx-infra",
+    "crates/winx-kvm",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.75"
+authors = ["João Vitor Souza Moreira <kingdaswinxbr@proton.me>"]
+license = "MIT"
+repository = "https://github.com/kingdaswinx/Winx-KVM"
+readme = "README.md"
+
+[workspace.lints.clippy]
+all      = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Relaxados:
+module_name_repetitions    = "allow"  # nomes naturais no DDD
+must_use_candidate         = "allow"  # ruído em getters
+doc_markdown               = "allow"  # docs em pt-BR com termos comuns sem backtick
+trivially_copy_pass_by_ref = "allow"  # &self em pequenos enums é estilístico
+missing_errors_doc         = "allow"  # excessivo em domain
+missing_panics_doc         = "allow"
+return_self_not_must_use   = "allow"
+needless_pass_by_value     = "allow"  # Tauri commands recebem owned types do JS
+
+[workspace.dependencies]
+# Crates internos
+winx-domain      = { path = "crates/winx-domain" }
+winx-protocol    = { path = "crates/winx-protocol" }
+winx-application = { path = "crates/winx-application" }
+winx-infra       = { path = "crates/winx-infra" }
+
+# Async / runtime
+tokio       = { version = "1.40", features = ["full"] }
+async-trait = "0.1"
+futures     = "0.3"
+
+# Serialização
+serde      = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bincode    = "1.3"
+toml       = "0.8"
+
+# Erros e logging
+thiserror          = "1.0"
+anyhow             = "1.0"
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+# Utilitários
+uuid = { version = "1.10", features = ["v4", "serde"] }
+time = { version = "0.3", features = ["serde", "macros", "formatting", "parsing"] }
+
+[profile.release]
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1
+strip         = true
+panic         = "abort"
+
+[profile.dev]
+opt-level = 1
+
+# Build mais rápido das dependências mesmo em dev
+[profile.dev.package."*"]
+opt-level = 3

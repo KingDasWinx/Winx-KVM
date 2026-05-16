@@ -1,0 +1,43 @@
+[package]
+name        = "winx-kvm"
+description = "Aplicação Tauri do Winx-KVM (binary)."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+
+# Tauri 2.x exige lib.rs (compartilhado com mobile no futuro) + main.rs.
+[lib]
+name       = "winx_kvm_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "winx-kvm"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+# Crates internos
+winx-domain      = { workspace = true }
+winx-protocol    = { workspace = true }
+winx-application = { workspace = true }
+winx-infra       = { workspace = true }
+
+# Tauri
+tauri = { version = "2.11.1", features = ["devtools"] }
+
+# Comum
+tokio              = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+thiserror          = { workspace = true }
+anyhow             = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }

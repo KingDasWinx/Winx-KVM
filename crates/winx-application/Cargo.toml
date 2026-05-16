@@ -1,0 +1,22 @@
+[package]
+name        = "winx-application"
+description = "Casos de uso, event bus interno e ports (traits) do Winx-KVM."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+
+[lints]
+workspace = true
+
+[dependencies]
+winx-domain   = { workspace = true }
+winx-protocol = { workspace = true }
+tokio         = { workspace = true }
+async-trait   = { workspace = true }
+serde         = { workspace = true }
+thiserror     = { workspace = true }
+tracing       = { workspace = true }
+futures       = { workspace = true }

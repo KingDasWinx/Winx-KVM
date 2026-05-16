@@ -1,0 +1,54 @@
+{
+  "app": {
+    "name": "Winx-KVM",
+    "tagline": "Software KVM com áudio compartilhado entre PCs Windows na sua rede local.",
+    "status_planning": "Em planejamento",
+    "version_label": "Versão",
+    "protocol_label": "Protocolo wire",
+    "loading": "Carregando…",
+    "ping_button": "Ping no backend",
+    "events_received_one": "{{count}} evento recebido do backend",
+    "events_received_other": "{{count}} eventos recebidos do backend"
+  },
+  "error": {
+    "identity": {
+      "key_generation_failed": "Falha ao gerar chave do dispositivo",
+      "peer_not_found": "Dispositivo não encontrado",
+      "username_invalid": "Nome de usuário inválido"
+    },
+    "pairing": {
+      "pin_expired": "PIN de pareamento expirou",
+      "pin_mismatch": "PIN incorreto",
+      "too_many_attempts": "Tentativas demais. Pareamento cancelado.",
+      "session_not_found": "Sessão de pareamento não encontrada",
+      "session_exists": "Já existe um pareamento em andamento com este dispositivo"
+    },
+    "transport": {
+      "connection_failed": "Falha ao conectar com o dispositivo",
+      "protocol_mismatch": "Versões de protocolo incompatíveis",
+      "peer_not_trusted": "Dispositivo não está pareado"
+    },
+    "input": {
+      "capture_failed": "Falha ao capturar entrada",
+      "injection_failed": "Falha ao enviar entrada para o dispositivo remoto",
+      "monitor_not_found": "Monitor não encontrado"
+    },
+    "media": {
+      "vb_cable_missing": "VB-Audio Cable não está instalado",
+      "device_unavailable": "Dispositivo de áudio indisponível",
+      "codec_failed": "Erro no codec de áudio"
+    },
+    "clipboard": {
+      "format_unsupported": "Formato da área de transferência não suportado",
+      "payload_too_large": "Conteúdo da área de transferência muito grande"
+    },
+    "file_transfer": {
+      "hash_mismatch": "Verificação de integridade do arquivo falhou",
+      "cancelled": "Transferência de arquivo cancelada",
+      "too_large": "Arquivo excede o tamanho máximo permitido"
+    },
+    "general": {
+      "internal_error": "Erro interno"
+    }
+  }
+}

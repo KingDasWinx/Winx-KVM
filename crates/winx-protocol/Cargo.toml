@@ -1,0 +1,18 @@
+[package]
+name        = "winx-protocol"
+description = "Wire format (bincode) compartilhado entre peers do Winx-KVM."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+
+[lints]
+workspace = true
+
+[dependencies]
+winx-domain = { workspace = true }
+serde       = { workspace = true }
+bincode     = { workspace = true }
+thiserror   = { workspace = true }
