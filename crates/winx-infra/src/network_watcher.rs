@@ -24,15 +24,29 @@ impl NetworkWatcher {
 
         let join_handle = std::thread::spawn(move || {
             let mut last_state: Vec<String> = Vec::new();
+            let mut first_run = true;
 
             loop {
                 std::thread::sleep(Duration::from_secs(3));
 
                 match get_active_interfaces() {
                     Ok(current_state) => {
+                        // Na primeira execução, apenas registra o estado sem emitir eventos
+                        // para evitar false positives (todas as interfaces sendo "novas")
+                        if first_run {
+                            debug!("NetworkWatcher: inicial state captured, {} interfaces", current_state.len());
+                            for alias in &current_state {
+                                debug!("  - {}", alias);
+                            }
+                            last_state = current_state;
+                            first_run = false;
+                            continue;
+                        }
+
+                        // Detecta interfaces que apareceram
                         for alias in &current_state {
                             if !last_state.contains(alias) {
-                                debug!("Network interface appeared: {}", alias);
+                                info!("Network interface appeared (real change): {}", alias);
                                 let _ = tx.send(NetworkEvent::InterfaceChanged {
                                     alias: alias.clone(),
                                     ipv4: None,
@@ -40,6 +54,7 @@ impl NetworkWatcher {
                             }
                         }
 
+                        // Detecta interfaces que desapareceram
                         for alias in &last_state {
                             if !current_state.contains(alias) {
                                 info!("Network interface lost: {}", alias);
