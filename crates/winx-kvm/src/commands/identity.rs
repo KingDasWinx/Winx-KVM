@@ -33,10 +33,7 @@ pub async fn get_device_info(
 
     // Idempotent: discovery já foi iniciado no startup, mas chamamos novamente
     // em caso de um novo username ou como fallback.
-    let _ = discovery
-        .discovery
-        .start_for_device(&device)
-        .await;
+    let _ = discovery.discovery.start_for_device(&device).await;
 
     Ok(DeviceInfoDto {
         id: device.id.to_string(),

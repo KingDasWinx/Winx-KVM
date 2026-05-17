@@ -12,6 +12,15 @@
     "en": "Inglês",
     "pt-BR": "Português (Brasil)"
   },
+  "discovery": {
+    "title": "Descoberta de rede",
+    "description": "Escolha quais interfaces de rede são usadas para anunciar e descobrir pares.",
+    "interfaces": {
+      "label": "Interfaces mDNS",
+      "placeholder": "Todas as interfaces",
+      "helper": "Deixe vazio para usar todas as interfaces. Para melhores resultados, desabilite redes virtuais como ZeroTier, WSL ou VPNs."
+    }
+  },
   "clipboard": {
     "section_title": "Área de transferência",
     "auto_sync_label": "Sincronizar área de transferência automaticamente",

@@ -87,18 +87,31 @@ fn init_services(
         .collect();
     let trusted_keys = Arc::new(RwLock::new(trusted_keys));
 
-    let mdns = Arc::new(MdnsDiscoveryAdapter::new().map_err(|e| std::io::Error::other(e.to_string()))?);
-    let registry = Arc::new(Mutex::new(DiscoveryRegistry::new()));
-    let discovery = Arc::new(DiscoveryService::new(mdns, Arc::clone(&registry), bus.clone()));
+    let config_store = Arc::new(TomlConfigStore::new(data_dir.clone()));
+    let app_config = config_store
+        .load_or_create()
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
 
-    let pairing = Arc::new(PairingService::new(Arc::clone(&identity_store) as _, bus.clone()));
+    let mdns = Arc::new(
+        MdnsDiscoveryAdapter::new(&app_config.discovery.interfaces)
+            .map_err(|e| std::io::Error::other(e.to_string()))?,
+    );
+    let registry = Arc::new(Mutex::new(DiscoveryRegistry::new()));
+    let discovery = Arc::new(DiscoveryService::new(
+        mdns,
+        Arc::clone(&registry),
+        bus.clone(),
+    ));
+
+    let pairing = Arc::new(PairingService::new(
+        Arc::clone(&identity_store) as _,
+        bus.clone(),
+    ));
 
     // quinn::Endpoint::server requer runtime Tokio ativo na thread — block_on garante isso.
     let quic_adapter = Arc::new(
-        rt.block_on(async {
-            QuicTransportAdapter::new(cert_der, key_der, trusted_keys)
-        })
-        .map_err(|e| std::io::Error::other(e.to_string()))?,
+        rt.block_on(async { QuicTransportAdapter::new(cert_der, key_der, trusted_keys) })
+            .map_err(|e| std::io::Error::other(e.to_string()))?,
     );
     let transport = Arc::new(TransportService::new(
         quic_adapter,
@@ -115,11 +128,6 @@ fn init_services(
         Arc::clone(&transport),
         bus.clone(),
     ));
-
-    let config_store = Arc::new(TomlConfigStore::new(data_dir.clone()));
-    let app_config = config_store
-        .load_or_create()
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
 
     let device = rt
         .block_on(identity_store.load_device())
@@ -239,8 +247,7 @@ pub fn run() {
     };
     std::fs::create_dir_all(&data_dir).expect("falha ao criar data_dir");
 
-    let services = init_services(&rt, bus, data_dir)
-        .expect("falha na inicialização dos serviços");
+    let services = init_services(&rt, bus, data_dir).expect("falha na inicialização dos serviços");
 
     let device_for_discovery = services.device.clone();
 
@@ -295,11 +302,21 @@ pub fn run() {
                 ensure_device: services.ensure_device,
                 identity_store: services.identity_store,
             });
-            app.manage(DiscoveryState { discovery: services.discovery });
-            app.manage(PairingState { pairing: services.pairing });
-            app.manage(TransportState { transport: services.transport });
-            app.manage(InputControlState { input_control: services.input_control });
-            app.manage(ClipboardState { clipboard: services.clipboard });
+            app.manage(DiscoveryState {
+                discovery: services.discovery,
+            });
+            app.manage(PairingState {
+                pairing: services.pairing,
+            });
+            app.manage(TransportState {
+                transport: services.transport,
+            });
+            app.manage(InputControlState {
+                input_control: services.input_control,
+            });
+            app.manage(ClipboardState {
+                clipboard: services.clipboard,
+            });
             app.manage(services.config_store);
             app.manage(app_state::FirewallState {
                 is_configured: Arc::new(Mutex::new(firewall_ok)),
@@ -319,19 +336,17 @@ pub fn run() {
                         .clone(),
                 )
                 .menu(&tray_menu)
-                .on_menu_event(|app, event| {
-                    match event.id.as_ref() {
-                        "show" => {
-                            if let Some(window) = app.get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
                         }
-                        "quit" => {
-                            app.exit(0);
-                        }
-                        _ => {}
                     }
+                    "quit" => {
+                        app.exit(0);
+                    }
+                    _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {

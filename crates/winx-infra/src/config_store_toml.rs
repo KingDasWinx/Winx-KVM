@@ -1,4 +1,4 @@
-//! Persistência mínima de `config.toml` (seção clipboard).
+//! Persistência mínima de `config.toml` (seções clipboard e discovery).
 
 use std::path::PathBuf;
 
@@ -12,6 +12,8 @@ fn default_true() -> bool {
 pub struct AppConfigFile {
     #[serde(default)]
     pub clipboard: ClipboardConfig,
+    #[serde(default)]
+    pub discovery: DiscoveryConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +26,12 @@ impl Default for ClipboardConfig {
     fn default() -> Self {
         Self { auto_sync: true }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DiscoveryConfig {
+    #[serde(default)]
+    pub interfaces: Vec<String>,
 }
 
 pub struct TomlConfigStore {
@@ -60,6 +68,12 @@ impl TomlConfigStore {
     pub fn save_clipboard_auto_sync(&self, enabled: bool) -> anyhow::Result<()> {
         let mut cfg = self.load_or_create()?;
         cfg.clipboard.auto_sync = enabled;
+        self.save(&cfg)
+    }
+
+    pub fn save_discovery_interfaces(&self, interfaces: &[String]) -> anyhow::Result<()> {
+        let mut cfg = self.load_or_create()?;
+        cfg.discovery.interfaces = interfaces.to_vec();
         self.save(&cfg)
     }
 }

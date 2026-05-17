@@ -12,6 +12,15 @@
     "en": "English",
     "pt-BR": "Portuguese (Brazil)"
   },
+  "discovery": {
+    "title": "Network discovery",
+    "description": "Choose which network interfaces are used to announce and discover peers.",
+    "interfaces": {
+      "label": "mDNS interfaces",
+      "placeholder": "All interfaces",
+      "helper": "Leave empty to use all interfaces. For best results, disable virtual networks like ZeroTier, WSL, or VPNs."
+    }
+  },
   "clipboard": {
     "section_title": "Clipboard",
     "auto_sync_label": "Sync clipboard automatically",

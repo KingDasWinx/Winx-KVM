@@ -3,6 +3,7 @@ import {
   Button,
   Code,
   Group,
+  MultiSelect,
   Select,
   Stack,
   Switch,
@@ -16,8 +17,12 @@ import { useTranslation } from 'react-i18next';
 import {
   getClipboardAutoSync,
   getDeviceInfo,
+  getDiscoveryInterfaces,
+  listNetworkInterfaces,
   setClipboardAutoSync,
+  setDiscoveryInterfaces,
   updateDeviceUsername,
+  type NetworkInterface,
 } from '../ipc/commands';
 import { SUPPORTED_LOCALES, type SupportedLocale } from '../i18n';
 
@@ -27,6 +32,9 @@ export function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [clipboardAutoSync, setClipboardAutoSyncState] = useState(true);
+  const [networkInterfaces, setNetworkInterfaces] = useState<NetworkInterface[]>([]);
+  const [selectedInterfaces, setSelectedInterfaces] = useState<string[]>([]);
+  const [savingInterfaces, setSavingInterfaces] = useState(false);
 
   const loadDevice = useCallback(() => {
     getDeviceInfo()
@@ -36,14 +44,32 @@ export function SettingsPage() {
       });
   }, []);
 
+  const loadNetworkInterfaces = useCallback(() => {
+    listNetworkInterfaces()
+      .then(setNetworkInterfaces)
+      .catch((err: unknown) => {
+        console.error('list_network_interfaces failed', err);
+      });
+  }, []);
+
+  const loadDiscoveryInterfaces = useCallback(() => {
+    getDiscoveryInterfaces()
+      .then(setSelectedInterfaces)
+      .catch((err: unknown) => {
+        console.error('get_discovery_interfaces failed', err);
+      });
+  }, []);
+
   useEffect(() => {
     loadDevice();
+    loadNetworkInterfaces();
+    loadDiscoveryInterfaces();
     getClipboardAutoSync()
       .then(setClipboardAutoSyncState)
       .catch((err: unknown) => {
         console.error('get_clipboard_auto_sync failed', err);
       });
-  }, [loadDevice]);
+  }, [loadDevice, loadNetworkInterfaces, loadDiscoveryInterfaces]);
 
   const handleSaveUsername = async () => {
     setSaving(true);
@@ -100,6 +126,37 @@ export function SettingsPage() {
               void i18n.changeLanguage(value);
             }
           }}
+        />
+      </Stack>
+
+      <Stack gap="sm">
+        <Title order={3}>{t('discovery.title')}</Title>
+        <Text size="sm" c="dimmed">
+          {t('discovery.description')}
+        </Text>
+        <MultiSelect
+          label={t('discovery.interfaces.label')}
+          placeholder={t('discovery.interfaces.placeholder')}
+          description={t('discovery.interfaces.helper')}
+          data={networkInterfaces.map((iface) => ({
+            value: iface.name,
+            label: iface.ipv4 ? `${iface.name} — ${iface.ipv4}` : iface.name,
+          }))}
+          value={selectedInterfaces}
+          onChange={(value) => {
+            setSelectedInterfaces(value);
+            setSavingInterfaces(true);
+            setDiscoveryInterfaces(value)
+              .catch((err: unknown) => {
+                console.error('set_discovery_interfaces failed', err);
+              })
+              .finally(() => {
+                setSavingInterfaces(false);
+              });
+          }}
+          disabled={savingInterfaces}
+          searchable
+          clearable
         />
       </Stack>
 

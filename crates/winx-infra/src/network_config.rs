@@ -150,9 +150,9 @@ pub fn inspect() -> Result<NetworkConfigStatus> {
     let firewall_rules = get_firewall_rules()?;
     let network_profiles = get_network_profiles()?;
 
-    let has_private_or_domain_network = network_profiles
-        .iter()
-        .any(|p| p.category == NetworkCategory::Private || p.category == NetworkCategory::DomainAuthenticated);
+    let has_private_or_domain_network = network_profiles.iter().any(|p| {
+        p.category == NetworkCategory::Private || p.category == NetworkCategory::DomainAuthenticated
+    });
 
     Ok(NetworkConfigStatus {
         current_exe,
@@ -186,7 +186,10 @@ fn get_firewall_rules() -> Result<Vec<FirewallRule>> {
         .output()?;
 
     if !output.status.success() {
-        warn!("Failed to get firewall rules: {}", String::from_utf8_lossy(&output.stderr));
+        warn!(
+            "Failed to get firewall rules: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         return Ok(Vec::new());
     }
 
@@ -222,7 +225,10 @@ fn get_network_profiles() -> Result<Vec<NetworkProfileInfo>> {
         .output()?;
 
     if !output.status.success() {
-        warn!("Failed to get network profiles: {}", String::from_utf8_lossy(&output.stderr));
+        warn!(
+            "Failed to get network profiles: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         return Ok(Vec::new());
     }
 
@@ -253,9 +259,7 @@ fn get_network_profiles() -> Result<Vec<NetworkProfileInfo>> {
                 _ => NetworkCategory::Unknown,
             };
 
-            let ipv4 = p
-                .ipv4_address
-                .and_then(|ip| ip.parse::<IpAddr>().ok());
+            let ipv4 = p.ipv4_address.and_then(|ip| ip.parse::<IpAddr>().ok());
 
             Some(NetworkProfileInfo {
                 interface_alias,
@@ -294,7 +298,8 @@ pub fn reconfigure(exe_path: &Path) -> Result<()> {
             New-NetFirewallRule -DisplayName "Winx-KVM mDNS UDP In" `
               -Direction Inbound -Action Allow -Protocol UDP `
               -LocalPort 5353 -Profile Any -Enabled True -ErrorAction Stop
-            "#.to_string(),
+            "#
+            .to_string(),
         ),
         (
             "Winx-KVM QUIC UDP In",
@@ -302,7 +307,8 @@ pub fn reconfigure(exe_path: &Path) -> Result<()> {
             New-NetFirewallRule -DisplayName "Winx-KVM QUIC UDP In" `
               -Direction Inbound -Action Allow -Protocol UDP `
               -LocalPort 7878 -Profile Any -Enabled True -ErrorAction Stop
-            "#.to_string(),
+            "#
+            .to_string(),
         ),
         (
             "Winx-KVM Program UDP In",

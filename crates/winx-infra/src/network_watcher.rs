@@ -34,7 +34,10 @@ impl NetworkWatcher {
                         // Na primeira execução, apenas registra o estado sem emitir eventos
                         // para evitar false positives (todas as interfaces sendo "novas")
                         if first_run {
-                            debug!("NetworkWatcher: inicial state captured, {} interfaces", current_state.len());
+                            debug!(
+                                "NetworkWatcher: inicial state captured, {} interfaces",
+                                current_state.len()
+                            );
                             for alias in &current_state {
                                 debug!("  - {}", alias);
                             }
@@ -128,7 +131,10 @@ mod tests {
         match get_active_interfaces() {
             Ok(ifaces) => {
                 println!("Active interfaces: {:?}", ifaces);
-                assert!(!ifaces.is_empty(), "Should find at least one active interface");
+                assert!(
+                    !ifaces.is_empty(),
+                    "Should find at least one active interface"
+                );
             }
             Err(e) => {
                 println!("get_active_interfaces error (may be OK in CI): {}", e);

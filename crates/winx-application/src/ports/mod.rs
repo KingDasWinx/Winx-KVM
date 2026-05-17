@@ -10,6 +10,7 @@ pub mod discovery;
 pub mod identity;
 pub mod input;
 pub mod monitor;
+pub mod network;
 pub mod transport;
 
 pub use clipboard::{ClipboardBackend, ClipboardWatcherHandle};
@@ -17,4 +18,5 @@ pub use discovery::{AnnounceInfo, DiscoveryAdapter, DiscoveryEvent, WINX_KVM_POR
 pub use identity::{IdentityStore, SecretStore};
 pub use input::{CaptureHandle, InputBackend};
 pub use monitor::MonitorBackend;
+pub use network::NetworkInterfacesProvider;
 pub use transport::TransportAdapter;

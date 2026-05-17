@@ -5601,6 +5601,7 @@ dependencies = [
  "crossbeam-channel",
  "ed25519-dalek",
  "hex",
+ "if-addrs",
  "keyring",
  "mdns-sd",
  "quinn",

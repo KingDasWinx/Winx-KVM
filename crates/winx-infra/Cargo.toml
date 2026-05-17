@@ -29,6 +29,7 @@ hex     = { workspace = true }
 uuid    = { workspace = true }
 keyring = { version = "3", features = ["windows-native"] }
 mdns-sd = { workspace = true }
+if-addrs = { workspace = true }
 
 quinn          = { workspace = true }
 rustls         = { workspace = true }

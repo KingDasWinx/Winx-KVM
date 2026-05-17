@@ -1,7 +1,10 @@
 //! Commands do contexto de discovery.
 
+use std::sync::Arc;
+
 use serde::Serialize;
 use tauri::State;
+use winx_infra::TomlConfigStore;
 
 use crate::app_state::DiscoveryState;
 
@@ -30,4 +33,55 @@ pub async fn list_discovered_peers(
             addresses: p.addresses.iter().map(ToString::to_string).collect(),
         })
         .collect())
+}
+
+/// DTO de uma interface de rede para o frontend.
+#[derive(Debug, Serialize)]
+pub struct NetworkInterfaceDto {
+    pub name: String,
+    pub ipv4: Option<String>,
+}
+
+/// Lista interfaces de rede ativas.
+#[tauri::command]
+pub async fn list_network_interfaces() -> Result<Vec<NetworkInterfaceDto>, String> {
+    let interfaces = winx_infra::network_interfaces::list_active()
+        .map_err(|e| format!("falha ao enumerar interfaces: {}", e))?;
+
+    Ok(interfaces
+        .into_iter()
+        .map(|iface| NetworkInterfaceDto {
+            name: iface.name,
+            ipv4: iface.ipv4.map(|ip| ip.to_string()),
+        })
+        .collect())
+}
+
+/// Retorna lista de interfaces atualmente habilitadas para mDNS.
+#[tauri::command]
+pub async fn get_discovery_interfaces(
+    config_store: State<'_, Arc<TomlConfigStore>>,
+) -> Result<Vec<String>, String> {
+    let cfg = config_store
+        .load_or_create()
+        .map_err(|e| format!("falha ao carregar config: {}", e))?;
+    Ok(cfg.discovery.interfaces)
+}
+
+/// Redefine as interfaces de rede para mDNS e reanuncia.
+#[tauri::command]
+pub async fn set_discovery_interfaces(
+    discovery: State<'_, DiscoveryState>,
+    config_store: State<'_, Arc<TomlConfigStore>>,
+    interfaces: Vec<String>,
+) -> Result<(), String> {
+    config_store
+        .save_discovery_interfaces(&interfaces)
+        .map_err(|e| format!("falha ao salvar config: {}", e))?;
+
+    discovery
+        .discovery
+        .set_discovery_interfaces(&interfaces)
+        .await
+        .map_err(|e| format!("falha ao reconfigurar mDNS: {}", e))
 }

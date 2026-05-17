@@ -136,3 +136,20 @@ export async function reconfigureFirewall(): Promise<void> {
 export async function exportDiagnostics(): Promise<string> {
   return await invoke<string>('export_diagnostics');
 }
+
+export interface NetworkInterface {
+  name: string;
+  ipv4: string | null;
+}
+
+export async function listNetworkInterfaces(): Promise<NetworkInterface[]> {
+  return await invoke<NetworkInterface[]>('list_network_interfaces');
+}
+
+export async function getDiscoveryInterfaces(): Promise<string[]> {
+  return await invoke<string[]>('get_discovery_interfaces');
+}
+
+export async function setDiscoveryInterfaces(interfaces: string[]): Promise<void> {
+  return await invoke<void>('set_discovery_interfaces', { interfaces });
+}

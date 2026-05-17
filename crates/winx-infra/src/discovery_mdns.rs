@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use async_trait::async_trait;
-use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use mdns_sd::{IfKind, ServiceDaemon, ServiceEvent, ServiceInfo};
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
 use uuid::Uuid;
@@ -20,7 +20,7 @@ pub struct MdnsDiscoveryAdapter {
 }
 
 impl MdnsDiscoveryAdapter {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new(enabled_interfaces: &[String]) -> anyhow::Result<Self> {
         info!("[MDNS INIT] criando ServiceDaemon...");
 
         let daemon = ServiceDaemon::new().map_err(|e| {
@@ -29,21 +29,42 @@ impl MdnsDiscoveryAdapter {
         })?;
 
         info!("[MDNS INIT] ServiceDaemon criado com sucesso");
-        Self::filter_virtual_interfaces(&daemon);
+        Self::apply_interface_filter(&daemon, enabled_interfaces)?;
 
         Ok(Self { daemon })
     }
 
-    /// Desabilita interfaces virtuais (Hyper-V, WSL, VPN) para mDNS discover.
-    fn filter_virtual_interfaces(_daemon: &ServiceDaemon) {
-        // Aqui iteraríamos pelas interfaces do sistema, mas mdns-sd 0.18 não expõe
-        // interface listing diretamente via API. A versão 0.18 **exclui point-to-point
-        // interfaces (tunnels, WSL, etc.) por padrão**, o que remove o bug do 0.19
-        // onde HashSet era não-determinístico.
-        // Futuro: usar `if-addrs` crate para filtro explícito se necessário.
+    fn apply_interface_filter(
+        daemon: &ServiceDaemon,
+        enabled_interfaces: &[String],
+    ) -> anyhow::Result<()> {
+        if enabled_interfaces.is_empty() {
+            info!("[MDNS INIT] usando todas as interfaces (mdns-sd 0.18.2 exclui point-to-point por padrão)");
+            debug!("[MDNS INIT] Interface filtering: mdns-sd 0.18 exclui WSL/vEthernet/tunnels automaticamente");
+        } else {
+            info!(
+                "[MDNS INIT] desabilitando todas e habilitando selecionadas: {:?}",
+                enabled_interfaces
+            );
+            daemon.disable_interface(IfKind::All).map_err(|e| {
+                warn!(
+                    "[MDNS INIT] falha ao desabilitar todas as interfaces: {}",
+                    e
+                );
+                anyhow::anyhow!("disable_interface(All) falhou: {e}")
+            })?;
 
-        info!("[MDNS INIT] mDNS daemon initialized (mdns-sd 0.18.2 — point-to-point interfaces excluídas por padrão)");
-        debug!("[MDNS INIT] Interface filtering: mdns-sd 0.18 exclui WSL/vEthernet/tunnels automaticamente");
+            for name in enabled_interfaces {
+                daemon
+                    .enable_interface(IfKind::Name(name.clone()))
+                    .map_err(|e| {
+                        warn!("[MDNS INIT] falha ao habilitar interface '{}': {}", name, e);
+                        anyhow::anyhow!("enable_interface('{}') falhou: {e}", name)
+                    })?;
+            }
+            info!("[MDNS INIT] interfaces selecionadas habilitadas com sucesso");
+        }
+        Ok(())
     }
 }
 
@@ -55,7 +76,10 @@ impl DiscoveryAdapter for MdnsDiscoveryAdapter {
 
         let username_truncated: String = info.username.chars().take(60).collect();
 
-        debug!("[MDNS ANNOUNCE] instance_name={}, host_name={}, port={}", instance_name, host_name, info.port);
+        debug!(
+            "[MDNS ANNOUNCE] instance_name={}, host_name={}, port={}",
+            instance_name, host_name, info.port
+        );
 
         let properties = [
             ("peer_id", info.peer_id.to_string()),
@@ -63,7 +87,10 @@ impl DiscoveryAdapter for MdnsDiscoveryAdapter {
             ("fingerprint", info.fingerprint.clone()),
         ];
 
-        debug!("[MDNS ANNOUNCE] properties: peer_id={}, username={}, fingerprint={}", info.peer_id, username_truncated, info.fingerprint);
+        debug!(
+            "[MDNS ANNOUNCE] properties: peer_id={}, username={}, fingerprint={}",
+            info.peer_id, username_truncated, info.fingerprint
+        );
 
         let service = ServiceInfo::new(
             SERVICE_TYPE,
@@ -80,22 +107,29 @@ impl DiscoveryAdapter for MdnsDiscoveryAdapter {
 
         info!("[MDNS ANNOUNCE] ServiceInfo criado, registrando no daemon...");
 
-        self.daemon
-            .register(service)
-            .map_err(|e| {
-                warn!("[MDNS ANNOUNCE] daemon.register() falhou: {}", e);
-                anyhow::anyhow!("register falhou: {e}")
-            })?;
+        self.daemon.register(service).map_err(|e| {
+            warn!("[MDNS ANNOUNCE] daemon.register() falhou: {}", e);
+            anyhow::anyhow!("register falhou: {e}")
+        })?;
 
-        info!("[MDNS ANNOUNCE] sucesso! peer_id={}, port={}, tipo={}", info.peer_id, info.port, SERVICE_TYPE);
+        info!(
+            "[MDNS ANNOUNCE] sucesso! peer_id={}, port={}, tipo={}",
+            info.peer_id, info.port, SERVICE_TYPE
+        );
         Ok(())
     }
 
     async fn reannounce(&self, info: &AnnounceInfo) -> anyhow::Result<()> {
         let fullname = format!("winx-{}.{}", info.peer_id, SERVICE_TYPE);
-        info!("[MDNS REANNOUNCE] tentando unregister anterior: {}", fullname);
+        info!(
+            "[MDNS REANNOUNCE] tentando unregister anterior: {}",
+            fullname
+        );
         if let Err(e) = self.daemon.unregister(&fullname) {
-            debug!("[MDNS REANNOUNCE] unregister retornou erro (pode ser primeira vez): {}", e);
+            debug!(
+                "[MDNS REANNOUNCE] unregister retornou erro (pode ser primeira vez): {}",
+                e
+            );
         } else {
             info!("[MDNS REANNOUNCE] unregister sucesso");
         }
@@ -111,15 +145,15 @@ impl DiscoveryAdapter for MdnsDiscoveryAdapter {
     }
 
     async fn start_browsing(&self) -> anyhow::Result<mpsc::Receiver<DiscoveryEvent>> {
-        info!("iniciando browse mDNS para tipo de serviço: {}", SERVICE_TYPE);
+        info!(
+            "iniciando browse mDNS para tipo de serviço: {}",
+            SERVICE_TYPE
+        );
 
-        let receiver = self
-            .daemon
-            .browse(SERVICE_TYPE)
-            .map_err(|e| {
-                warn!("browse falhou imediatamente: {}", e);
-                anyhow::anyhow!("browse falhou: {e}")
-            })?;
+        let receiver = self.daemon.browse(SERVICE_TYPE).map_err(|e| {
+            warn!("browse falhou imediatamente: {}", e);
+            anyhow::anyhow!("browse falhou: {e}")
+        })?;
 
         info!("browse iniciado com sucesso, aguardando eventos...");
 
@@ -138,17 +172,28 @@ impl DiscoveryAdapter for MdnsDiscoveryAdapter {
 
                         let discovery_event = match event {
                             ServiceEvent::ServiceResolved(resolved) => {
-                                debug!("[BROWSE] ServiceResolved: fullname={}, port={}", resolved.fullname, resolved.get_port());
+                                debug!(
+                                    "[BROWSE] ServiceResolved: fullname={}, port={}",
+                                    resolved.fullname,
+                                    resolved.get_port()
+                                );
 
-                                let Some(peer_id_str) = resolved.get_property_val_str("peer_id") else {
-                                    warn!("[BROWSE] peer sem peer_id no TXT — ignorado. fullname={}", resolved.fullname);
+                                let Some(peer_id_str) = resolved.get_property_val_str("peer_id")
+                                else {
+                                    warn!(
+                                        "[BROWSE] peer sem peer_id no TXT — ignorado. fullname={}",
+                                        resolved.fullname
+                                    );
                                     continue;
                                 };
 
                                 debug!("[BROWSE] peer_id extraído: {}", peer_id_str);
 
                                 let Ok(uuid) = Uuid::parse_str(peer_id_str) else {
-                                    warn!("[BROWSE] peer_id inválido (não é UUID): {}", peer_id_str);
+                                    warn!(
+                                        "[BROWSE] peer_id inválido (não é UUID): {}",
+                                        peer_id_str
+                                    );
                                     continue;
                                 };
 
@@ -165,7 +210,9 @@ impl DiscoveryAdapter for MdnsDiscoveryAdapter {
                                 let addresses: Vec<SocketAddr> = resolved
                                     .get_addresses()
                                     .iter()
-                                    .map(|ip| SocketAddr::new(*ip, resolved.get_port()))
+                                    .map(|scoped| {
+                                        SocketAddr::new(scoped.to_ip_addr(), resolved.get_port())
+                                    })
                                     .collect();
 
                                 debug!(%peer_id, %username, addrs = ?addresses.iter().map(|a| a.to_string()).collect::<Vec<_>>(), "peer resolvido com sucesso");
@@ -229,7 +276,10 @@ impl DiscoveryAdapter for MdnsDiscoveryAdapter {
                         }
                     }
                     Err(e) => {
-                        warn!("[BROWSE THREAD] receiver.recv() retornou erro: {}, encerrando", e);
+                        warn!(
+                            "[BROWSE THREAD] receiver.recv() retornou erro: {}, encerrando",
+                            e
+                        );
                         break;
                     }
                 }
@@ -245,6 +295,33 @@ impl DiscoveryAdapter for MdnsDiscoveryAdapter {
         self.daemon
             .stop_browse(SERVICE_TYPE)
             .map_err(|e| anyhow::anyhow!("stop_browse: {e}"))?;
+        Ok(())
+    }
+
+    async fn set_interfaces(&self, names: &[String]) -> anyhow::Result<()> {
+        if names.is_empty() {
+            info!("[MDNS SET_INTERFACES] restaurando todas as interfaces");
+            self.daemon.enable_interface(IfKind::All).map_err(|e| {
+                warn!("[MDNS SET_INTERFACES] falha ao habilitar All: {}", e);
+                anyhow::anyhow!("enable_interface(All) falhou: {e}")
+            })?;
+        } else {
+            info!("[MDNS SET_INTERFACES] reconfigurando para: {:?}", names);
+            self.daemon.disable_interface(IfKind::All).map_err(|e| {
+                warn!("[MDNS SET_INTERFACES] falha ao desabilitar All: {}", e);
+                anyhow::anyhow!("disable_interface(All) falhou: {e}")
+            })?;
+
+            for name in names {
+                self.daemon
+                    .enable_interface(IfKind::Name(name.clone()))
+                    .map_err(|e| {
+                        warn!("[MDNS SET_INTERFACES] falha ao habilitar '{}': {}", name, e);
+                        anyhow::anyhow!("enable_interface('{}') falhou: {e}", name)
+                    })?;
+            }
+            info!("[MDNS SET_INTERFACES] interfaces reconfiguradas com sucesso");
+        }
         Ok(())
     }
 }

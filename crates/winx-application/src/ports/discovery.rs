@@ -54,4 +54,8 @@ pub trait DiscoveryAdapter: Send + Sync + 'static {
 
     /// Para a escuta de peers.
     async fn stop_browsing(&self) -> anyhow::Result<()>;
+
+    /// Configura quais interfaces de rede o mDNS usa.
+    /// Lista vazia = todas as interfaces. Lista não-vazia = apenas essas.
+    async fn set_interfaces(&self, names: &[String]) -> anyhow::Result<()>;
 }

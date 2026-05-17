@@ -24,7 +24,9 @@ pub fn init() {
 
     let log_dir = {
         let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(appdata).join("br.com.winxkvm.app").join("logs")
+        PathBuf::from(appdata)
+            .join("br.com.winxkvm.app")
+            .join("logs")
     };
 
     let _ = std::fs::create_dir_all(&log_dir);

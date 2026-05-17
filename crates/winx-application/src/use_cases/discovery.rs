@@ -172,4 +172,28 @@ impl DiscoveryService {
             }
         });
     }
+
+    /// Reconfigura as interfaces de rede para mDNS e reanuncia.
+    pub async fn set_discovery_interfaces(&self, interfaces: &[String]) -> anyhow::Result<()> {
+        if !self.running.load(Ordering::SeqCst) {
+            debug!("discovery não iniciado — ignorando set_discovery_interfaces");
+            return Ok(());
+        }
+
+        info!("[DISCOVERY] reconfigurando interfaces: {:?}", interfaces);
+        self.adapter.set_interfaces(interfaces).await?;
+
+        if let Some(peer_id) = *self.own_peer_id.lock().await {
+            let info = AnnounceInfo {
+                peer_id,
+                username: "".to_string(),
+                fingerprint: "".to_string(),
+                port: WINX_KVM_PORT,
+            };
+            self.reannounce(&info).await?;
+            info!("[DISCOVERY] mDNS reannounced após mudança de interfaces");
+        }
+
+        Ok(())
+    }
 }
