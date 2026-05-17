@@ -154,12 +154,17 @@ impl InputControlService {
         let inject_input = Arc::clone(&self.input);
         tokio::spawn(async move {
             while let Some(bytes) = rx.recv().await {
-                if let Ok(frame) = winx_protocol::decode(&bytes) {
-                    if let winx_protocol::Payload::Input(p) = frame.payload {
-                        let ev = input_event_from_dto(&p.event);
-                        if inject_input.inject(ev).await.is_err() {
-                            warn!("falha ao injetar input remoto");
+                match winx_protocol::decode(&bytes) {
+                    Ok(frame) => {
+                        if let winx_protocol::Payload::Input(p) = frame.payload {
+                            let ev = input_event_from_dto(&p.event);
+                            if inject_input.inject(ev).await.is_err() {
+                                warn!("falha ao injetar input remoto");
+                            }
                         }
+                    }
+                    Err(err) => {
+                        warn!(?err, len = bytes.len(), "frame de input inválido");
                     }
                 }
             }
@@ -175,11 +180,41 @@ impl InputControlService {
         self.focus.lock().await.clone()
     }
 
+    /// Restaura cursor/foco local após desconexão (libera `ClipCursor`).
+    pub async fn reset_after_disconnect(&self, peer_id: PeerId) {
+        let was_active = {
+            let guard = self.active_peer.lock().await;
+            *guard == Some(peer_id)
+        };
+        if !was_active {
+            return;
+        }
+
+        *self.active_peer.lock().await = None;
+        *self.enabled.lock().await = false;
+        *self.input_tx.lock().await = None;
+
+        {
+            let mut f = self.focus.lock().await;
+            f.target = FocusTarget::Local;
+            f.lock_mode = false;
+        }
+
+        self.input.set_pass_through(true);
+        if self.input.set_cursor_clipped(None).await.is_err() {
+            warn!("falha ao liberar ClipCursor após desconexão");
+        } else {
+            info!(%peer_id, "input local restaurado após desconexão");
+        }
+    }
+
     fn spawn_bus_subscriber(&self) {
         let mut rx = self.bus.subscribe();
         let active = Arc::clone(&self.active_peer);
         let focus = Arc::clone(&self.focus);
         let input = Arc::clone(&self.input);
+        let input_tx = Arc::clone(&self.input_tx);
+        let enabled = Arc::clone(&self.enabled);
 
         tokio::spawn(async move {
             while let Ok(event) = rx.recv().await {
@@ -187,12 +222,15 @@ impl InputControlService {
                     let guard = active.lock().await;
                     if *guard == Some(e.peer_id) {
                         drop(guard);
+                        *active.lock().await = None;
+                        *enabled.lock().await = false;
+                        *input_tx.lock().await = None;
                         let mut f = focus.lock().await;
-                        if matches!(f.target, FocusTarget::Remote(pid) if pid == e.peer_id) {
-                            f.target = FocusTarget::Local;
-                            input.set_pass_through(true);
-                            let _ = input.set_cursor_clipped(None).await;
-                        }
+                        f.target = FocusTarget::Local;
+                        f.lock_mode = false;
+                        input.set_pass_through(true);
+                        let _ = input.set_cursor_clipped(None).await;
+                        info!(peer_id = %e.peer_id, "foco e cursor restaurados (connection lost)");
                     }
                 }
             }
@@ -284,10 +322,10 @@ async fn handle_local_input(
             if let Some(tx) = input_tx.lock().await.as_ref() {
                 let n = seq.fetch_add(1, Ordering::SeqCst);
                 if let Ok(bytes) = encode_input_payload(n, &ev) {
-                    let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX).to_be_bytes();
-                    let mut frame = len.to_vec();
-                    frame.extend(bytes);
-                    let _ = tx.send(frame).await;
+                    // Length-prefix é aplicado em `bridge_bi_streams` (transport QUIC).
+                    if tx.send(bytes).await.is_err() {
+                        warn!("falha ao enviar input no stream");
+                    }
                 }
             }
         }
@@ -314,6 +352,12 @@ async fn try_edge_switch(
     let Some(peer) = *active.lock().await else {
         return;
     };
+
+    let current = focus.lock().await.target.clone();
+    if matches!(&current, FocusTarget::Remote(p) if *p == peer) {
+        return;
+    }
+
     let remote = layout_data.remote_virtual;
     drop(layout_guard);
 
@@ -324,7 +368,7 @@ async fn try_edge_switch(
         "borda direita atingida — trocando foco para remoto"
     );
 
-    let from = focus.lock().await.target.clone();
+    let from = current;
     switch_focus(
         FocusTarget::Remote(peer),
         from,
@@ -335,13 +379,12 @@ async fn try_edge_switch(
     )
     .await;
 
+    // Prende na borda esquerda do monitor virtual remoto (não no centro, que fica fora da tela).
+    let clip_x = remote.x;
+    let clip_y = remote.y
+        + i32::try_from(remote.height.saturating_sub(1)).unwrap_or(0) / 2;
     let _ = input
-        .set_cursor_clipped(Some((
-            remote.x + i32::try_from(remote.width).unwrap_or(i32::MAX) / 2,
-            remote.y + i32::try_from(remote.height).unwrap_or(i32::MAX) / 2,
-            1,
-            1,
-        )))
+        .set_cursor_clipped(Some((clip_x, clip_y, 1, 1)))
         .await;
     let _ = input_tx;
 }

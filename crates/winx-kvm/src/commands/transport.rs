@@ -7,7 +7,7 @@ use winx_domain::{
     transport::ConnectionState,
 };
 
-use crate::app_state::TransportState;
+use crate::app_state::{InputControlState, TransportState};
 
 #[derive(Debug, Serialize)]
 pub struct ConnectionStateDto {
@@ -77,11 +77,17 @@ pub async fn open_connection(
 
 #[tauri::command]
 pub async fn disconnect_peer(
-    state: State<'_, TransportState>,
+    transport: State<'_, TransportState>,
+    input: State<'_, InputControlState>,
     peer_id: String,
 ) -> Result<(), String> {
     let pid = parse_peer_id(&peer_id)?;
-    state.transport.disconnect_peer(pid).await.map_err(map_err)
+    input.input_control.reset_after_disconnect(pid).await;
+    transport
+        .transport
+        .disconnect_peer(pid)
+        .await
+        .map_err(map_err)
 }
 
 #[tauri::command]

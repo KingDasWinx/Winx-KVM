@@ -235,11 +235,7 @@ async fn on_local_change(
         }
     };
 
-    let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX).to_be_bytes();
-    let mut frame = len.to_vec();
-    frame.extend(bytes);
-
-    if tx.send(frame).await.is_err() {
+    if tx.send(bytes).await.is_err() {
         warn!("falha ao enviar clipboard no stream Data");
         return;
     }

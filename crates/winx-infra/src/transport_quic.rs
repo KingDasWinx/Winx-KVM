@@ -242,6 +242,8 @@ impl ClientCertVerifier for Ed25519PeerClientVerifier {
 
 struct ConnEntry {
     connection: QuicConnection,
+    /// `true` se este lado iniciou o handshake QUIC (`connect`); `false` se aceitou (`listen`).
+    is_quic_client: bool,
 }
 
 pub struct QuicTransportAdapter {
@@ -320,12 +322,63 @@ impl QuicTransportAdapter {
         })
     }
 
-    async fn store_connection(&self, conn_id: SessionId, connection: QuicConnection) {
-        self.connections
-            .lock()
-            .await
-            .insert(conn_id, ConnEntry { connection });
+    async fn store_connection(
+        &self,
+        conn_id: SessionId,
+        connection: QuicConnection,
+        is_quic_client: bool,
+    ) {
+        self.connections.lock().await.insert(
+            conn_id,
+            ConnEntry {
+                connection,
+                is_quic_client,
+            },
+        );
     }
+}
+
+/// Emparelha um stream QUIC bidirecional com canais mpsc (length-prefix por chunk).
+fn bridge_bi_streams(
+    mut send: quinn::SendStream,
+    mut recv: quinn::RecvStream,
+) -> (StreamSender, StreamReceiver) {
+    let (tx, rx_out) = mpsc::channel::<Vec<u8>>(64);
+    let (tx_in, mut rx_in) = mpsc::channel::<Vec<u8>>(64);
+
+    tokio::spawn(async move {
+        while let Some(chunk) = rx_in.recv().await {
+            let len = u32::try_from(chunk.len()).unwrap_or(u32::MAX).to_be_bytes();
+            if send.write_all(&len).await.is_err() {
+                break;
+            }
+            if send.write_all(&chunk).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    tokio::spawn(async move {
+        loop {
+            let mut len_buf = [0u8; 4];
+            if recv.read_exact(&mut len_buf).await.is_err() {
+                break;
+            }
+            let len = u32::from_be_bytes(len_buf) as usize;
+            if len > 1_048_576 {
+                break;
+            }
+            let mut buf = vec![0u8; len];
+            if recv.read_exact(&mut buf).await.is_err() {
+                break;
+            }
+            if tx_in.send(buf).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    (tx, rx_out)
 }
 
 #[async_trait]
@@ -371,6 +424,7 @@ impl TransportAdapter for QuicTransportAdapter {
                                 conn_id,
                                 ConnEntry {
                                     connection: connection.clone(),
+                                    is_quic_client: false,
                                 },
                             );
                             let _ = tx
@@ -409,7 +463,8 @@ impl TransportAdapter for QuicTransportAdapter {
 
         let connection = self.endpoint.connect(peer_addr, "winx-kvm.local")?.await?;
         let conn_id = SessionId::new();
-        self.store_connection(conn_id, connection.clone()).await;
+        self.store_connection(conn_id, connection.clone(), true)
+            .await;
         spawn_control_loop_initiator(connection);
         Ok(ActiveConnection { conn_id })
     }
@@ -417,53 +472,24 @@ impl TransportAdapter for QuicTransportAdapter {
     async fn open_stream(
         &self,
         conn_id: SessionId,
-        _kind: StreamKind,
+        kind: StreamKind,
     ) -> anyhow::Result<(StreamSender, StreamReceiver)> {
-        let connection = {
+        let (connection, is_quic_client) = {
             let guard = self.connections.lock().await;
-            guard
+            let entry = guard
                 .get(&conn_id)
-                .map(|e| e.connection.clone())
-                .ok_or_else(|| anyhow::anyhow!("conexão não encontrada"))?
+                .ok_or_else(|| anyhow::anyhow!("conexão não encontrada"))?;
+            (entry.connection.clone(), entry.is_quic_client)
         };
 
-        let (mut send, mut recv) = connection.open_bi().await?;
-        let (tx, rx_out) = mpsc::channel::<Vec<u8>>(64);
-        let (tx_in, mut rx_in) = mpsc::channel::<Vec<u8>>(64);
+        let (send, recv) = if is_quic_client {
+            connection.open_bi().await?
+        } else {
+            connection.accept_bi().await?
+        };
 
-        tokio::spawn(async move {
-            while let Some(chunk) = rx_in.recv().await {
-                let len = u32::try_from(chunk.len()).unwrap_or(u32::MAX).to_be_bytes();
-                if send.write_all(&len).await.is_err() {
-                    break;
-                }
-                if send.write_all(&chunk).await.is_err() {
-                    break;
-                }
-            }
-        });
-
-        tokio::spawn(async move {
-            loop {
-                let mut len_buf = [0u8; 4];
-                if recv.read_exact(&mut len_buf).await.is_err() {
-                    break;
-                }
-                let len = u32::from_be_bytes(len_buf) as usize;
-                if len > 1_048_576 {
-                    break;
-                }
-                let mut buf = vec![0u8; len];
-                if recv.read_exact(&mut buf).await.is_err() {
-                    break;
-                }
-                if tx_in.send(buf).await.is_err() {
-                    break;
-                }
-            }
-        });
-
-        Ok((tx, rx_out))
+        info!(?kind, is_quic_client, "stream QUIC de aplicação aberto");
+        Ok(bridge_bi_streams(send, recv))
     }
 
     async fn get_stats(&self, conn_id: SessionId) -> anyhow::Result<ConnectionStats> {
