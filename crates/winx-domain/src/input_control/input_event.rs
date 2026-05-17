@@ -28,6 +28,9 @@ pub enum InputEvent {
     MouseMove {
         dx: i32,
         dy: i32,
+        /// Posição absoluta na área virtual do Windows (detecção de borda local).
+        screen_x: i32,
+        screen_y: i32,
     },
     MouseButton {
         button: MouseButton,
@@ -48,7 +51,7 @@ impl InputEvent {
     #[must_use]
     pub fn delta(&self) -> (i32, i32) {
         match self {
-            Self::MouseMove { dx, dy } => (*dx, *dy),
+            Self::MouseMove { dx, dy, .. } => (*dx, *dy),
             _ => (0, 0),
         }
     }
@@ -60,7 +63,12 @@ mod tests {
 
     #[test]
     fn mouse_move_carries_signed_deltas() {
-        let e = InputEvent::MouseMove { dx: -3, dy: 10 };
+        let e = InputEvent::MouseMove {
+            dx: -3,
+            dy: 10,
+            screen_x: 100,
+            screen_y: 200,
+        };
         assert_eq!(e.delta(), (-3, 10));
     }
 }

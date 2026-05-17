@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
@@ -30,7 +30,6 @@ pub struct InputControlService {
     active_peer: Arc<Mutex<Option<PeerId>>>,
     input_tx: Arc<Mutex<Option<StreamSender>>>,
     seq: Arc<AtomicU64>,
-    cursor_x: Arc<AtomicI32>,
     enabled: Arc<Mutex<bool>>,
 }
 
@@ -51,12 +50,18 @@ impl InputControlService {
             active_peer: Arc::new(Mutex::new(None)),
             input_tx: Arc::new(Mutex::new(None)),
             seq: Arc::new(AtomicU64::new(0)),
-            cursor_x: Arc::new(AtomicI32::new(0)),
             enabled: Arc::new(Mutex::new(false)),
         }
     }
 
     pub async fn enable_for_peer(&self, peer_id: PeerId) -> Result<(), DomainError> {
+        if *self.enabled.lock().await {
+            let active = *self.active_peer.lock().await;
+            if active == Some(peer_id) {
+                return Ok(());
+            }
+        }
+
         if !self.transport.is_peer_connected(peer_id).await {
             return Err(DomainError::new(
                 DomainErrorCode::TransportConnectionFailed,
@@ -86,7 +91,6 @@ impl InputControlService {
         let service_bus = self.bus.clone();
         let service_input_tx = Arc::clone(&self.input_tx);
         let service_seq = Arc::clone(&self.seq);
-        let service_cursor_x = Arc::clone(&self.cursor_x);
         let service_active = Arc::clone(&self.active_peer);
         let service_self_input = Arc::clone(&self.input);
         let service_enabled = Arc::clone(&self.enabled);
@@ -101,13 +105,12 @@ impl InputControlService {
             let input_be = service_self_input.clone();
             let enabled = service_enabled.clone();
             let seq = Arc::clone(&service_seq);
-            let cursor_x = Arc::clone(&service_cursor_x);
             tokio::spawn(async move {
                 if !*enabled.lock().await {
                     return;
                 }
                 handle_local_input(
-                    ev, focus, layout, input_tx, transport, bus, active, input_be, &seq, &cursor_x,
+                    ev, focus, layout, input_tx, transport, bus, active, input_be, &seq,
                 )
                 .await;
             });
@@ -244,7 +247,6 @@ async fn handle_local_input(
     active: Arc<Mutex<Option<PeerId>>>,
     input: Arc<dyn InputBackend>,
     seq: &Arc<AtomicU64>,
-    cursor_x: &Arc<AtomicI32>,
 ) {
     let state = focus.lock().await.clone();
     if state.lock_mode {
@@ -254,13 +256,17 @@ async fn handle_local_input(
     match &state.target {
         FocusTarget::Local => {
             input.set_pass_through(true);
-            if let InputEvent::MouseMove { dx, dy } = ev {
+            if let InputEvent::MouseMove {
+                dx,
+                dy,
+                screen_x,
+                screen_y: _,
+            } = ev
+            {
                 if dx == 0 && dy == 0 {
                     return;
                 }
-                let new_x = cursor_x.load(Ordering::SeqCst).saturating_add(dx);
-                cursor_x.store(new_x, Ordering::SeqCst);
-                try_edge_switch(new_x, focus, layout, input, bus, active, input_tx).await;
+                try_edge_switch(screen_x, focus, layout, input, bus, active, input_tx).await;
             }
         }
         FocusTarget::Remote(_peer) => {
@@ -279,7 +285,7 @@ async fn handle_local_input(
 }
 
 async fn try_edge_switch(
-    cursor_x: i32,
+    screen_x: i32,
     focus: Arc<Mutex<FocusState>>,
     layout: Arc<Mutex<Option<MonitorLayout>>>,
     input: Arc<dyn InputBackend>,
@@ -292,7 +298,7 @@ async fn try_edge_switch(
         return;
     };
     let edge = layout_data.local_right_edge_x();
-    if cursor_x < edge - 2 {
+    if screen_x < edge - 2 {
         return;
     }
     let Some(peer) = *active.lock().await else {

@@ -219,6 +219,23 @@ impl TransportService {
             .collect()
     }
 
+    /// Snapshot para a UI: peers com conexão ativa ou em progresso (exclui `Disconnected`).
+    pub async fn list_connection_snapshots(
+        &self,
+    ) -> Vec<(
+        PeerId,
+        winx_domain::transport::ConnectionState,
+        winx_domain::transport::ConnectionStats,
+    )> {
+        self.connections
+            .lock()
+            .await
+            .iter()
+            .filter(|(_, c)| !matches!(c.state, winx_domain::transport::ConnectionState::Disconnected))
+            .map(|(id, c)| (*id, c.state.clone(), c.stats))
+            .collect()
+    }
+
     #[allow(clippy::too_many_lines)]
     pub fn spawn_maintenance_tasks(&self) {
         let adapter = Arc::clone(&self.adapter);

@@ -96,6 +96,18 @@ export async function getConnectionStats(peerId: string): Promise<ConnectionStat
   return await invoke<ConnectionStatsDto>('get_connection_stats', { peerId });
 }
 
+export interface ConnectionStateDto {
+  peer_id: string;
+  status: 'connecting' | 'connected' | 'reconnecting' | 'disconnected';
+  rtt_ms?: number;
+  tx_bytes?: number;
+  rx_bytes?: number;
+}
+
+export async function listConnectionStates(): Promise<ConnectionStateDto[]> {
+  return await invoke<ConnectionStateDto[]>('list_connection_states');
+}
+
 export interface FocusStateDto {
   /** `"local"` ou UUID do peer remoto com foco. */
   target: string;

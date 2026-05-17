@@ -125,8 +125,18 @@ Critérios visuais nos **dois** PCs (lista atualiza sozinha ao concluir o paream
 1. No card com badge **Paired**, clique **Connect**.  
 2. Toast **“Connected”** quando o QUIC subir; indicador de conexão verde e RTT nas estatísticas do card.  
 3. Input remoto e clipboard passam a funcionar conforme os épicos já implementados (mover foco na borda do monitor, etc.).
+4. **Settings → Home:** o card continua **conectado** (botão **Disconnect**, sem loading infinito ao clicar Connect de novo).
 
-**Logs (debug):** com `$env:WINX_LOG = "debug"`, procure `conexão QUIC estabelecida` e ausência de `conexão rejeitada: peer não confiável` no listener após parear.
+### KVM (mouse após conectar)
+
+Layout v0.1: monitor remoto virtual fica à **direita** do monitor local mais à direita no Windows.
+
+1. Com QUIC conectado, mova o mouse até a **borda direita** do monitor principal (coordenada real da tela, não só “muito para o lado” dentro da janela).
+2. O cursor deve “saltar” para o PC remoto (ClipCursor no monitor virtual); teclado e cliques passam a valer no remoto.
+3. `Ctrl+Alt+Home` no PC onde o mouse estava trava o retorno do foco para **local**.
+4. `Scroll Lock` impede troca de foco ao encostar na borda.
+
+**Logs (debug):** com `$env:WINX_LOG = "debug"`, após Connect procure `input control habilitado`; ao cruzar a borda, eventos de foco no bus. Procure também `conexão QUIC estabelecida` e ausência de `conexão rejeitada: peer não confiável` no listener após parear.
 
 ### Atalhos úteis (padrão v0.1)
 

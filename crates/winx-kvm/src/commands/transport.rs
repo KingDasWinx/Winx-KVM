@@ -2,9 +2,51 @@
 
 use serde::Serialize;
 use tauri::State;
-use winx_domain::shared::ids::PeerId;
+use winx_domain::{
+    shared::ids::PeerId,
+    transport::ConnectionState,
+};
 
 use crate::app_state::TransportState;
+
+#[derive(Debug, Serialize)]
+pub struct ConnectionStateDto {
+    pub peer_id: String,
+    /// `connecting` | `connected` | `reconnecting` | `disconnected`
+    pub status: String,
+    pub rtt_ms: Option<u32>,
+    pub tx_bytes: Option<u64>,
+    pub rx_bytes: Option<u64>,
+}
+
+fn connection_state_to_status(state: &ConnectionState) -> &'static str {
+    match state {
+        ConnectionState::Connecting => "connecting",
+        ConnectionState::Connected { .. } => "connected",
+        ConnectionState::Reconnecting { .. } => "reconnecting",
+        ConnectionState::Disconnected => "disconnected",
+    }
+}
+
+#[tauri::command]
+pub async fn list_connection_states(
+    state: State<'_, TransportState>,
+) -> Result<Vec<ConnectionStateDto>, String> {
+    let list = state.transport.list_connection_snapshots().await;
+    Ok(list
+        .into_iter()
+        .map(|(peer_id, conn_state, stats)| {
+            let include_stats = matches!(conn_state, ConnectionState::Connected { .. });
+            ConnectionStateDto {
+                peer_id: peer_id.to_string(),
+                status: connection_state_to_status(&conn_state).to_string(),
+                rtt_ms: include_stats.then_some(stats.rtt_ms),
+                tx_bytes: include_stats.then_some(stats.tx_bytes),
+                rx_bytes: include_stats.then_some(stats.rx_bytes),
+            }
+        })
+        .collect())
+}
 
 #[derive(Debug, Serialize)]
 pub struct ConnectionStatsDto {

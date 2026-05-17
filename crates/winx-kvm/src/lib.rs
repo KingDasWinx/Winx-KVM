@@ -403,6 +403,7 @@ pub fn run() {
             commands::open_connection,
             commands::disconnect_peer,
             commands::get_connection_stats,
+            commands::list_connection_states,
             commands::get_focus_state,
             commands::enable_input_control,
             commands::get_clipboard_auto_sync,

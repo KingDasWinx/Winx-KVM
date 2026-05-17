@@ -5,7 +5,7 @@ use winx_protocol::{InputEventDto, InputPayload};
 
 pub fn input_event_to_dto(event: &InputEvent) -> InputEventDto {
     match event {
-        InputEvent::MouseMove { dx, dy } => InputEventDto::MouseMove { dx: *dx, dy: *dy },
+        InputEvent::MouseMove { dx, dy, .. } => InputEventDto::MouseMove { dx: *dx, dy: *dy },
         InputEvent::MouseButton { button, pressed } => InputEventDto::MouseButton {
             button: mouse_button_to_u8(*button),
             pressed: *pressed,
@@ -32,7 +32,12 @@ pub fn input_event_to_dto(event: &InputEvent) -> InputEventDto {
 
 pub fn input_event_from_dto(dto: &InputEventDto) -> InputEvent {
     match dto {
-        InputEventDto::MouseMove { dx, dy } => InputEvent::MouseMove { dx: *dx, dy: *dy },
+        InputEventDto::MouseMove { dx, dy } => InputEvent::MouseMove {
+            dx: *dx,
+            dy: *dy,
+            screen_x: 0,
+            screen_y: 0,
+        },
         InputEventDto::MouseButton { button, pressed } => InputEvent::MouseButton {
             button: mouse_button_from_u8(*button),
             pressed: *pressed,
@@ -58,7 +63,12 @@ pub fn input_event_from_dto(dto: &InputEventDto) -> InputEvent {
                 meta: *meta,
             },
         },
-        _ => InputEvent::MouseMove { dx: 0, dy: 0 },
+        _ => InputEvent::MouseMove {
+            dx: 0,
+            dy: 0,
+            screen_x: 0,
+            screen_y: 0,
+        },
     }
 }
 

@@ -165,7 +165,7 @@ fn send_inputs(inputs: &[INPUT]) -> anyhow::Result<()> {
 
 fn inject_event(event: InputEvent) -> anyhow::Result<()> {
     match event {
-        InputEvent::MouseMove { dx, dy } => {
+        InputEvent::MouseMove { dx, dy, .. } => {
             let input = INPUT {
                 r#type: INPUT_MOUSE,
                 Anonymous: INPUT_0 {
@@ -329,7 +329,12 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                     };
                     LAST_MOUSE_X.store(info.pt.x, Ordering::SeqCst);
                     LAST_MOUSE_Y.store(info.pt.y, Ordering::SeqCst);
-                    Some(InputEvent::MouseMove { dx, dy })
+                    Some(InputEvent::MouseMove {
+                        dx,
+                        dy,
+                        screen_x: info.pt.x,
+                        screen_y: info.pt.y,
+                    })
                 }
                 0x0201 => Some(InputEvent::MouseButton {
                     button: MouseButton::Left,

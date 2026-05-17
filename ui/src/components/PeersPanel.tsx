@@ -14,17 +14,24 @@ import { useTranslation } from 'react-i18next';
 
 import {
   disconnectPeer,
-  enableClipboardSync,
-  enableInputControl,
   getFocusState,
+  listConnectionStates,
   listDiscoveredPeers,
   openConnection,
+  type ConnectionStateDto,
   type DiscoveredPeer,
   type FocusStateDto,
 } from '../ipc/commands';
 import { onWinxEvent } from '../ipc/events';
 import { notifyDomainError } from '../lib/parseDomainError';
 import { ConnectionStatus, type ConnectionUiState } from './ConnectionStatus';
+
+function mapDtoStatus(
+  status: ConnectionStateDto['status'],
+): ConnectionUiState {
+  if (status === 'disconnected') return 'disconnected';
+  return status;
+}
 
 interface PeerConnectionState {
   status: ConnectionUiState;
@@ -163,6 +170,27 @@ export function PeersPanel({ onPairRequest }: PeersPanelProps) {
       });
   }, []);
 
+  const syncConnectionsFromBackend = useCallback(async () => {
+    try {
+      const states = await listConnectionStates();
+      setConnections((prev) => {
+        const next = { ...prev };
+        for (const s of states) {
+          next[s.peer_id] = {
+            ...prev[s.peer_id],
+            status: mapDtoStatus(s.status),
+            rttMs: s.rtt_ms,
+            txBytes: s.tx_bytes,
+            rxBytes: s.rx_bytes,
+          };
+        }
+        return next;
+      });
+    } catch (err: unknown) {
+      console.error('list_connection_states failed', err);
+    }
+  }, []);
+
   const refresh = useCallback(() => {
     listDiscoveredPeers()
       .then(setPeers)
@@ -170,7 +198,8 @@ export function PeersPanel({ onPairRequest }: PeersPanelProps) {
         console.error('list_discovered_peers failed', err);
         setPeers([]);
       });
-  }, []);
+    void syncConnectionsFromBackend();
+  }, [syncConnectionsFromBackend]);
 
   const updateConnection = useCallback(
     (peerId: string, patch: Partial<PeerConnectionState>) => {
@@ -191,13 +220,14 @@ export function PeersPanel({ onPairRequest }: PeersPanelProps) {
       updateConnection(peerId, { status: 'connecting' });
       try {
         await openConnection(peerId);
+        await syncConnectionsFromBackend();
       } catch (err) {
         console.error('open_connection failed', err);
         notifyDomainError(err, t);
         updateConnection(peerId, { status: 'error' });
       }
     },
-    [t, updateConnection],
+    [t, updateConnection, syncConnectionsFromBackend],
   );
 
   const handleDisconnect = useCallback(
@@ -221,20 +251,14 @@ export function PeersPanel({ onPairRequest }: PeersPanelProps) {
         refresh();
       }
       if (event.kind === 'connection-established' && event.peer_id) {
-        updateConnection(event.peer_id, { status: 'connected' });
-        enableInputControl(event.peer_id).catch((err: unknown) => {
-          console.error('enable_input_control failed', err);
-        });
-        enableClipboardSync(event.peer_id).catch((err: unknown) => {
-          console.error('enable_clipboard_sync failed', err);
-        });
+        void syncConnectionsFromBackend();
         refreshFocus();
       }
       if (event.kind === 'focus-switched' || event.kind === 'hotkey-triggered') {
         refreshFocus();
       }
       if (event.kind === 'connection-lost' && event.peer_id) {
-        updateConnection(event.peer_id, { status: 'disconnected' });
+        void syncConnectionsFromBackend();
       }
       if (event.kind === 'stats-updated' && event.peer_id) {
         updateConnection(event.peer_id, {
@@ -249,7 +273,7 @@ export function PeersPanel({ onPairRequest }: PeersPanelProps) {
     return () => {
       unlisten.then((u) => u());
     };
-  }, [refresh, refreshFocus, updateConnection]);
+  }, [refresh, refreshFocus, syncConnectionsFromBackend, updateConnection]);
 
   return (
     <Stack gap="sm">
