@@ -77,7 +77,10 @@
     "success": "Pareado com sucesso com {{username}}",
     "countdown": "Expira em {{seconds}}s",
     "attempts_remaining_one": "{{count}} tentativa restante",
-    "attempts_remaining_other": "{{count}} tentativas restantes"
+    "attempts_remaining_other": "{{count}} tentativas restantes",
+    "incoming_title": "Pedido de pareamento",
+    "incoming_hint": "{{username}} quer se parear. Digite o PIN exibido naquele dispositivo.",
+    "ok": "Confirmar"
   },
   "error": {
     "identity": {

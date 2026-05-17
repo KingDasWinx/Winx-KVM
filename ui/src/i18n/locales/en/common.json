@@ -77,7 +77,10 @@
     "success": "Paired successfully with {{username}}",
     "countdown": "Expires in {{seconds}}s",
     "attempts_remaining_one": "{{count}} attempt remaining",
-    "attempts_remaining_other": "{{count}} attempts remaining"
+    "attempts_remaining_other": "{{count}} attempts remaining",
+    "incoming_title": "Pairing request",
+    "incoming_hint": "{{username}} wants to pair. Enter the PIN shown on that device.",
+    "ok": "Confirm"
   },
   "error": {
     "identity": {

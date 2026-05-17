@@ -43,7 +43,7 @@ impl PairingService {
     pub async fn initiate_pairing(
         &self,
         peer_id: PeerId,
-        _peer_username: &str,
+        peer_username: &str,
     ) -> Result<(SessionId, String), DomainError> {
         let mut sessions = self.sessions.lock().await;
 
@@ -74,6 +74,7 @@ impl PairingService {
             .publish(DomainEvent::PairingRequested(PairingRequested {
                 session_id,
                 peer_id,
+                peer_username: peer_username.to_string(),
                 pin: pin.clone(),
             }));
 

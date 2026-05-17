@@ -3,6 +3,7 @@ import { Outlet } from 'react-router-dom';
 
 import { AppSidebar } from '../components/AppSidebar';
 import { FirewallBanner } from '../components/FirewallBanner';
+import { IncomingPairingToast } from '../components/IncomingPairingToast';
 import { useWinxToasts } from '../hooks/useWinxToasts';
 import { useFirewallStatus } from '../hooks/useFirewallStatus';
 
@@ -11,22 +12,25 @@ export function AppLayout() {
   const { isConfigured, setIsConfigured } = useFirewallStatus();
 
   return (
-    <AppShell
-      navbar={{ width: 220, breakpoint: 'sm' }}
-      padding="md"
-    >
-      <AppShell.Navbar p={0}>
-        <AppSidebar />
-      </AppShell.Navbar>
-      <AppShell.Main>
-        <Container size="md">
-          <FirewallBanner
-            isConfigured={isConfigured}
-            onConfigured={() => setIsConfigured(true)}
-          />
-          <Outlet />
-        </Container>
-      </AppShell.Main>
-    </AppShell>
+    <>
+      <AppShell
+        navbar={{ width: 220, breakpoint: 'sm' }}
+        padding="md"
+      >
+        <AppShell.Navbar p={0}>
+          <AppSidebar />
+        </AppShell.Navbar>
+        <AppShell.Main>
+          <Container size="md">
+            <FirewallBanner
+              isConfigured={isConfigured}
+              onConfigured={() => setIsConfigured(true)}
+            />
+            <Outlet />
+          </Container>
+        </AppShell.Main>
+      </AppShell>
+      <IncomingPairingToast />
+    </>
   );
 }

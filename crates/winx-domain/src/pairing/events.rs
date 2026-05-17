@@ -9,6 +9,7 @@ use crate::shared::{
 pub struct PairingRequested {
     pub session_id: SessionId,
     pub peer_id: PeerId,
+    pub peer_username: String,
     pub pin: String,
 }
 

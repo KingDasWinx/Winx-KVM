@@ -14,7 +14,7 @@ export type WinxEvent =
   // Sprint 2 — Discovery
   | { kind: 'peers-updated'; peer_id?: string; peer_username?: string }
   // Sprint 3 — Pairing
-  | { kind: 'pairing-initiated'; session_id: string; peer_id: string; pin: string }
+  | { kind: 'pairing-initiated'; session_id: string; peer_id: string; peer_username: string }
   | { kind: 'pairing-completed'; session_id: string; peer_id: string; peer_username: string }
   | { kind: 'pairing-cancelled'; session_id: string; peer_id: string }
   | { kind: 'pairing-failed'; session_id: string; peer_id: string }
