@@ -765,33 +765,62 @@ last_seen = "2026-05-15T18:21:03-03:00"
 - pnpm >= 9 (`corepack enable && corepack prepare pnpm@latest --activate`)
 - Visual Studio Build Tools 2022 com workload "Desktop C++" (para crates nativas)
 - WebView2 Runtime (geralmente já presente em Win11)
-- Tauri CLI (`cargo install tauri-cli --version "2.11.1"`)
+- Tauri CLI (instalado via cargo)
 - VB-Audio Cable (apenas para testar áudio): https://vb-audio.com/Cable/
 
-### Bootstrap
+### Bootstrap — Primeira execução
 
 ```powershell
-# Clonar
+# Clonar o repositório
 git clone https://github.com/<seu-user>/Winx-KVM.git
 cd Winx-KVM
 
-# Backend
-cargo fetch
+# 1. Instalar Tauri CLI globalmente
+cargo install tauri-cli
 
-# Frontend
+# 2. Setup Rust e Node.js
+cargo fetch
 cd ui
 pnpm install
 cd ..
+```
 
-# Rodar em dev
+### Desenvolvimento — Rodar a aplicação
+
+```powershell
+# A partir da raiz do projeto (onde está Cargo.toml)
 cargo tauri dev
 ```
+
+Isso abre a aplicação com **hot reload** automático tanto no frontend (React) quanto no backend (Rust). Qualquer mudança em código Rust dispara recompilação; mudanças no React recarregam a UI instantaneamente.
 
 ### Build de produção
 
 ```powershell
+# A partir da raiz
 cargo tauri build
-# Artefatos em target/release/bundle/
+# Artefatos em target/release/bundle/msi/
+```
+
+Gera o instalador MSI em `target/release/bundle/msi/`.
+
+### Checagens antes de commit
+
+```powershell
+# Formatar código Rust
+cargo fmt --all
+
+# Lint (Clippy) — Zero warnings
+cargo clippy --all-targets -- -D warnings
+
+# Rodar testes Rust
+cargo test --workspace
+
+# TypeScript strict mode
+cd ui
+pnpm tsc --noEmit
+pnpm lint
+cd ..
 ```
 
 ### Padrões de código
