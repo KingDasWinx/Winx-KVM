@@ -10,6 +10,10 @@
     "protocol_label": "Wire protocol",
     "loading": "Loading…"
   },
+  "common": {
+    "export_diagnostics": "Export diagnostics",
+    "exporting": "Exporting…"
+  },
   "toast": {
     "pairing_completed_title": "Paired",
     "pairing_completed_message": "Successfully paired with {{username}}",

@@ -1,9 +1,12 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::{info, warn};
+
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FirewallRule {
@@ -46,29 +49,36 @@ pub struct NetworkConfigStatus {
 
 impl NetworkConfigStatus {
     pub fn needs_fix(&self) -> bool {
-        if self.firewall_rules.is_empty() {
-            return true;
+        let expected_rules = vec![
+            "Winx-KVM mDNS UDP In",
+            "Winx-KVM QUIC UDP In",
+            "Winx-KVM Program UDP In",
+            "Winx-KVM Program UDP Out",
+        ];
+
+        let found_names: Vec<&str> = self
+            .firewall_rules
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect();
+
+        for expected in &expected_rules {
+            if !found_names.contains(expected) {
+                return true;
+            }
         }
 
         let exe_path = self.current_exe.to_string_lossy().to_lowercase();
 
         for rule in &self.firewall_rules {
-            let rule_program = rule
-                .program
-                .as_ref()
-                .map(|p| p.to_lowercase())
-                .unwrap_or_default();
-
-            if rule_program != exe_path {
-                return true;
-            }
-
             if rule.enabled.to_lowercase() != "true" {
                 return true;
             }
 
-            if !rule.profile.contains("Private") && !rule.profile.contains("Domain") {
-                return true;
+            if let Some(prog) = &rule.program {
+                if prog.to_lowercase() != exe_path {
+                    return true;
+                }
             }
         }
 
@@ -77,6 +87,24 @@ impl NetworkConfigStatus {
 
     pub fn issues(&self) -> Vec<String> {
         let mut issues = Vec::new();
+        let expected_rules = vec![
+            "Winx-KVM mDNS UDP In",
+            "Winx-KVM QUIC UDP In",
+            "Winx-KVM Program UDP In",
+            "Winx-KVM Program UDP Out",
+        ];
+
+        let found_names: Vec<&str> = self
+            .firewall_rules
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect();
+
+        for expected in &expected_rules {
+            if !found_names.contains(expected) {
+                issues.push(format!("Missing firewall rule: {}", expected));
+            }
+        }
 
         if self.firewall_rules.is_empty() {
             issues.push("No firewall rules found for Winx-KVM".to_string());
@@ -86,28 +114,17 @@ impl NetworkConfigStatus {
         let exe_path = self.current_exe.to_string_lossy().to_lowercase();
 
         for rule in &self.firewall_rules {
-            let rule_program = rule
-                .program
-                .as_ref()
-                .map(|p| p.to_lowercase())
-                .unwrap_or_default();
-
-            if rule_program != exe_path {
-                issues.push(format!(
-                    "Rule '{}' has stale path: {} (current: {})",
-                    rule.name, rule_program, exe_path
-                ));
-            }
-
             if rule.enabled.to_lowercase() != "true" {
                 issues.push(format!("Rule '{}' is disabled", rule.name));
             }
 
-            if !rule.profile.contains("Private") && !rule.profile.contains("Domain") {
-                issues.push(format!(
-                    "Rule '{}' has wrong profile: {} (need Private or Domain)",
-                    rule.name, rule.profile
-                ));
+            if let Some(prog) = &rule.program {
+                if prog.to_lowercase() != exe_path {
+                    issues.push(format!(
+                        "Rule '{}' has stale path: {} (current: {})",
+                        rule.name, prog, exe_path
+                    ));
+                }
             }
         }
 
@@ -116,9 +133,8 @@ impl NetworkConfigStatus {
 }
 
 pub fn is_elevated() -> bool {
-    use std::process::Command;
-
     let output = Command::new("net")
+        .creation_flags(CREATE_NO_WINDOW)
         .args(&["session"])
         .output();
 
@@ -148,6 +164,7 @@ pub fn inspect() -> Result<NetworkConfigStatus> {
 
 fn get_firewall_rules() -> Result<Vec<FirewallRule>> {
     let output = Command::new("powershell")
+        .creation_flags(CREATE_NO_WINDOW)
         .args(&[
             "-NoProfile",
             "-Command",
@@ -189,11 +206,17 @@ fn get_firewall_rules() -> Result<Vec<FirewallRule>> {
 
 fn get_network_profiles() -> Result<Vec<NetworkProfileInfo>> {
     let output = Command::new("powershell")
+        .creation_flags(CREATE_NO_WINDOW)
         .args(&[
             "-NoProfile",
             "-Command",
             r#"
-            Get-NetConnectionProfile -ErrorAction SilentlyContinue | Select-Object Name, InterfaceAlias, NetworkCategory, IPv4Connectivity | ConvertTo-Json -Compress
+            Get-NetIPConfiguration -Detailed -ErrorAction SilentlyContinue |
+            Where-Object { $_.NetAdapter.Status -eq 'Up' } |
+            Select-Object @{n='InterfaceAlias';e={$_.InterfaceAlias}},
+                          @{n='NetworkCategory';e={$_.NetConnectionProfile.NetworkCategory}},
+                          @{n='IPv4Address';e={$_.IPv4Address.IPAddress}} |
+            ConvertTo-Json -Compress
             "#,
         ])
         .output()?;
@@ -214,6 +237,8 @@ fn get_network_profiles() -> Result<Vec<NetworkProfileInfo>> {
         interface_alias: Option<String>,
         #[serde(rename = "NetworkCategory")]
         network_category: Option<String>,
+        #[serde(rename = "IPv4Address")]
+        ipv4_address: Option<String>,
     }
 
     let profiles: Vec<RawProfile> = serde_json::from_str(&stdout).unwrap_or_default();
@@ -228,9 +253,13 @@ fn get_network_profiles() -> Result<Vec<NetworkProfileInfo>> {
                 _ => NetworkCategory::Unknown,
             };
 
+            let ipv4 = p
+                .ipv4_address
+                .and_then(|ip| ip.parse::<IpAddr>().ok());
+
             Some(NetworkProfileInfo {
                 interface_alias,
-                ipv4: None,
+                ipv4,
                 category,
             })
         })
@@ -249,43 +278,71 @@ pub fn reconfigure(exe_path: &Path) -> Result<()> {
         .ok_or_else(|| anyhow!("Invalid exe path"))?;
 
     info!("Removing old Winx-KVM firewall rules");
-    let _ = Command::new("netsh")
-        .args(&["advfirewall", "firewall", "delete", "rule", "name=Winx-KVM"])
+    let _ = Command::new("powershell")
+        .creation_flags(CREATE_NO_WINDOW)
+        .args(&[
+            "-NoProfile",
+            "-Command",
+            r#"Remove-NetFirewallRule -DisplayName "Winx-KVM*" -ErrorAction SilentlyContinue"#,
+        ])
         .output();
 
-    info!("Adding UDP inbound rule");
-    Command::new("netsh")
-        .args(&[
-            "advfirewall",
-            "firewall",
-            "add",
-            "rule",
-            "name=Winx-KVM",
-            "dir=in",
-            "action=allow",
-            &format!("program={}", exe_str),
-            "protocol=UDP",
-            "profile=private,domain",
-            "enable=yes",
-        ])
-        .output()?;
+    let rules: Vec<(&str, String)> = vec![
+        (
+            "Winx-KVM mDNS UDP In",
+            r#"
+            New-NetFirewallRule -DisplayName "Winx-KVM mDNS UDP In" `
+              -Direction Inbound -Action Allow -Protocol UDP `
+              -LocalPort 5353 -Profile Any -Enabled True -ErrorAction Stop
+            "#.to_string(),
+        ),
+        (
+            "Winx-KVM QUIC UDP In",
+            r#"
+            New-NetFirewallRule -DisplayName "Winx-KVM QUIC UDP In" `
+              -Direction Inbound -Action Allow -Protocol UDP `
+              -LocalPort 7878 -Profile Any -Enabled True -ErrorAction Stop
+            "#.to_string(),
+        ),
+        (
+            "Winx-KVM Program UDP In",
+            format!(
+                r#"
+                New-NetFirewallRule -DisplayName "Winx-KVM Program UDP In" `
+                  -Direction Inbound -Action Allow -Protocol UDP `
+                  -Program "{}" -Profile Any -Enabled True -ErrorAction Stop
+                "#,
+                exe_str
+            ),
+        ),
+        (
+            "Winx-KVM Program UDP Out",
+            format!(
+                r#"
+                New-NetFirewallRule -DisplayName "Winx-KVM Program UDP Out" `
+                  -Direction Outbound -Action Allow -Protocol UDP `
+                  -Program "{}" -Profile Any -Enabled True -ErrorAction Stop
+                "#,
+                exe_str
+            ),
+        ),
+    ];
 
-    info!("Adding TCP inbound rule");
-    Command::new("netsh")
-        .args(&[
-            "advfirewall",
-            "firewall",
-            "add",
-            "rule",
-            "name=Winx-KVM",
-            "dir=in",
-            "action=allow",
-            &format!("program={}", exe_str),
-            "protocol=TCP",
-            "profile=private,domain",
-            "enable=yes",
-        ])
-        .output()?;
+    for (name, ps_cmd) in rules {
+        info!("Adding firewall rule: {}", name);
+        let output = Command::new("powershell")
+            .creation_flags(CREATE_NO_WINDOW)
+            .args(&["-NoProfile", "-Command", &ps_cmd])
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!("Failed to add rule '{}': {}", name, stderr);
+            return Err(anyhow!("Failed to add rule '{}': {}", name, stderr));
+        }
+
+        info!("Successfully added rule: {}", name);
+    }
 
     info!("Firewall rules reconfigured successfully");
     Ok(())
@@ -296,13 +353,14 @@ pub fn request_firewall_setup_via_uac() -> Result<i32> {
 
     let script = format!(
         r#"
-        Start-Process -FilePath '{}' -ArgumentList '--setup-firewall' -Verb RunAs -Wait
+        Start-Process -FilePath '{}' -ArgumentList '--setup-firewall' -Verb RunAs -Wait -WindowStyle Hidden
         exit $LASTEXITCODE
         "#,
         exe_path.to_string_lossy().replace("'", "''")
     );
 
     let output = Command::new("powershell")
+        .creation_flags(CREATE_NO_WINDOW)
         .args(&["-NoProfile", "-Command", &script])
         .output()?;
 

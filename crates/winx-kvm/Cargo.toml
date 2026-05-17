@@ -40,6 +40,8 @@ serde_json         = { workspace = true }
 thiserror          = { workspace = true }
 anyhow             = { workspace = true }
 tracing            = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "json", "ansi"] }
 uuid               = { workspace = true }
 hex                = { workspace = true }
+chrono             = { version = "0.4", features = ["serde"] }
+winreg             = "0.52"

@@ -132,3 +132,7 @@ export async function getFirewallStatus(): Promise<boolean> {
 export async function reconfigureFirewall(): Promise<void> {
   return await invoke<void>('reconfigure_firewall');
 }
+
+export async function exportDiagnostics(): Promise<string> {
+  return await invoke<string>('export_diagnostics');
+}

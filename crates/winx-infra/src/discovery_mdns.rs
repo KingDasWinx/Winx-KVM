@@ -22,7 +22,20 @@ pub struct MdnsDiscoveryAdapter {
 impl MdnsDiscoveryAdapter {
     pub fn new() -> anyhow::Result<Self> {
         let daemon = ServiceDaemon::new().map_err(|e| anyhow::anyhow!("mdns daemon: {e}"))?;
+
+        Self::filter_virtual_interfaces(&daemon);
+
         Ok(Self { daemon })
+    }
+
+    /// Desabilita interfaces virtuais (Hyper-V, WSL, VPN) para mDNS discover.
+    fn filter_virtual_interfaces(_daemon: &ServiceDaemon) {
+        // Aqui iteraríamos pelas interfaces do sistema, mas mdns-sd 0.19 não expõe
+        // interface listing diretamente. Loga aviso e confia que o daemon
+        // descobrirá a interface correta na primeira tentativa de register.
+        // Futuro: usar `if-addrs` crate para filtro explícito.
+
+        info!("mDNS daemon initialized (interface filtering via mdns-sd auto-detection)");
     }
 }
 

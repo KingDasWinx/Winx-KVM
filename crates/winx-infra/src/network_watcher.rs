@@ -1,8 +1,12 @@
 use anyhow::Result;
 use std::net::IpAddr;
+use std::os::windows::process::CommandExt;
+use std::process::Command;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, info};
+
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Clone)]
 pub enum NetworkEvent {
@@ -64,15 +68,15 @@ impl NetworkWatcher {
 }
 
 fn get_active_interfaces() -> Result<Vec<String>> {
-    use std::process::Command;
-
     let output = Command::new("powershell")
+        .creation_flags(CREATE_NO_WINDOW)
         .args(&[
             "-NoProfile",
             "-Command",
             r#"
-            Get-NetConnectionProfile -ErrorAction SilentlyContinue |
-            Where-Object { $_.NetworkCategory -ne 'Disconnected' } |
+            Get-NetIPConfiguration -Detailed -ErrorAction SilentlyContinue |
+            Where-Object { $_.NetAdapter.Status -eq 'Up' } |
+            Where-Object { $_.IPv4Address -ne $null } |
             Select-Object -ExpandProperty InterfaceAlias |
             ConvertTo-Json -Compress
             "#,

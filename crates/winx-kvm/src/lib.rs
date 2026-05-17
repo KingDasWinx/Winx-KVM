@@ -49,6 +49,7 @@ struct InitializedServices {
     input_control: Arc<InputControlService>,
     clipboard: Arc<ClipboardService>,
     config_store: Arc<TomlConfigStore>,
+    device: winx_domain::identity::Device,
 }
 
 fn init_services(
@@ -144,6 +145,7 @@ fn init_services(
         input_control,
         clipboard,
         config_store,
+        device,
     })
 }
 
@@ -240,7 +242,17 @@ pub fn run() {
     let services = init_services(&rt, bus, data_dir)
         .expect("falha na inicialização dos serviços");
 
+    let device_for_discovery = services.device.clone();
+
     // Spawna as tarefas de background no runtime já registrado.
+    let discovery_bg = Arc::clone(&services.discovery);
+    let device_clone = device_for_discovery.clone();
+    rt.spawn(async move {
+        if let Err(err) = discovery_bg.start_for_device(&device_clone).await {
+            error!(?err, "falha ao iniciar discovery no startup");
+        }
+    });
+
     let transport_bg = Arc::clone(&services.transport);
     rt.spawn(async move {
         if let Err(err) = transport_bg.start(WINX_KVM_PORT).await {
@@ -363,6 +375,7 @@ pub fn run() {
             commands::enable_clipboard_sync,
             commands::get_firewall_status,
             commands::reconfigure_firewall,
+            commands::export_diagnostics,
         ])
         .run(tauri::generate_context!())
         .expect("erro ao executar a aplicação Tauri");

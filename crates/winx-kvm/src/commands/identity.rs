@@ -16,7 +16,7 @@ pub struct DeviceInfoDto {
 
 /// Retorna (ou cria na primeira vez) a identidade deste device.
 ///
-/// Também inicia o announce + browsing mDNS (idempotente).
+/// Também inicia o announce + browsing mDNS (idempotente — ignora se já rodando).
 /// Lê o username do env var `COMPUTERNAME`; se ausente usa `"My PC"`.
 #[tauri::command]
 pub async fn get_device_info(
@@ -31,11 +31,12 @@ pub async fn get_device_info(
         .await
         .map_err(|e| e.code_str().to_string())?;
 
-    discovery
+    // Idempotent: discovery já foi iniciado no startup, mas chamamos novamente
+    // em caso de um novo username ou como fallback.
+    let _ = discovery
         .discovery
         .start_for_device(&device)
-        .await
-        .map_err(|e| e.to_string())?;
+        .await;
 
     Ok(DeviceInfoDto {
         id: device.id.to_string(),
