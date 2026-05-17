@@ -6,7 +6,7 @@ use serde::Serialize;
 use tauri::State;
 use winx_infra::TomlConfigStore;
 
-use crate::app_state::DiscoveryState;
+use crate::app_state::{DiscoveryState, IdentityState};
 
 /// DTO de um peer descoberto na rede para o frontend.
 #[derive(Debug, Serialize)]
@@ -15,22 +15,29 @@ pub struct DiscoveredPeerDto {
     pub username: String,
     pub fingerprint: String,
     pub addresses: Vec<String>,
+    pub is_paired: bool,
 }
 
 /// Retorna snapshot dos peers atualmente visíveis na rede.
 #[tauri::command]
 pub async fn list_discovered_peers(
-    state: State<'_, DiscoveryState>,
+    discovery: State<'_, DiscoveryState>,
+    identity: State<'_, IdentityState>,
 ) -> Result<Vec<DiscoveredPeerDto>, String> {
-    let peers = state.discovery.get_peers().await;
+    let peers = discovery
+        .discovery
+        .list_peers_enriched(identity.identity_store.as_ref())
+        .await
+        .map_err(|e| format!("falha ao listar peers: {e}"))?;
 
     Ok(peers
         .into_iter()
         .map(|p| DiscoveredPeerDto {
-            id: p.id.to_string(),
-            username: p.username,
-            fingerprint: p.fingerprint,
-            addresses: p.addresses.iter().map(ToString::to_string).collect(),
+            id: p.peer.id.to_string(),
+            username: p.peer.username,
+            fingerprint: p.peer.fingerprint,
+            addresses: p.peer.addresses.iter().map(ToString::to_string).collect(),
+            is_paired: p.is_paired,
         })
         .collect())
 }

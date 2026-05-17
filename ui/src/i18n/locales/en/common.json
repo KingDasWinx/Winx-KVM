@@ -36,6 +36,7 @@
     "empty": "No other devices found on this network yet.",
     "scanning": "Scanning…",
     "status_online": "Online",
+    "status_paired": "Paired",
     "peer_fingerprint_hint": "Ed25519 fingerprint of discovered peer",
     "addresses": "Addresses"
   },

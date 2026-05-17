@@ -36,6 +36,7 @@
     "empty": "Nenhum outro dispositivo encontrado nesta rede ainda.",
     "scanning": "Procurando…",
     "status_online": "Online",
+    "status_paired": "Pareado",
     "peer_fingerprint_hint": "Fingerprint Ed25519 do dispositivo descoberto",
     "addresses": "Endereços"
   },

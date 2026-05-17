@@ -23,6 +23,7 @@ import {
   type FocusStateDto,
 } from '../ipc/commands';
 import { onWinxEvent } from '../ipc/events';
+import { notifyDomainError } from '../lib/parseDomainError';
 import { ConnectionStatus, type ConnectionUiState } from './ConnectionStatus';
 
 interface PeerConnectionState {
@@ -69,6 +70,11 @@ function PeerCard({ peer, connection, focus, onPair, onConnect, onDisconnect }: 
             <Badge color="blue" variant="light" size="sm">
               {t('discovery.status_online')}
             </Badge>
+            {peer.is_paired && (
+              <Badge color="teal" variant="light" size="sm">
+                {t('discovery.status_paired')}
+              </Badge>
+            )}
             <ConnectionStatus
               state={connection.status}
               rttMs={connection.rttMs}
@@ -84,9 +90,11 @@ function PeerCard({ peer, connection, focus, onPair, onConnect, onDisconnect }: 
         </Group>
 
         <Group gap="xs">
-          <Button size="xs" variant="light" onClick={() => onPair(peer)}>
-            {t('pairing.pair_button')}
-          </Button>
+          {!peer.is_paired && (
+            <Button size="xs" variant="light" onClick={() => onPair(peer)}>
+              {t('pairing.pair_button')}
+            </Button>
+          )}
           {isConnected ? (
             <Button
               size="xs"
@@ -101,6 +109,12 @@ function PeerCard({ peer, connection, focus, onPair, onConnect, onDisconnect }: 
               size="xs"
               variant="filled"
               loading={isBusy}
+              disabled={!peer.is_paired}
+              title={
+                !peer.is_paired
+                  ? t('error.transport.peer_not_trusted')
+                  : undefined
+              }
               onClick={() => onConnect(peer.id)}
             >
               {t('transport.connect_button')}
@@ -179,10 +193,11 @@ export function PeersPanel({ onPairRequest }: PeersPanelProps) {
         await openConnection(peerId);
       } catch (err) {
         console.error('open_connection failed', err);
+        notifyDomainError(err, t);
         updateConnection(peerId, { status: 'error' });
       }
     },
-    [updateConnection],
+    [t, updateConnection],
   );
 
   const handleDisconnect = useCallback(
@@ -192,16 +207,17 @@ export function PeersPanel({ onPairRequest }: PeersPanelProps) {
         updateConnection(peerId, { status: 'disconnected' });
       } catch (err) {
         console.error('disconnect_peer failed', err);
+        notifyDomainError(err, t);
       }
     },
-    [updateConnection],
+    [t, updateConnection],
   );
 
   useEffect(() => {
     refresh();
 
     const unlisten = onWinxEvent((event) => {
-      if (event.kind === 'peers-updated') {
+      if (event.kind === 'peers-updated' || event.kind === 'pairing-completed') {
         refresh();
       }
       if (event.kind === 'connection-established' && event.peer_id) {

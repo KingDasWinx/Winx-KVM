@@ -1,6 +1,9 @@
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
+use std::{
+    collections::HashSet,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
 use tokio::sync::Mutex;
@@ -13,9 +16,19 @@ use winx_domain::{
 };
 
 use crate::{
-    ports::discovery::{AnnounceInfo, DiscoveryAdapter, DiscoveryEvent, WINX_KVM_PORT},
+    ports::{
+        discovery::{AnnounceInfo, DiscoveryAdapter, DiscoveryEvent, WINX_KVM_PORT},
+        IdentityStore,
+    },
     EventBus,
 };
+
+/// Peer visto no mDNS com flag de confiança persistida (`peers.toml`).
+#[derive(Debug, Clone)]
+pub struct EnrichedDiscoveredPeer {
+    pub peer: DiscoveredPeer,
+    pub is_paired: bool,
+}
 
 /// Orquestra announce + browsing mDNS e mantém o registry de peers.
 pub struct DiscoveryService {
@@ -145,6 +158,29 @@ impl DiscoveryService {
             .collect()
     }
 
+    /// Lista peers do mDNS marcando quais já estão em `peers.toml`.
+    pub async fn list_peers_enriched(
+        &self,
+        identity: &dyn IdentityStore,
+    ) -> anyhow::Result<Vec<EnrichedDiscoveredPeer>> {
+        let trusted_ids: HashSet<PeerId> = identity
+            .load_peers()
+            .await?
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+
+        Ok(self
+            .get_peers()
+            .await
+            .into_iter()
+            .map(|peer| EnrichedDiscoveredPeer {
+                is_paired: trusted_ids.contains(&peer.id),
+                peer,
+            })
+            .collect())
+    }
+
     /// Retorna o peer_id próprio (apenas se discovery foi iniciado).
     pub async fn get_own_peer_id(&self) -> Option<PeerId> {
         *self.own_peer_id.lock().await
@@ -198,5 +234,130 @@ impl DiscoveryService {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        sync::Arc,
+    };
+
+    use async_trait::async_trait;
+    use tokio::sync::Mutex;
+    use uuid::Uuid;
+
+    use winx_domain::{
+        discovery::{DiscoveredPeer, DiscoveryRegistry},
+        identity::{PublicKey, TrustedPeer},
+        shared::ids::PeerId,
+    };
+
+    use super::*;
+    use crate::ports::IdentityStore;
+
+    struct MockIdentityStore {
+        peers: Vec<TrustedPeer>,
+    }
+
+    #[async_trait]
+    impl IdentityStore for MockIdentityStore {
+        async fn load_device(&self) -> anyhow::Result<Option<winx_domain::identity::Device>> {
+            Ok(None)
+        }
+
+        async fn save_device(&self, _device: &winx_domain::identity::Device) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn load_peers(&self) -> anyhow::Result<Vec<TrustedPeer>> {
+            Ok(self.peers.clone())
+        }
+
+        async fn save_peer(&self, _peer: &TrustedPeer) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn remove_peer(&self, _peer_id: PeerId) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct NoopDiscoveryAdapter;
+
+    #[async_trait]
+    impl DiscoveryAdapter for NoopDiscoveryAdapter {
+        async fn announce(&self, _info: &AnnounceInfo) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn reannounce(&self, _info: &AnnounceInfo) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn stop_announcing(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn start_browsing(
+            &self,
+        ) -> anyhow::Result<tokio::sync::mpsc::Receiver<DiscoveryEvent>> {
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
+            Ok(rx)
+        }
+
+        async fn stop_browsing(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn set_interfaces(&self, _names: &[String]) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn sample_peer(id: PeerId, name: &str) -> DiscoveredPeer {
+        DiscoveredPeer::new(
+            id,
+            name,
+            "AA:BB:CC:DD:EE:FF:00:11",
+            vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 7878)],
+        )
+    }
+
+    #[tokio::test]
+    async fn enriched_marks_trusted_peer() {
+        let peer_a = PeerId::from_uuid(Uuid::new_v4());
+        let peer_b = PeerId::from_uuid(Uuid::new_v4());
+
+        let registry = Arc::new(Mutex::new(DiscoveryRegistry::new()));
+        registry
+            .lock()
+            .await
+            .appeared(sample_peer(peer_a, "A"));
+        registry
+            .lock()
+            .await
+            .appeared(sample_peer(peer_b, "B"));
+
+        let svc = DiscoveryService::new(
+            Arc::new(NoopDiscoveryAdapter),
+            Arc::clone(&registry),
+            EventBus::new(),
+        );
+
+        let store = MockIdentityStore {
+            peers: vec![TrustedPeer::new(
+                peer_a,
+                "A",
+                PublicKey::new([0x11; 32]),
+            )],
+        };
+
+        let list = svc.list_peers_enriched(&store).await.unwrap();
+        let a = list.iter().find(|p| p.peer.id == peer_a).unwrap();
+        let b = list.iter().find(|p| p.peer.id == peer_b).unwrap();
+        assert!(a.is_paired);
+        assert!(!b.is_paired);
     }
 }

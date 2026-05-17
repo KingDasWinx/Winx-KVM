@@ -48,6 +48,8 @@ export interface DiscoveredPeer {
   /** Fingerprint Ed25519 do peer: "A3:4F:B2:1C:D9:E5:07:AB" */
   fingerprint: string;
   addresses: string[];
+  /** Presente em `peers.toml` (pareamento concluído). */
+  is_paired: boolean;
 }
 
 export async function listDiscoveredPeers(): Promise<DiscoveredPeer[]> {

@@ -108,11 +108,25 @@ Repita para **Regras de Saída** se o firewall bloquear saída UDP (menos comum 
 
 Se o pedido aparecer no mesmo PC que clicou em Pair, o pareamento de rede não está funcionando (ver firewall UDP **7879**).
 
+### Após parear (UI)
+
+Critérios visuais nos **dois** PCs (lista atualiza sozinha ao concluir o pareamento):
+
+| Critério | Esperado |
+|----------|----------|
+| Badge no card | **Online** (azul) + **Paired** / **Pareado** (teal) |
+| Botão Pair | **Some** no peer já pareado |
+| Botão Connect | **Habilitado** só se pareado |
+| Connect antes de parear | Notificação vermelha: peer não está pareado (não só log no console) |
+| `peers.toml` | Entrada do outro peer em `%APPDATA%\Winx-KVM\peers.toml` nos dois |
+
 ### Conectar
 
-1. Clique **Connect** no peer pareado.  
-2. Toast **“Connected”** quando o QUIC subir.  
+1. No card com badge **Paired**, clique **Connect**.  
+2. Toast **“Connected”** quando o QUIC subir; indicador de conexão verde e RTT nas estatísticas do card.  
 3. Input remoto e clipboard passam a funcionar conforme os épicos já implementados (mover foco na borda do monitor, etc.).
+
+**Logs (debug):** com `$env:WINX_LOG = "debug"`, procure `conexão QUIC estabelecida` e ausência de `conexão rejeitada: peer não confiável` no listener após parear.
 
 ### Atalhos úteis (padrão v0.1)
 
@@ -132,7 +146,8 @@ Tray: clique esquerdo no ícone mostra/oculta a janela; menu **Show** / **Quit**
 | Peer não aparece na lista | Mesma rede? Firewall UDP 5353? AP isolation desligado? |
 | Pair sem toast no outro PC | Firewall UDP **7879**? Mesma LAN? Rode setup de firewall (UAC) no app se disponível. |
 | Toast “Pairing request” no PC que iniciou Pair | Bug de versão antiga — atualize o build. |
-| Aparece mas Connect falha | Pareamento feito? `peers.toml` nos dois? Firewall UDP **7878**? |
+| Aparece mas Connect falha | Pareamento feito? Badge **Paired** no card? `peers.toml` nos dois? Firewall UDP **7878**? Notificação de erro na UI? |
+| Card não mostra **Paired** após parear | Reinicie a lista (feche/abra Home) ou verifique `peers.toml`; build deve incluir `is_paired` em `list_discovered_peers` |
 | Nome antigo na rede | Em Settings, salve o username de novo (re-anuncia mDNS); ou reinicie o app nos dois |
 | Tela branca ao abrir | Instale [WebView2 Runtime](https://go.microsoft.com/fwlink/p/?LinkId=2124703) |
 | `tauri build` falha no MSI | Instale WiX 3.x e garanta `light.exe` / `candle.exe` no PATH |
