@@ -1,0 +1,28 @@
+{
+  "title": "Configurações",
+  "device": {
+    "section_title": "Dispositivo",
+    "username_label": "Nome de exibição",
+    "username_hint": "Exibido para outros dispositivos na rede",
+    "save": "Salvar"
+  },
+  "language": {
+    "section_title": "Idioma",
+    "label": "Idioma",
+    "en": "Inglês",
+    "pt-BR": "Português (Brasil)"
+  },
+  "clipboard": {
+    "section_title": "Área de transferência",
+    "auto_sync_label": "Sincronizar área de transferência automaticamente",
+    "auto_sync_hint": "Copia texto simples entre dispositivos conectados nesta rede"
+  },
+  "hotkeys": {
+    "title": "Atalhos",
+    "panic": "Devolver foco a este PC",
+    "panic_keys": "Ctrl+Alt+Home",
+    "lock": "Impedir troca de foco na borda do monitor",
+    "lock_keys": "Scroll Lock",
+    "readonly_note": "Personalização em uma versão futura"
+  }
+}

@@ -31,7 +31,7 @@ winx-application = { workspace = true }
 winx-infra       = { workspace = true }
 
 # Tauri
-tauri = { version = "2.11.1", features = ["devtools"] }
+tauri = { version = "2.11.1", features = ["devtools", "tray-icon"] }
 
 # Comum
 tokio              = { workspace = true }
@@ -41,3 +41,5 @@ thiserror          = { workspace = true }
 anyhow             = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
+uuid               = { workspace = true }
+hex                = { workspace = true }

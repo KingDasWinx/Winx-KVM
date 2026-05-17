@@ -1,23 +1,36 @@
 //! Adapters concretos do Winx-KVM.
 //!
-//! Cada arquivo implementa uma ou mais ports definidas em
+//! Cada módulo implementa uma ou mais ports definidas em
 //! `winx-application::ports`. Esta é a única camada autorizada a importar
 //! crates de I/O (`mdns-sd`, `quinn`, `windows`, `cpal`, etc).
-//!
-//! Adapters serão adicionados sprint a sprint conforme [docs/PLANNING.md][p].
-//!
-//! [p]: ../../../../../docs/PLANNING.md
 
 // Esta crate é a ÚNICA do workspace que pode usar `unsafe` (Win32 hooks, FFI
 // para drivers de áudio). Cada módulo que precisar deve declarar
 // `#![allow(unsafe_code)]` localmente e justificar com SAFETY comments.
 #![deny(unsafe_op_in_unsafe_fn)]
 
-// Adapters virão aqui:
-// pub mod identity_store_toml;
-// pub mod secret_store_keyring;
-// pub mod discovery_mdns;
-// pub mod transport_quic;
+pub mod clipboard_arboard;
+pub mod config_store_toml;
+pub mod discovery_mdns;
+pub mod identity_store_toml;
+pub mod input_vk_map;
+pub mod input_win32;
+pub mod monitor_win32;
+pub mod network_config;
+pub mod network_watcher;
+pub mod secret_store_keyring;
+pub mod transport_quic;
+
+pub use clipboard_arboard::ArboardClipboardBackend;
+pub use config_store_toml::TomlConfigStore;
+pub use discovery_mdns::MdnsDiscoveryAdapter;
+pub use identity_store_toml::TomlIdentityStore;
+pub use input_win32::Win32InputBackend;
+pub use monitor_win32::Win32MonitorBackend;
+pub use secret_store_keyring::KeyringSecretStore;
+pub use transport_quic::{generate_or_load_quic_cert, QuicTransportAdapter};
+
+// Adapters futuros (sprint a sprint):
 // pub mod input_win32;
 // pub mod monitor_win32;
 // pub mod audio_cpal;

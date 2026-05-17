@@ -1,33 +1,49 @@
 //! Enum-soma de todos os eventos de domínio.
 //!
-//! `DomainEvent` é o que circula no event bus interno (`tokio::broadcast`)
-//! configurado em `winx-application::bus`. Cada bounded context define seu
-//! próprio sub-enum em `<context>/events.rs` e re-exporta as variantes aqui.
-//!
-//! Implementações concretas dos eventos virão sprint a sprint conforme o
-//! backlog em [docs/PLANNING.md][p].
-//!
-//! [p]: ../../../../../docs/PLANNING.md
+//! Circula no event bus interno (`tokio::broadcast`) em `winx-application::bus`.
+//! Cada bounded context define sub-eventos em `<context>/events.rs` e
+//! re-exporta as variantes aqui. O frontend recebe versões simplificadas via
+//! `FrontendEvent` em `winx-kvm::events`.
 
 use serde::{Deserialize, Serialize};
 
+use crate::data_exchange::events::{ClipboardChanged, ClipboardReceived};
+use crate::discovery::events::{PeerAppeared, PeerDisappeared, PeerUpdated};
+use crate::identity::events::{DeviceCreated, PeerForgotten};
+use crate::input_control::events::{FocusSwitched, HotkeyTriggered, InputBlocked};
+use crate::pairing::events::{PairingCancelled, PairingCompleted, PairingFailed, PairingRequested};
+use crate::transport::events::{ConnectionEstablished, ConnectionLost, StatsUpdated};
+
 /// União de todos os eventos de domínio.
-///
-/// Variantes serão adicionadas sprint a sprint. Por enquanto serve apenas
-/// como placeholder estrutural para o event bus.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum DomainEvent {
-    // Sprint 1 (Identity) — adicionar variantes em F2.x
-    // DeviceCreated(identity::events::DeviceCreated),
-    // PeerTrusted(identity::events::PeerTrusted),
-    //
-    // Sprint 2 (Discovery)
-    // PeerAppeared(discovery::events::PeerAppeared),
-    //
-    // ... e assim por diante.
-    /// Placeholder enquanto nenhum evento concreto foi modelado ainda.
-    /// Será removido quando a primeira variante real for adicionada.
-    #[doc(hidden)]
-    Placeholder,
+    // --- Identity (Sprint 1) ---
+    DeviceCreated(DeviceCreated),
+    PeerForgotten(PeerForgotten),
+
+    // --- Discovery (Sprint 2) ---
+    PeerAppeared(PeerAppeared),
+    PeerDisappeared(PeerDisappeared),
+    PeerUpdated(PeerUpdated),
+
+    // --- Pairing (Sprint 3) ---
+    PairingRequested(PairingRequested),
+    PairingCompleted(PairingCompleted),
+    PairingCancelled(PairingCancelled),
+    PairingFailed(PairingFailed),
+
+    // --- Transport (Sprint 4) ---
+    ConnectionEstablished(ConnectionEstablished),
+    ConnectionLost(ConnectionLost),
+    StatsUpdated(StatsUpdated),
+
+    // --- InputControl (Sprint 5) ---
+    FocusSwitched(FocusSwitched),
+    HotkeyTriggered(HotkeyTriggered),
+    InputBlocked(InputBlocked),
+
+    // --- DataExchange (Sprint 6) ---
+    ClipboardChanged(ClipboardChanged),
+    ClipboardReceived(ClipboardReceived),
 }

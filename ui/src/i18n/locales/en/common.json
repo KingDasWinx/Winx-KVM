@@ -1,14 +1,79 @@
 {
+  "nav": {
+    "home": "Home",
+    "settings": "Settings"
+  },
   "app": {
     "name": "Winx-KVM",
     "tagline": "KVM software with shared audio between Windows PCs on your LAN.",
-    "status_planning": "Planning",
     "version_label": "Version",
     "protocol_label": "Wire protocol",
-    "loading": "Loading…",
-    "ping_button": "Ping backend",
-    "events_received_one": "{{count}} event received from backend",
-    "events_received_other": "{{count}} events received from backend"
+    "loading": "Loading…"
+  },
+  "toast": {
+    "pairing_completed_title": "Paired",
+    "pairing_completed_message": "Successfully paired with {{username}}",
+    "pairing_failed_title": "Pairing failed",
+    "pairing_failed_message": "Could not complete pairing",
+    "connection_established_title": "Connected",
+    "connection_established_message": "Connected to {{username}}",
+    "connection_lost_title": "Disconnected",
+    "connection_lost_message": "Connection to peer was lost",
+    "clipboard_received_title": "Clipboard",
+    "clipboard_received_message": "Text received from a connected device"
+  },
+  "device": {
+    "this_device": "This device",
+    "status_local": "Local",
+    "fingerprint_hint": "Ed25519 public key fingerprint (first 8 bytes, SHA-256)"
+  },
+  "discovery": {
+    "section_title": "Devices on this network",
+    "empty": "No other devices found on this network yet.",
+    "scanning": "Scanning…",
+    "status_online": "Online",
+    "peer_fingerprint_hint": "Ed25519 fingerprint of discovered peer",
+    "addresses": "Addresses"
+  },
+  "input": {
+    "focus_local": "Local focus",
+    "focus_remote": "Remote focus",
+    "lock_mode_on": "Focus lock on"
+  },
+  "clipboard": {
+    "auto_sync_label": "Sync clipboard automatically",
+    "auto_sync_hint": "Copies plain text between connected devices on this network"
+  },
+  "firewall": {
+    "banner_title": "Firewall not configured",
+    "banner_desc": "Peers may not appear on this network. Click to reconfigure.",
+    "reconfigure_button": "Reconfigure",
+    "reconfiguring": "Reconfiguring firewall…"
+  },
+  "transport": {
+    "status_connected": "Connected",
+    "status_connecting": "Connecting…",
+    "status_reconnecting": "Reconnecting…",
+    "status_disconnected": "Disconnected",
+    "connect_button": "Connect",
+    "disconnect_button": "Disconnect",
+    "rtt_label": "Latency: {{ms}}ms",
+    "stats_label": "↑{{tx}} ↓{{rx}}"
+  },
+  "pairing": {
+    "pair_button": "Pair",
+    "modal_title_initiator": "Pair with {{username}}",
+    "modal_title_responder": "Pairing request",
+    "pin_label": "Pairing PIN",
+    "pin_hint": "Share this PIN with the other device to confirm pairing",
+    "pin_input_label": "Enter PIN shown on the other device",
+    "pin_input_placeholder": "000000",
+    "submit": "Confirm",
+    "cancel": "Cancel",
+    "success": "Paired successfully with {{username}}",
+    "countdown": "Expires in {{seconds}}s",
+    "attempts_remaining_one": "{{count}} attempt remaining",
+    "attempts_remaining_other": "{{count}} attempts remaining"
   },
   "error": {
     "identity": {

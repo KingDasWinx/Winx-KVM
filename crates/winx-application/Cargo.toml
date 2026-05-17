@@ -18,5 +18,11 @@ tokio         = { workspace = true }
 async-trait   = { workspace = true }
 serde         = { workspace = true }
 thiserror     = { workspace = true }
+anyhow        = { workspace = true }
 tracing       = { workspace = true }
 futures       = { workspace = true }
+ed25519-dalek    = { workspace = true }
+x25519-dalek     = { workspace = true }
+rand             = { workspace = true }
+constant_time_eq = { workspace = true }
+uuid             = { workspace = true }

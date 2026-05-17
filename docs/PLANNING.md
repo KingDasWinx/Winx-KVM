@@ -40,79 +40,79 @@ Este documento complementa o [README](../README.md) com o **plano executável**:
 
 ### Épico 2 — Identity
 
-- [ ] **F2.1** `Device` entity com geração de keypair Ed25519 na primeira execução
-- [ ] **F2.2** `TrustedPeer` entity e operações `trust`, `forget`
-- [ ] **F2.3** Port `IdentityStore` + adapter TOML
-- [ ] **F2.4** Port `SecretStore` + adapter `keyring` (Credential Manager)
-- [ ] **F2.5** Use case `ensure_device()`: lê ou cria identidade
-- [ ] **F2.6** Tauri command `get_device_info()` + emit event `device-ready`
-- [ ] **F2.7** UI: tela inicial mostrando username + fingerprint do dispositivo
+- [x] **F2.1** `Device` entity com geração de keypair Ed25519 na primeira execução
+- [x] **F2.2** `TrustedPeer` entity e operações `trust`, `forget`
+- [x] **F2.3** Port `IdentityStore` + adapter TOML
+- [x] **F2.4** Port `SecretStore` + adapter `keyring` (Credential Manager)
+- [x] **F2.5** Use case `ensure_device()`: lê ou cria identidade
+- [x] **F2.6** Tauri command `get_device_info()` + emit event `device-ready`
+- [x] **F2.7** UI: tela inicial mostrando username + fingerprint do dispositivo
 
 ### Épico 3 — Discovery
 
-- [ ] **F3.1** Port `DiscoveryAdapter` com métodos `announce(device_info)` e `subscribe()` (Stream)
-- [ ] **F3.2** Adapter `mdns-sd`: serviço `_winx-kvm._tcp.local.`, TXT records com peer_id e username
-- [ ] **F3.3** `DiscoveryRegistry` em `winx-domain` mantém lista de peers vistos
-- [ ] **F3.4** Use case `start_announcing()` + loop `listen_peers()`
-- [ ] **F3.5** Eventos `PeerAppeared` / `PeerDisappeared` no bus
-- [ ] **F3.6** Tauri command `list_discovered_peers()` + event `peers-updated`
-- [ ] **F3.7** UI: cards de peers descobertos com avatar/nome/fingerprint
+- [x] **F3.1** Port `DiscoveryAdapter` com métodos `announce(device_info)` e `subscribe()` (Stream)
+- [x] **F3.2** Adapter `mdns-sd`: serviço `_winx-kvm._tcp.local.`, TXT records com peer_id e username
+- [x] **F3.3** `DiscoveryRegistry` em `winx-domain` mantém lista de peers vistos
+- [x] **F3.4** Use case `start_announcing()` + loop `listen_peers()`
+- [x] **F3.5** Eventos `PeerAppeared` / `PeerDisappeared` no bus
+- [x] **F3.6** Tauri command `list_discovered_peers()` + event `peers-updated`
+- [x] **F3.7** UI: cards de peers descobertos com avatar/nome/fingerprint
 
 ### Épico 4 — Pairing
 
-- [ ] **F4.1** `PairingSession` com state machine validada (testes de cada transição)
-- [ ] **F4.2** `Pin` value object: gera 6 dígitos cryptographically random
-- [ ] **F4.3** Lógica de key exchange X25519 efêmero
-- [ ] **F4.4** Mensagens de protocolo: `PairingRequest`, `PairingResponse`, `PairingConfirm`
-- [ ] **F4.5** Use cases `initiate_pairing(peer_id)`, `submit_pin(session_id, pin)`, `cancel_pairing`
-- [ ] **F4.6** Expiração: timer 90s; rate limit 3 tentativas erradas
-- [ ] **F4.7** Persistência: ao completar, grava em `peers.toml`
-- [ ] **F4.8** Tauri commands + events
-- [ ] **F4.9** UI: modal de pareamento com PIN grande na tela do initiator; input no responder
+- [x] **F4.1** `PairingSession` com state machine validada (testes de cada transição)
+- [x] **F4.2** `Pin` value object: gera 6 dígitos cryptographically random
+- [x] **F4.3** Lógica de key exchange X25519 efêmero
+- [x] **F4.4** Mensagens de protocolo: `PairingRequest`, `PairingResponse`, `PairingConfirm`
+- [x] **F4.5** Use cases `initiate_pairing(peer_id)`, `submit_pin(session_id, pin)`, `cancel_pairing`
+- [x] **F4.6** Expiração: timer 90s; rate limit 3 tentativas erradas
+- [x] **F4.7** Persistência: ao completar, grava em `peers.toml`
+- [x] **F4.8** Tauri commands + events
+- [x] **F4.9** UI: modal de pareamento com PIN grande na tela do initiator; input no responder
 
 ### Épico 5 — Transport
 
-- [ ] **F5.1** Cert auto-assinado derivado da Ed25519 (necessário para QUIC/TLS)
-- [ ] **F5.2** Endpoint QUIC com `quinn`: server + client integrados
-- [ ] **F5.3** Mapping `peer_id → endpoint_address` mantido in-memory pelo Discovery
-- [ ] **F5.4** Estabelecimento de conexão após pareamento ou redescoberta
-- [ ] **F5.5** Streams nomeados: open `Control` no handshake, lazy `Input` quando focus muda
-- [ ] **F5.6** Heartbeat a cada 5s no Control; timeout de 15s força reconexão
-- [ ] **F5.7** Métricas: RTT, perda, throughput → event `stats-updated` (throttle 1Hz)
-- [ ] **F5.8** UI: indicador de status (Verde conectado / Amarelo reconectando / Vermelho offline)
+- [x] **F5.1** Cert auto-assinado derivado da Ed25519 (necessário para QUIC/TLS)
+- [x] **F5.2** Endpoint QUIC com `quinn`: server + client integrados
+- [x] **F5.3** Mapping `peer_id → endpoint_address` mantido in-memory pelo Discovery
+- [x] **F5.4** Estabelecimento de conexão após pareamento ou redescoberta
+- [x] **F5.5** Streams nomeados: open `Control` no handshake, lazy `Input` quando focus muda
+- [x] **F5.6** Heartbeat a cada 5s no Control; timeout de 15s força reconexão
+- [x] **F5.7** Métricas: RTT, perda, throughput → event `stats-updated` (throttle 1Hz)
+- [x] **F5.8** UI: indicador de status (Verde conectado / Amarelo reconectando / Vermelho offline)
 
 ### Épico 6 — InputControl básico
 
-- [ ] **F6.1** Port `InputBackend` com `start_capture(handler)`, `inject(event)`, `set_cursor_clipped(rect)`
-- [ ] **F6.2** Adapter Win32: `SetWindowsHookEx` com `WH_MOUSE_LL` + `WH_KEYBOARD_LL`
-- [ ] **F6.3** Adapter Win32: `SendInput` para injeção
-- [ ] **F6.4** Tradução de eventos Windows VK_CODE ↔ enum portável
-- [ ] **F6.5** Port `MonitorBackend` + adapter `EnumDisplayMonitors`
-- [ ] **F6.6** `MonitorLayout` simples (lado-a-lado, sem drag-drop por enquanto)
-- [ ] **F6.7** Lógica de focus switch: detect cursor crossing edge → emit `FocusSwitched`
-- [ ] **F6.8** Bloquear/desbloquear input local com `HC_ACTION` retornando 1
-- [ ] **F6.9** `ClipCursor` + janela transparente full-screen para prender cursor local
-- [ ] **F6.10** Wire: envia `InputPayload` no stream Input
-- [ ] **F6.11** Hotkey de pânico `Ctrl+Alt+Home` registrado via `RegisterHotKey`
-- [ ] **F6.12** Hotkey `Scroll Lock` como toggle de lock
+- [x] **F6.1** Port `InputBackend` com `start_capture(handler)`, `inject(event)`, `set_cursor_clipped(rect)`
+- [x] **F6.2** Adapter Win32: `SetWindowsHookEx` com `WH_MOUSE_LL` + `WH_KEYBOARD_LL`
+- [x] **F6.3** Adapter Win32: `SendInput` para injeção
+- [x] **F6.4** Tradução de eventos Windows VK_CODE ↔ enum portável
+- [x] **F6.5** Port `MonitorBackend` + adapter `EnumDisplayMonitors`
+- [x] **F6.6** `MonitorLayout` simples (lado-a-lado, sem drag-drop por enquanto)
+- [x] **F6.7** Lógica de focus switch: detect cursor crossing edge → emit `FocusSwitched`
+- [x] **F6.8** Bloquear/desbloquear input local com `HC_ACTION` retornando 1
+- [x] **F6.9** `ClipCursor` + janela transparente full-screen para prender cursor local
+- [x] **F6.10** Wire: envia `InputPayload` no stream Input
+- [x] **F6.11** Hotkey de pânico `Ctrl+Alt+Home` registrado via `RegisterHotKey`
+- [x] **F6.12** Hotkey `Scroll Lock` como toggle de lock
 
 ### Épico 7 — Clipboard (texto)
 
-- [ ] **F7.1** Port `ClipboardBackend` com observer (clipboard change events)
-- [ ] **F7.2** Adapter `arboard` + polling 200ms (Windows não tem evento confiável)
-- [ ] **F7.3** Detecta texto, calcula hash, ignora se igual ao último
-- [ ] **F7.4** Wire: stream Data com `ClipboardPayload::Text`
-- [ ] **F7.5** Receptor: escreve no clipboard local via `arboard`, marca origin para evitar loop
-- [ ] **F7.6** Toggle UI: "Sincronizar clipboard automaticamente"
+- [x] **F7.1** Port `ClipboardBackend` com observer (clipboard change events)
+- [x] **F7.2** Adapter `arboard` + polling 200ms (Windows não tem evento confiável)
+- [x] **F7.3** Detecta texto, calcula hash, ignora se igual ao último
+- [x] **F7.4** Wire: stream Data com `ClipboardPayload::Text`
+- [x] **F7.5** Receptor: escreve no clipboard local via `arboard`, marca origin para evitar loop
+- [x] **F7.6** Toggle UI: "Sincronizar clipboard automaticamente"
 
 ### Épico 8 — UI base
 
-- [ ] **F8.1** Theme Mantine custom (dark default) + tipografia
-- [ ] **F8.2** Layout principal: sidebar com navegação + área de conteúdo
-- [ ] **F8.3** Página Home: lista de peers, status, ações rápidas
-- [ ] **F8.4** Página Settings: username, hotkeys, toggles, **seletor de idioma**
-- [ ] **F8.5** Tray icon mínimo (mostrar/esconder janela, sair)
-- [ ] **F8.6** Notificações toast via Mantine
+- [x] **F8.1** Theme Mantine custom (dark default) + tipografia
+- [x] **F8.2** Layout principal: sidebar com navegação + área de conteúdo
+- [x] **F8.3** Página Home: lista de peers, status, ações rápidas
+- [x] **F8.4** Página Settings: username, hotkeys, toggles, **seletor de idioma**
+- [x] **F8.5** Tray icon mínimo (mostrar/esconder janela, sair)
+- [x] **F8.6** Notificações toast via Mantine
 - [x] **F8.7** **i18n com `react-i18next` desde o início**:
   - Setup de `i18next` em `ui/src/i18n/index.ts` com `LanguageDetector` (Tauri OS plugin) + fallback `en`
   - Namespaces: `common`, `pairing`, `layout`, `settings` (um JSON por feature/locale)
@@ -123,8 +123,8 @@ Este documento complementa o [README](../README.md) com o **plano executável**:
 
 ### Épico 9 — Empacotamento
 
-- [ ] **F9.1** Configurar `tauri build` para gerar MSI
-- [ ] **F9.2** Ícones (1024px) processados via `tauri icon`
+- [x] **F9.1** Configurar `tauri build` para gerar MSI
+- [x] **F9.2** Ícones (1024px) processados via `tauri icon`
 - [ ] **F9.3** Smoke test em VM Windows limpa
 
 ---

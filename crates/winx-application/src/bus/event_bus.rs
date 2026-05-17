@@ -64,12 +64,21 @@ impl Default for EventBus {
 
 #[cfg(test)]
 mod tests {
+    use winx_domain::{identity::events::DeviceCreated, shared::ids::DeviceId};
+
     use super::*;
+
+    fn sample_event() -> DomainEvent {
+        DomainEvent::DeviceCreated(DeviceCreated {
+            device_id: DeviceId::new(),
+            fingerprint: "AB:CD:EF:01:23:45:67:89".to_string(),
+        })
+    }
 
     #[tokio::test]
     async fn publish_with_no_subscribers_does_not_panic() {
         let bus = EventBus::new();
-        bus.publish(DomainEvent::Placeholder);
+        bus.publish(sample_event());
         assert_eq!(bus.subscriber_count(), 0);
     }
 
@@ -77,8 +86,8 @@ mod tests {
     async fn subscriber_receives_event() {
         let bus = EventBus::new();
         let mut rx = bus.subscribe();
-        bus.publish(DomainEvent::Placeholder);
+        bus.publish(sample_event());
         let evt = rx.recv().await.unwrap();
-        assert!(matches!(evt, DomainEvent::Placeholder));
+        assert!(matches!(evt, DomainEvent::DeviceCreated(_)));
     }
 }

@@ -11,6 +11,11 @@
 
 pub mod bus;
 pub mod ports;
+pub mod protocol_convert;
 pub mod use_cases;
 
 pub use bus::EventBus;
+pub use use_cases::{
+    ClipboardService, DiscoveryService, EnsureDevice, InputControlService, PairingService,
+    TransportService, UpdateDeviceProfile,
+};

@@ -2,12 +2,13 @@
 //!
 //! Identidade criptográfica do device local e lista de peers confiáveis.
 //!
-//! Agregados / entidades planejados (ver [docs/PLANNING.md][p] épico 2):
-//! - `Device` (raiz): id, username, par de chaves Ed25519, criado em.
-//! - `TrustedPeer`: id remoto, public key, username, paired_at, last_seen.
-//!
-//! Value objects: `DeviceId` (em [`shared::ids`]), `PublicKey` (32 bytes),
-//! `Fingerprint` (hash SHA-256 truncado para exibição).
-//!
-//! [p]: ../../../../../docs/PLANNING.md
-//! [`shared::ids`]: crate::shared::ids
+//! - `Device`: agregado raiz (id, username, public key Ed25519, created_at).
+//! - `TrustedPeer`: peer remoto que completou o pareamento.
+//! - `PublicKey`: 32 bytes Ed25519 com fingerprint SHA-256 para exibição.
+
+pub mod device;
+pub mod events;
+pub mod key;
+
+pub use device::{Device, TrustedPeer};
+pub use key::{Fingerprint, PublicKey};

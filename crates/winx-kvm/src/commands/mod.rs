@@ -6,5 +6,21 @@
 //! permitir tradução i18n no frontend.
 
 mod app;
+mod clipboard;
+mod discovery;
+mod firewall;
+mod identity;
+mod input_control;
+mod pairing;
+mod settings;
+mod transport;
 
 pub use app::*;
+pub use clipboard::*;
+pub use discovery::*;
+pub use firewall::*;
+pub use identity::*;
+pub use input_control::*;
+pub use pairing::*;
+pub use settings::*;
+pub use transport::*;

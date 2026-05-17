@@ -10,8 +10,13 @@
     "frontendDist": "../../ui/dist"
   },
   "app": {
+    "trayIcon": {
+      "iconPath": "icons/icon.ico",
+      "iconAsTemplate": true
+    },
     "windows": [
       {
+        "label": "main",
         "title": "Winx-KVM",
         "width": 1024,
         "height": 720,
@@ -28,7 +33,13 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["msi", "nsis"],
+    "targets": ["msi"],
+    "createUpdaterArtifacts": false,
+    "publisher": "Winx-KVM",
+    "copyright": "Copyright © 2026 Winx-KVM contributors",
+    "category": "Utility",
+    "shortDescription": "Software KVM com áudio compartilhado entre PCs Windows",
+    "longDescription": "Winx-KVM compartilha mouse, teclado, clipboard, áudio e arquivos entre PCs Windows na mesma rede local. Conecte-se via QUIC com criptografia end-to-end e pareamento via PIN.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -36,8 +47,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "category": "Utility",
-    "shortDescription": "Software KVM com áudio compartilhado entre PCs Windows",
-    "longDescription": "Winx-KVM compartilha mouse, teclado, clipboard, áudio e arquivos entre PCs Windows na mesma rede local. Conecte-se via QUIC com criptografia end-to-end e pareamento via PIN."
+    "windows": {
+      "wix": {
+        "language": "pt-BR"
+      }
+    }
   }
 }

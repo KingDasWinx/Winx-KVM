@@ -6,3 +6,9 @@
 //! Ver [docs/PLANNING.md][p] épico 5.
 //!
 //! [p]: ../../../../../docs/PLANNING.md
+
+pub mod connection;
+pub mod events;
+
+pub use connection::{Connection, ConnectionState, ConnectionStats, StreamKind};
+pub use events::{ConnectionEstablished, ConnectionLost, StatsUpdated};

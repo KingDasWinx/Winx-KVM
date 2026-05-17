@@ -18,16 +18,24 @@ winx-application = { workspace = true }
 tokio            = { workspace = true }
 async-trait      = { workspace = true }
 serde            = { workspace = true }
+serde_json       = { workspace = true }
 toml             = { workspace = true }
 thiserror        = { workspace = true }
 anyhow           = { workspace = true }
 tracing          = { workspace = true }
 time             = { workspace = true }
 
-# Deps específicas de adapters serão adicionadas sprint a sprint:
-# - mdns-sd       (sprint 2 — discovery)
-# - quinn, rustls (sprint 4 — transport)
-# - windows       (sprint 5 — input/monitor)
-# - cpal, opus    (v0.4   — audio)
-# - arboard       (sprint 6 — clipboard)
-# - keyring       (sprint 1 — secret store, em breve)
+hex     = { workspace = true }
+uuid    = { workspace = true }
+keyring = { version = "3", features = ["windows-native"] }
+mdns-sd = { workspace = true }
+
+quinn          = { workspace = true }
+rustls         = { workspace = true }
+rcgen          = { workspace = true }
+rustls-pemfile = { workspace = true }
+x509-parser    = { workspace = true }
+ed25519-dalek  = { workspace = true }
+windows          = { workspace = true }
+crossbeam-channel = { workspace = true }
+arboard           = { workspace = true }

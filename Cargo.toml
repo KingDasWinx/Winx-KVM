@@ -54,9 +54,39 @@ anyhow             = "1.0"
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 
+# Criptografia
+ed25519-dalek = { version = "2.2", features = ["rand_core", "pkcs8"] }
+x25519-dalek  = { version = "2.0", features = ["static_secrets"] }
+rand          = "0.8"
+sha2          = "0.10"
+hex           = "0.4"
+constant_time_eq = "0.3"
+
 # Utilitários
 uuid = { version = "1.10", features = ["v4", "serde"] }
 time = { version = "0.3", features = ["serde", "macros", "formatting", "parsing"] }
+
+# Networking
+mdns-sd      = "0.19.1"
+quinn        = "0.11"
+rustls       = { version = "0.23", features = ["ring"] }
+rcgen        = "0.13"
+rustls-pemfile = "2.0"
+x509-parser  = "0.16"
+
+# Win32 (sprint 5 — input/monitor, network config)
+windows = { version = "0.58", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_Graphics_Gdi",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Threading",
+  "Win32_Devices_Display",
+  "Win32_Security",
+] }
+crossbeam-channel = "0.5"
+arboard           = "3"
 
 [profile.release]
 opt-level     = 3

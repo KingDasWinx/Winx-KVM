@@ -11,12 +11,18 @@
 
 #![forbid(unsafe_code)]
 
+pub mod clipboard;
+pub mod input;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub use clipboard::ClipboardPayload;
+pub use input::{InputEventDto, InputPayload};
+
 /// Versão atual do wire format. Incremente quando mudar `Payload` de forma
 /// incompatível.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 3;
 
 /// Frame externo de todas as mensagens. Carrega a versão do protocolo para
 /// que peers detectem incompatibilidades cedo no handshake.
@@ -42,6 +48,18 @@ impl Frame {
 pub enum Payload {
     /// Heartbeat keep-alive no stream Control.
     Heartbeat,
+    /// Resposta ao heartbeat no stream Control.
+    HeartbeatAck,
+    /// Solicita abertura de um stream nomeado (`kind`: 0=Control, 1=Input, 2=Data).
+    OpenStream { kind: u8 },
+    /// Encerra um stream nomeado.
+    CloseStream { kind: u8 },
+    /// Evento de mouse/teclado no stream Input.
+    Input(input::InputPayload),
+    /// Notifica mudança de foco no stream Control (`None` = foco local).
+    FocusSwitch { target_peer: Option<uuid::Uuid> },
+    /// Texto de clipboard no stream Data.
+    Clipboard(clipboard::ClipboardPayload),
 }
 
 /// Erros ao serializar/desserializar frames.
@@ -85,6 +103,31 @@ mod tests {
         let back = decode(&bytes).unwrap();
         assert_eq!(back.version, PROTOCOL_VERSION);
         assert!(matches!(back.payload, Payload::Heartbeat));
+    }
+
+    #[test]
+    fn input_payload_roundtrips() {
+        let p = InputPayload {
+            seq: 1,
+            event: InputEventDto::MouseMove { dx: 1, dy: 2 },
+        };
+        let frame = Frame::new(Payload::Input(p));
+        let bytes = encode(&frame).unwrap();
+        let back = decode(&bytes).unwrap();
+        assert!(matches!(back.payload, Payload::Input(_)));
+    }
+
+    #[test]
+    fn clipboard_text_roundtrips() {
+        let p = ClipboardPayload {
+            origin_peer_id: uuid::Uuid::new_v4(),
+            content_hash: [1u8; 32],
+            text: "copiado".into(),
+        };
+        let frame = Frame::new(Payload::Clipboard(p));
+        let bytes = encode(&frame).unwrap();
+        let back = decode(&bytes).unwrap();
+        assert!(matches!(back.payload, Payload::Clipboard(_)));
     }
 
     #[test]

@@ -6,3 +6,11 @@
 //! Ver [docs/PLANNING.md][p] épico 3.
 //!
 //! [p]: ../../../../../docs/PLANNING.md
+
+pub mod discovered_peer;
+pub mod events;
+pub mod registry;
+
+pub use discovered_peer::DiscoveredPeer;
+pub use events::{PeerAppeared, PeerDisappeared, PeerUpdated};
+pub use registry::DiscoveryRegistry;

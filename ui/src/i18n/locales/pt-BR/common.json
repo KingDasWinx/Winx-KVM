@@ -1,14 +1,79 @@
 {
+  "nav": {
+    "home": "Início",
+    "settings": "Configurações"
+  },
   "app": {
     "name": "Winx-KVM",
     "tagline": "Software KVM com áudio compartilhado entre PCs Windows na sua rede local.",
-    "status_planning": "Em planejamento",
     "version_label": "Versão",
     "protocol_label": "Protocolo wire",
-    "loading": "Carregando…",
-    "ping_button": "Ping no backend",
-    "events_received_one": "{{count}} evento recebido do backend",
-    "events_received_other": "{{count}} eventos recebidos do backend"
+    "loading": "Carregando…"
+  },
+  "toast": {
+    "pairing_completed_title": "Pareado",
+    "pairing_completed_message": "Pareado com sucesso com {{username}}",
+    "pairing_failed_title": "Falha no pareamento",
+    "pairing_failed_message": "Não foi possível concluir o pareamento",
+    "connection_established_title": "Conectado",
+    "connection_established_message": "Conectado a {{username}}",
+    "connection_lost_title": "Desconectado",
+    "connection_lost_message": "A conexão com o peer foi perdida",
+    "clipboard_received_title": "Área de transferência",
+    "clipboard_received_message": "Texto recebido de um dispositivo conectado"
+  },
+  "device": {
+    "this_device": "Este dispositivo",
+    "status_local": "Local",
+    "fingerprint_hint": "Fingerprint da chave pública Ed25519 (primeiros 8 bytes, SHA-256)"
+  },
+  "discovery": {
+    "section_title": "Dispositivos nesta rede",
+    "empty": "Nenhum outro dispositivo encontrado nesta rede ainda.",
+    "scanning": "Procurando…",
+    "status_online": "Online",
+    "peer_fingerprint_hint": "Fingerprint Ed25519 do dispositivo descoberto",
+    "addresses": "Endereços"
+  },
+  "input": {
+    "focus_local": "Foco local",
+    "focus_remote": "Foco remoto",
+    "lock_mode_on": "Trava de foco ativa"
+  },
+  "clipboard": {
+    "auto_sync_label": "Sincronizar clipboard automaticamente",
+    "auto_sync_hint": "Copia texto simples entre dispositivos conectados nesta rede"
+  },
+  "firewall": {
+    "banner_title": "Firewall não configurado",
+    "banner_desc": "Dispositivos podem não aparecer nesta rede. Clique para reconfigurar.",
+    "reconfigure_button": "Reconfigurar",
+    "reconfiguring": "Reconfigurando firewall…"
+  },
+  "transport": {
+    "status_connected": "Conectado",
+    "status_connecting": "Conectando…",
+    "status_reconnecting": "Reconectando…",
+    "status_disconnected": "Desconectado",
+    "connect_button": "Conectar",
+    "disconnect_button": "Desconectar",
+    "rtt_label": "Latência: {{ms}}ms",
+    "stats_label": "↑{{tx}} ↓{{rx}}"
+  },
+  "pairing": {
+    "pair_button": "Parear",
+    "modal_title_initiator": "Parear com {{username}}",
+    "modal_title_responder": "Pedido de pareamento",
+    "pin_label": "PIN de pareamento",
+    "pin_hint": "Compartilhe este PIN com o outro dispositivo para confirmar o pareamento",
+    "pin_input_label": "Digite o PIN exibido no outro dispositivo",
+    "pin_input_placeholder": "000000",
+    "submit": "Confirmar",
+    "cancel": "Cancelar",
+    "success": "Pareado com sucesso com {{username}}",
+    "countdown": "Expira em {{seconds}}s",
+    "attempts_remaining_one": "{{count}} tentativa restante",
+    "attempts_remaining_other": "{{count}} tentativas restantes"
   },
   "error": {
     "identity": {

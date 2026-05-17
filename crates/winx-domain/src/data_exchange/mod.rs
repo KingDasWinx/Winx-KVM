@@ -7,3 +7,11 @@
 //! Arquivos via Ctrl+C/V em v0.3 — ver [docs/PLANNING.md][p].
 //!
 //! [p]: ../../../../../docs/PLANNING.md
+
+pub mod clipboard;
+pub mod content_hash;
+pub mod events;
+
+pub use clipboard::{ClipboardText, MAX_CLIPBOARD_TEXT_BYTES};
+pub use content_hash::ContentHash;
+pub use events::{ClipboardChanged, ClipboardReceived};

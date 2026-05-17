@@ -6,3 +6,9 @@
 //! Ver [docs/PLANNING.md][p] épico 4.
 //!
 //! [p]: ../../../../../docs/PLANNING.md
+
+pub mod events;
+pub mod session;
+
+pub use events::{PairingCancelled, PairingCompleted, PairingFailed, PairingRequested};
+pub use session::{PairingSession, PairingState, Pin};

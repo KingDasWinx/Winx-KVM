@@ -17,9 +17,14 @@ cargo tauri icon caminho/para/winx-kvm-source-1024.png
 
 O comando gera todos os formatos automaticamente.
 
-## Status
+## Fonte
 
-⚠️ Placeholders ausentes. `cargo tauri dev` pode emitir aviso e `cargo tauri build` **vai falhar** até que ícones reais sejam gerados.
+- `app-icon-source.png` — arte original (pode não ser quadrada)
+- `app-icon-1024.png` — crop 1024×1024 usado por `cargo tauri icon`
 
-Para o MVP, basta um ícone simples — a primeira versão pode ser feita rapidamente
-em qualquer editor (sugiro um W estilizado em cor azul `#0078D6`).
+## Regenerar
+
+```powershell
+cd crates/winx-kvm
+cargo tauri icon icons/app-icon-1024.png
+```

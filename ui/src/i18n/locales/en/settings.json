@@ -1,0 +1,28 @@
+{
+  "title": "Settings",
+  "device": {
+    "section_title": "Device",
+    "username_label": "Display name",
+    "username_hint": "Shown to other devices on the network",
+    "save": "Save"
+  },
+  "language": {
+    "section_title": "Language",
+    "label": "Language",
+    "en": "English",
+    "pt-BR": "Portuguese (Brazil)"
+  },
+  "clipboard": {
+    "section_title": "Clipboard",
+    "auto_sync_label": "Sync clipboard automatically",
+    "auto_sync_hint": "Copies plain text between connected devices on this network"
+  },
+  "hotkeys": {
+    "title": "Hotkeys",
+    "panic": "Return focus to this PC",
+    "panic_keys": "Ctrl+Alt+Home",
+    "lock": "Prevent focus switching at monitor edge",
+    "lock_keys": "Scroll Lock",
+    "readonly_note": "Customization coming in a future version"
+  }
+}
