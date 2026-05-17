@@ -36,13 +36,14 @@ impl MdnsDiscoveryAdapter {
 
     /// Desabilita interfaces virtuais (Hyper-V, WSL, VPN) para mDNS discover.
     fn filter_virtual_interfaces(_daemon: &ServiceDaemon) {
-        // Aqui iteraríamos pelas interfaces do sistema, mas mdns-sd 0.19 não expõe
-        // interface listing diretamente. Loga aviso e confia que o daemon
-        // descobrirá a interface correta na primeira tentativa de register.
-        // Futuro: usar `if-addrs` crate para filtro explícito.
+        // Aqui iteraríamos pelas interfaces do sistema, mas mdns-sd 0.18 não expõe
+        // interface listing diretamente via API. A versão 0.18 **exclui point-to-point
+        // interfaces (tunnels, WSL, etc.) por padrão**, o que remove o bug do 0.19
+        // onde HashSet era não-determinístico.
+        // Futuro: usar `if-addrs` crate para filtro explícito se necessário.
 
-        info!("[MDNS INIT] mDNS daemon initialized (interface auto-detection ativo)");
-        debug!("[MDNS INIT] nota: mdns-sd 0.19 não expõe API de binding explícito — filtragem futura com if-addrs");
+        info!("[MDNS INIT] mDNS daemon initialized (mdns-sd 0.18.2 — point-to-point interfaces excluídas por padrão)");
+        debug!("[MDNS INIT] Interface filtering: mdns-sd 0.18 exclui WSL/vEthernet/tunnels automaticamente");
     }
 }
 
@@ -164,7 +165,7 @@ impl DiscoveryAdapter for MdnsDiscoveryAdapter {
                                 let addresses: Vec<SocketAddr> = resolved
                                     .get_addresses()
                                     .iter()
-                                    .map(|scoped| SocketAddr::new(scoped.to_ip_addr(), resolved.get_port()))
+                                    .map(|ip| SocketAddr::new(*ip, resolved.get_port()))
                                     .collect();
 
                                 debug!(%peer_id, %username, addrs = ?addresses.iter().map(|a| a.to_string()).collect::<Vec<_>>(), "peer resolvido com sucesso");
