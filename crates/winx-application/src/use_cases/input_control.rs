@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use winx_domain::{
     input_control::{
         events::{FocusSwitched, HotkeyTriggered, InputBlocked},
@@ -95,25 +95,31 @@ impl InputControlService {
         let service_self_input = Arc::clone(&self.input);
         let service_enabled = Arc::clone(&self.enabled);
 
-        let on_event = move |ev: InputEvent| {
-            let focus = service_focus.clone();
-            let layout = service_layout.clone();
-            let input_tx = service_input_tx.clone();
-            let transport = service_transport.clone();
-            let bus = service_bus.clone();
-            let active = service_active.clone();
-            let input_be = service_self_input.clone();
-            let enabled = service_enabled.clone();
-            let seq = Arc::clone(&service_seq);
-            tokio::spawn(async move {
-                if !*enabled.lock().await {
-                    return;
-                }
-                handle_local_input(
-                    ev, focus, layout, input_tx, transport, bus, active, input_be, &seq,
-                )
-                .await;
-            });
+        // Hooks Win32 disparam em std::thread — não usar `tokio::spawn` direto no callback.
+        let runtime = tokio::runtime::Handle::current();
+
+        let on_event = {
+            let runtime = runtime.clone();
+            move |ev: InputEvent| {
+                let focus = service_focus.clone();
+                let layout = service_layout.clone();
+                let input_tx = service_input_tx.clone();
+                let transport = service_transport.clone();
+                let bus = service_bus.clone();
+                let active = service_active.clone();
+                let input_be = service_self_input.clone();
+                let enabled = service_enabled.clone();
+                let seq = Arc::clone(&service_seq);
+                runtime.spawn(async move {
+                    if !*enabled.lock().await {
+                        return;
+                    }
+                    handle_local_input(
+                        ev, focus, layout, input_tx, transport, bus, active, input_be, &seq,
+                    )
+                    .await;
+                });
+            }
         };
 
         let focus_hk = Arc::clone(&self.focus);
@@ -126,17 +132,21 @@ impl InputControlService {
         self.input
             .start_capture(
                 Box::new(on_event),
-                Box::new(move |action| {
-                    let focus = focus_hk.clone();
-                    let layout = layout_hk.clone();
-                    let input = input_hk.clone();
-                    let bus = bus_hk.clone();
-                    let active = active_hk.clone();
-                    let input_tx = input_tx_hk.clone();
-                    tokio::spawn(async move {
-                        handle_hotkey(action, focus, layout, input, bus, active, input_tx).await;
-                    });
-                }),
+                {
+                    let runtime = runtime.clone();
+                    Box::new(move |action| {
+                        let focus = focus_hk.clone();
+                        let layout = layout_hk.clone();
+                        let input = input_hk.clone();
+                        let bus = bus_hk.clone();
+                        let active = active_hk.clone();
+                        let input_tx = input_tx_hk.clone();
+                        runtime.spawn(async move {
+                            handle_hotkey(action, focus, layout, input, bus, active, input_tx)
+                                .await;
+                        });
+                    })
+                },
             )
             .await
             .map_err(|e| internal_err(&e.to_string()))?;
@@ -306,6 +316,13 @@ async fn try_edge_switch(
     };
     let remote = layout_data.remote_virtual;
     drop(layout_guard);
+
+    debug!(
+        %screen_x,
+        edge,
+        %peer,
+        "borda direita atingida — trocando foco para remoto"
+    );
 
     let from = focus.lock().await.target.clone();
     switch_focus(

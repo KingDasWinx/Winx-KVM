@@ -158,6 +158,7 @@ Tray: clique esquerdo no ícone mostra/oculta a janela; menu **Show** / **Quit**
 | Toast “Pairing request” no PC que iniciou Pair | Bug de versão antiga — atualize o build. |
 | Aparece mas Connect falha | Pareamento feito? Badge **Paired** no card? `peers.toml` nos dois? Firewall UDP **7878**? Notificação de erro na UI? |
 | Card não mostra **Paired** após parear | Reinicie a lista (feche/abra Home) ou verifique `peers.toml`; build deve incluir `is_paired` em `list_discovered_peers` |
+| Conectado mas mouse não cruza a borda | No log, procure `there is no reactor running` após `hooks Win32 instalados` — build antigo; atualize e reinicie o app. Com fix: deve aparecer `borda direita atingida — trocando foco para remoto` ao encostar na borda |
 | Nome antigo na rede | Em Settings, salve o username de novo (re-anuncia mDNS); ou reinicie o app nos dois |
 | Tela branca ao abrir | Instale [WebView2 Runtime](https://go.microsoft.com/fwlink/p/?LinkId=2124703) |
 | `tauri build` falha no MSI | Instale WiX 3.x e garanta `light.exe` / `candle.exe` no PATH |
