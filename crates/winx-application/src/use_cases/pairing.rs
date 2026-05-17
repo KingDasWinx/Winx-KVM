@@ -79,21 +79,19 @@ impl PairingService {
         }
     }
 
-    /// Inicia listener UDP de pairing (chamar uma vez no startup).
-    pub fn spawn_network_listener(self: Arc<Self>) {
-        let transport = Arc::clone(&self.transport);
-        tokio::spawn(async move {
-            match transport.listen().await {
-                Ok(mut rx) => {
-                    while let Some(msg) = rx.recv().await {
-                        if let Err(err) = self.handle_datagram(msg).await {
-                            warn!(?err, "falha ao processar datagrama de pairing");
-                        }
+    /// Loop do listener UDP de pairing. Deve rodar dentro do runtime Tokio do app
+    /// (`rt.spawn` no shell Tauri), não na thread principal.
+    pub async fn run_network_listener(self: Arc<Self>) {
+        match self.transport.listen().await {
+            Ok(mut rx) => {
+                while let Some(msg) = rx.recv().await {
+                    if let Err(err) = self.handle_datagram(msg).await {
+                        warn!(?err, "falha ao processar datagrama de pairing");
                     }
                 }
-                Err(err) => warn!(?err, "falha ao iniciar listener UDP de pairing"),
             }
-        });
+            Err(err) => warn!(?err, "falha ao iniciar listener UDP de pairing"),
+        }
     }
 
     /// Inicia pareamento como **initiator**.

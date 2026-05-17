@@ -284,7 +284,9 @@ pub fn run() {
         pairing_bg.spawn_cleanup_task();
     });
     let pairing_net = Arc::clone(&services.pairing);
-    pairing_net.spawn_network_listener();
+    rt.spawn(async move {
+        pairing_net.run_network_listener().await;
+    });
 
     // Spawnar network watcher task se disponível
     if let Some(net_rx) = net_events_rx {
