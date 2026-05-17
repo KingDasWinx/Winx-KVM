@@ -22,14 +22,6 @@ fn parse_session_id(s: &str) -> Result<SessionId, String> {
         .map_err(|e| format!("session_id inválido: {e}"))
 }
 
-fn parse_key_hex(hex: &str) -> Result<[u8; 32], String> {
-    let bytes = hex::decode(hex).map_err(|e| format!("hex inválido: {e}"))?;
-    bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| "chave deve ter 32 bytes (64 hex chars)".to_string())
-}
-
 fn map_err(e: winx_domain::DomainError) -> String {
     serde_json::to_string(&e).unwrap_or_else(|_| e.to_string())
 }
@@ -54,21 +46,15 @@ pub async fn initiate_pairing(
 
 #[tauri::command]
 pub async fn accept_pairing(
-    state: State<'_, PairingState>,
-    peer_id: String,
-    peer_ephemeral_public_hex: String,
+    _state: State<'_, PairingState>,
+    _peer_id: String,
+    _peer_ephemeral_public_hex: String,
 ) -> Result<PairingInitiatedDto, String> {
-    let pid = parse_peer_id(&peer_id)?;
-    let peer_pub = parse_key_hex(&peer_ephemeral_public_hex)?;
-    let (session_id, pin) = state
-        .pairing
-        .accept_pairing(pid, peer_pub)
-        .await
-        .map_err(map_err)?;
-    Ok(PairingInitiatedDto {
-        session_id: session_id.to_string(),
-        pin,
+    Err(serde_json::json!({
+        "code": "pairing.use_network",
+        "message": "pareamento entrante é aceito automaticamente via rede"
     })
+    .to_string())
 }
 
 #[tauri::command]
@@ -76,14 +62,14 @@ pub async fn submit_pin(
     state: State<'_, PairingState>,
     session_id: String,
     pin: String,
-    peer_public_key_hex: String,
-    peer_username: String,
+    peer_public_key_hex: Option<String>,
+    peer_username: Option<String>,
 ) -> Result<(), String> {
     let sid = parse_session_id(&session_id)?;
-    let peer_key = parse_key_hex(&peer_public_key_hex)?;
+    let _ = (peer_public_key_hex, peer_username);
     state
         .pairing
-        .submit_pin(sid, &pin, peer_key, &peer_username)
+        .submit_pin(sid, &pin)
         .await
         .map_err(map_err)
 }

@@ -63,7 +63,7 @@ Este documento complementa o [README](../README.md) com o **plano executável**:
 - [x] **F4.1** `PairingSession` com state machine validada (testes de cada transição)
 - [x] **F4.2** `Pin` value object: gera 6 dígitos cryptographically random
 - [x] **F4.3** Lógica de key exchange X25519 efêmero
-- [x] **F4.4** Mensagens de protocolo: `PairingRequest`, `PairingResponse`, `PairingConfirm`
+- [x] **F4.4** Mensagens de protocolo: `PairingRequest`, `PairingResponse`, `PairingConfirm` (UDP 7879, `winx-protocol::pairing`)
 - [x] **F4.5** Use cases `initiate_pairing(peer_id)`, `submit_pin(session_id, pin)`, `cancel_pairing`
 - [x] **F4.6** Expiração: timer 90s; rate limit 3 tentativas erradas
 - [x] **F4.7** Persistência: ao completar, grava em `peers.toml`

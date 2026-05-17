@@ -11,7 +11,9 @@ use crate::data_exchange::events::{ClipboardChanged, ClipboardReceived};
 use crate::discovery::events::{PeerAppeared, PeerDisappeared, PeerUpdated};
 use crate::identity::events::{DeviceCreated, PeerForgotten};
 use crate::input_control::events::{FocusSwitched, HotkeyTriggered, InputBlocked};
-use crate::pairing::events::{PairingCancelled, PairingCompleted, PairingFailed, PairingRequested};
+use crate::pairing::events::{
+    PairingCancelled, PairingCompleted, PairingFailed, PairingIncoming, PairingRequested,
+};
 use crate::transport::events::{ConnectionEstablished, ConnectionLost, StatsUpdated};
 
 /// União de todos os eventos de domínio.
@@ -29,6 +31,7 @@ pub enum DomainEvent {
 
     // --- Pairing (Sprint 3) ---
     PairingRequested(PairingRequested),
+    PairingIncoming(PairingIncoming),
     PairingCompleted(PairingCompleted),
     PairingCancelled(PairingCancelled),
     PairingFailed(PairingFailed),

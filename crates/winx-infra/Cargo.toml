@@ -37,6 +37,7 @@ rcgen          = { workspace = true }
 rustls-pemfile = { workspace = true }
 x509-parser    = { workspace = true }
 ed25519-dalek  = { workspace = true }
+sha2           = { workspace = true }
 windows          = { workspace = true }
 crossbeam-channel = { workspace = true }
 arboard           = { workspace = true }

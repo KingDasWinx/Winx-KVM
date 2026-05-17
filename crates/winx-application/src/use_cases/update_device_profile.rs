@@ -54,6 +54,7 @@ impl UpdateDeviceProfile {
             peer_id: PeerId::from_uuid(device.id.as_uuid()),
             username: device.username.clone(),
             fingerprint: device.public_key.fingerprint().to_string(),
+            pubkey_hex: hex::encode(device.public_key.as_bytes()),
             port: WINX_KVM_PORT,
         };
 

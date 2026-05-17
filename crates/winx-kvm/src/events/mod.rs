@@ -128,13 +128,12 @@ impl From<&DomainEvent> for FrontendEvent {
                 peer_username: Some(e.username.clone()),
                 ..FrontendEvent::empty("peers-updated")
             },
-            DomainEvent::PairingRequested(e) => FrontendEvent {
-                kind: "pairing-initiated",
+            DomainEvent::PairingIncoming(e) => FrontendEvent {
+                kind: "pairing-incoming",
                 peer_id: Some(e.peer_id.to_string()),
                 session_id: Some(e.session_id.to_string()),
                 peer_username: Some(e.peer_username.clone()),
-                pin: Some(e.pin.clone()),
-                ..FrontendEvent::empty("pairing-initiated")
+                ..FrontendEvent::empty("pairing-incoming")
             },
             DomainEvent::PairingCompleted(e) => FrontendEvent {
                 kind: "pairing-completed",

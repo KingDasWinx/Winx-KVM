@@ -33,11 +33,24 @@ impl Pin {
     }
 }
 
+/// Papel deste device na sessão de pareamento.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PairingRole {
+    Initiator,
+    Responder,
+}
+
 /// Estado da máquina de estados de uma `PairingSession`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PairingState {
+    /// Initiator: PIN gerado e exibido na UI.
     Initiated {
         pin: Pin,
+        attempts: u8,
+        initiated_at: OffsetDateTime,
+    },
+    /// Responder: aguardando o usuário digitar o PIN do initiator.
+    AwaitingPin {
         attempts: u8,
         initiated_at: OffsetDateTime,
     },
@@ -55,11 +68,14 @@ pub enum PairingState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PairingSession {
     pub id: SessionId,
+    pub role: PairingRole,
     pub peer_id: PeerId,
     /// Chave pública X25519 efêmera deste lado (32 bytes).
     pub ephemeral_public: [u8; 32],
-    /// Chave pública X25519 efêmera do peer (recebida via `accept_pairing`).
+    /// Chave pública X25519 efêmera do peer.
     pub peer_ephemeral_public: Option<[u8; 32]>,
+    /// Ed25519 do initiator (preenchido no responder ao aceitar pedido).
+    pub initiator_pubkey: Option<[u8; 32]>,
     pub state: PairingState,
 }
 
@@ -67,18 +83,51 @@ impl PairingSession {
     pub const TIMEOUT_SECS: i64 = 90;
     pub const MAX_ATTEMPTS: u8 = 3;
 
-    pub fn new(peer_id: PeerId, ephemeral_public: [u8; 32]) -> Self {
+    pub fn initiator(peer_id: PeerId, ephemeral_public: [u8; 32]) -> Self {
         Self {
             id: SessionId::new(),
+            role: PairingRole::Initiator,
             peer_id,
             ephemeral_public,
             peer_ephemeral_public: None,
+            initiator_pubkey: None,
             state: PairingState::Initiated {
                 pin: Pin::generate(),
                 attempts: 0,
                 initiated_at: OffsetDateTime::now_utc(),
             },
         }
+    }
+
+    /// Cria sessão no responder com o mesmo `session_id` enviado pelo initiator.
+    pub fn responder(
+        session_id: SessionId,
+        peer_id: PeerId,
+        initiator_ephemeral: [u8; 32],
+        ephemeral_public: [u8; 32],
+        initiator_pubkey: [u8; 32],
+    ) -> Self {
+        Self {
+            id: session_id,
+            role: PairingRole::Responder,
+            peer_id,
+            ephemeral_public,
+            peer_ephemeral_public: Some(initiator_ephemeral),
+            initiator_pubkey: Some(initiator_pubkey),
+            state: PairingState::AwaitingPin {
+                attempts: 0,
+                initiated_at: OffsetDateTime::now_utc(),
+            },
+        }
+    }
+
+    /// Compat: alias para `initiator`.
+    pub fn new(peer_id: PeerId, ephemeral_public: [u8; 32]) -> Self {
+        Self::initiator(peer_id, ephemeral_public)
+    }
+
+    pub fn is_responder(&self) -> bool {
+        self.role == PairingRole::Responder
     }
 
     /// Retorna o PIN se a sessão ainda estiver no estado `Initiated`.
@@ -90,13 +139,13 @@ impl PairingSession {
     }
 
     pub fn is_expired(&self) -> bool {
-        match &self.state {
-            PairingState::Initiated { initiated_at, .. } => {
-                let elapsed = OffsetDateTime::now_utc() - *initiated_at;
-                elapsed.whole_seconds() >= Self::TIMEOUT_SECS
-            }
-            _ => false,
-        }
+        let initiated_at = match &self.state {
+            PairingState::Initiated { initiated_at, .. } => *initiated_at,
+            PairingState::AwaitingPin { initiated_at, .. } => *initiated_at,
+            _ => return false,
+        };
+        let elapsed = OffsetDateTime::now_utc() - initiated_at;
+        elapsed.whole_seconds() >= Self::TIMEOUT_SECS
     }
 
     /// Verifica o PIN fornecido pelo usuário.
@@ -259,5 +308,15 @@ mod tests {
         s.complete(peer_pub);
         assert!(matches!(s.state, PairingState::Completed));
         assert_eq!(s.peer_ephemeral_public, Some(peer_pub));
+    }
+
+    #[test]
+    fn responder_uses_given_session_id() {
+        let sid = SessionId::new();
+        let peer_id = PeerId::from_uuid(uuid::Uuid::new_v4());
+        let s = PairingSession::responder(sid, peer_id, [1u8; 32], [2u8; 32], [3u8; 32]);
+        assert_eq!(s.id, sid);
+        assert!(s.pin().is_none());
+        assert!(s.is_responder());
     }
 }

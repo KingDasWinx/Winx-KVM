@@ -10,5 +10,7 @@
 pub mod events;
 pub mod session;
 
-pub use events::{PairingCancelled, PairingCompleted, PairingFailed, PairingRequested};
-pub use session::{PairingSession, PairingState, Pin};
+pub use events::{
+    PairingCancelled, PairingCompleted, PairingFailed, PairingIncoming, PairingRequested,
+};
+pub use session::{PairingRole, PairingSession, PairingState, Pin};

@@ -56,6 +56,7 @@ impl DiscoveryService {
             peer_id: PeerId::from_uuid(device.id.as_uuid()),
             username: device.username.clone(),
             fingerprint: device.public_key.fingerprint().to_string(),
+            pubkey_hex: hex::encode(device.public_key.as_bytes()),
             port: WINX_KVM_PORT,
         };
 
@@ -159,8 +160,9 @@ impl DiscoveryService {
                 if let Some(peer_id) = *self.own_peer_id.lock().await {
                     let info = AnnounceInfo {
                         peer_id,
-                        username: "".to_string(),
-                        fingerprint: "".to_string(),
+                        username: String::new(),
+                        fingerprint: String::new(),
+                        pubkey_hex: String::new(),
                         port: WINX_KVM_PORT,
                     };
                     if let Err(e) = self.reannounce(&info).await {
@@ -186,8 +188,9 @@ impl DiscoveryService {
         if let Some(peer_id) = *self.own_peer_id.lock().await {
             let info = AnnounceInfo {
                 peer_id,
-                username: "".to_string(),
-                fingerprint: "".to_string(),
+                username: String::new(),
+                fingerprint: String::new(),
+                pubkey_hex: String::new(),
                 port: WINX_KVM_PORT,
             };
             self.reannounce(&info).await?;

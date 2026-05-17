@@ -12,6 +12,7 @@
 pub mod clipboard_arboard;
 pub mod config_store_toml;
 pub mod discovery_mdns;
+pub mod pairing_udp;
 pub mod identity_store_toml;
 pub mod input_vk_map;
 pub mod input_win32;
@@ -26,6 +27,7 @@ pub mod transport_quic;
 pub use clipboard_arboard::ArboardClipboardBackend;
 pub use config_store_toml::TomlConfigStore;
 pub use discovery_mdns::MdnsDiscoveryAdapter;
+pub use pairing_udp::UdpPairingTransport;
 pub use identity_store_toml::TomlIdentityStore;
 pub use input_win32::Win32InputBackend;
 pub use monitor_win32::Win32MonitorBackend;

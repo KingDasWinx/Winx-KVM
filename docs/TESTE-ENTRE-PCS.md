@@ -64,7 +64,8 @@ O Winx-KVM usa:
 |-----------|-----------------|--------|--------|
 | **UDP** | **5353** | Entrada (rede local) | mDNS — descoberta `_winx-kvm._tcp` |
 | **UDP** | **7878** | Entrada (rede local) | QUIC — dados entre peers pareados |
-| **UDP** | alta (efêmera) | Saída | Respostas QUIC / mDNS |
+| **UDP** | **7879** | Entrada (rede local) | Pareamento pré-confiança (PIN) |
+| **UDP** | alta (efêmera) | Saída | Respostas QUIC / mDNS / pairing |
 
 ### Liberar no Windows Defender Firewall
 
@@ -101,10 +102,11 @@ Repita para **Regras de Saída** se o firewall bloquear saída UDP (menos comum 
 
 ### Pareamento (primeira vez)
 
-1. No PC que inicia: clique **Pair** no card do peer.  
-2. Anote o **PIN de 6 dígitos** exibido.  
-3. No outro PC: aceite/confirme e digite o PIN.  
-4. Toast verde **“Paired”** nos dois.
+1. **PC A (initiator):** clique **Pair** no card do peer — abre modal com **PIN de 6 dígitos** grande (não deve aparecer toast “Pairing request” neste PC).  
+2. **PC B (responder):** toast **“Pairing request”** no canto inferior — digite o mesmo PIN exibido no PC A.  
+3. Ambos mostram sucesso; `%APPDATA%\Winx-KVM\peers.toml` em cada máquina ganha o peer confiável.
+
+Se o pedido aparecer no mesmo PC que clicou em Pair, o pareamento de rede não está funcionando (ver firewall UDP **7879**).
 
 ### Conectar
 
@@ -127,8 +129,10 @@ Tray: clique esquerdo no ícone mostra/oculta a janela; menu **Show** / **Quit**
 
 | Sintoma | O que verificar |
 |---------|-----------------|
-| Peer não aparece na lista | Mesma rede? Firewall UDP 5353/7878? AP isolation desligado? |
-| Aparece mas Connect falha | Pareamento feito? Peer confiável em `%APPDATA%\Winx-KVM\peers.toml`? Firewall UDP 7878? |
+| Peer não aparece na lista | Mesma rede? Firewall UDP 5353? AP isolation desligado? |
+| Pair sem toast no outro PC | Firewall UDP **7879**? Mesma LAN? Rode setup de firewall (UAC) no app se disponível. |
+| Toast “Pairing request” no PC que iniciou Pair | Bug de versão antiga — atualize o build. |
+| Aparece mas Connect falha | Pareamento feito? `peers.toml` nos dois? Firewall UDP **7878**? |
 | Nome antigo na rede | Em Settings, salve o username de novo (re-anuncia mDNS); ou reinicie o app nos dois |
 | Tela branca ao abrir | Instale [WebView2 Runtime](https://go.microsoft.com/fwlink/p/?LinkId=2124703) |
 | `tauri build` falha no MSI | Instale WiX 3.x e garanta `light.exe` / `candle.exe` no PATH |
@@ -150,6 +154,7 @@ $env:WINX_LOG = "debug"
 |------|--------|
 | Executável | `winx-kvm.exe` |
 | Porta QUIC | **7878/UDP** |
+| Porta pairing | **7879/UDP** |
 | mDNS | `_winx-kvm._tcp.local.` |
 | Bundle ID | `br.com.winxkvm.app` |
 

@@ -13,12 +13,18 @@
 
 pub mod clipboard;
 pub mod input;
+pub mod pairing;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use clipboard::ClipboardPayload;
 pub use input::{InputEventDto, InputPayload};
+pub use pairing::{
+    decode_pairing_datagram, encode_pairing_body, encode_pairing_datagram,
+    message_requires_signature, pin_commitment, PairingCancel, PairingConfirm, PairingMessage,
+    PairingProtocolError, PairingRequest, PairingResponse, PAIRING_PROTOCOL_VERSION,
+};
 
 /// Versão atual do wire format. Incremente quando mudar `Payload` de forma
 /// incompatível.

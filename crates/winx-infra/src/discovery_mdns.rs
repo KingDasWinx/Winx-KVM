@@ -147,6 +147,7 @@ impl DiscoveryAdapter for MdnsDiscoveryAdapter {
             ("peer_id", info.peer_id.to_string()),
             ("username", username_truncated.clone()),
             ("fingerprint", info.fingerprint.clone()),
+            ("pubkey", info.pubkey_hex.clone()),
         ];
 
         debug!(

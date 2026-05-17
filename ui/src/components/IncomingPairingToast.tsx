@@ -23,10 +23,10 @@ export function IncomingPairingToast() {
   const { t } = useTranslation('common');
   const [phase, setPhase] = useState<ToastPhase>({ kind: 'idle' });
 
-  // Escuta evento pairing-initiated do lado responder
+  // Escuta pedido de pareamento recebido via rede (lado responder)
   useEffect(() => {
     const unlistenPromise = onWinxEvent((event) => {
-      if (event.kind === 'pairing-initiated') {
+      if (event.kind === 'pairing-incoming') {
         setPhase({
           kind: 'waiting-pin',
           sessionId: event.session_id,
@@ -65,12 +65,7 @@ export function IncomingPairingToast() {
     setPhase({ kind: 'submitting', sessionId: phase.sessionId, peerId: phase.peerId });
 
     try {
-      await submitPin(
-        phase.sessionId,
-        phase.pinValue,
-        '0'.repeat(64), // MVP: placeholder para peer_public_key_hex
-        phase.peerUsername,
-      );
+      await submitPin(phase.sessionId, phase.pinValue);
       // pairing-completed chegará via evento e atualizará a UI
     } catch (err: unknown) {
       const msg = typeof err === 'string' ? err : t('error.general.internal_error');

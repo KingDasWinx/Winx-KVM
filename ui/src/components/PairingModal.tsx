@@ -115,9 +115,7 @@ export function PairingModal({ target, onClose }: PairingModalProps) {
     if (pinValue.length !== 6 || !target) return;
     setPhase({ kind: 'submitting' });
     try {
-      // No MVP o peer_public_key_hex e ephemeral são passados via um placeholder
-      // (o handshake real de rede vem no Sprint 5). Por ora usamos zeros.
-      await submitPin(sessionId, pinValue, '0'.repeat(64), target.username);
+      await submitPin(sessionId, pinValue);
       // PairingCompleted chegará via evento
     } catch (err) {
       const msg = typeof err === 'string' ? err : t('error.general.internal_error');

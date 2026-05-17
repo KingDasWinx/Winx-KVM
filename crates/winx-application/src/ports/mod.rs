@@ -11,10 +11,14 @@ pub mod identity;
 pub mod input;
 pub mod monitor;
 pub mod network;
+pub mod pairing;
 pub mod transport;
 
 pub use clipboard::{ClipboardBackend, ClipboardWatcherHandle};
 pub use discovery::{AnnounceInfo, DiscoveryAdapter, DiscoveryEvent, WINX_KVM_PORT};
+pub use pairing::{
+    pairing_socket_addr, DecodedPairingMessage, PairingTransport, WINX_KVM_PAIRING_PORT,
+};
 pub use identity::{IdentityStore, SecretStore};
 pub use input::{CaptureHandle, InputBackend};
 pub use monitor::MonitorBackend;

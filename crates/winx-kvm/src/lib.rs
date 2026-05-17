@@ -30,7 +30,7 @@ use winx_domain::{discovery::DiscoveryRegistry, shared::ids::PeerId};
 use winx_infra::{
     generate_or_load_quic_cert, network_config, network_watcher::NetworkWatcher,
     ArboardClipboardBackend, KeyringSecretStore, MdnsDiscoveryAdapter, QuicTransportAdapter,
-    TomlConfigStore, TomlIdentityStore, Win32InputBackend, Win32MonitorBackend,
+    TomlConfigStore, TomlIdentityStore, UdpPairingTransport, Win32InputBackend, Win32MonitorBackend,
 };
 
 use app_state::{
@@ -103,8 +103,26 @@ fn init_services(
         bus.clone(),
     ));
 
+    let device = rt
+        .block_on(identity_store.load_device())
+        .map_err(|e| std::io::Error::other(e.to_string()))?
+        .ok_or("device deve existir após ensure_device")?;
+    let local_peer_id = PeerId::from_uuid(device.id.as_uuid());
+    let local_pubkey = *device.public_key.as_bytes();
+
+    let pairing_transport = Arc::new(
+        rt.block_on(UdpPairingTransport::bind())
+            .map_err(|e| std::io::Error::other(e.to_string()))?,
+    );
+
     let pairing = Arc::new(PairingService::new(
         Arc::clone(&identity_store) as _,
+        Arc::clone(&secret_store),
+        pairing_transport,
+        Arc::clone(&registry),
+        local_peer_id,
+        device.username.clone(),
+        local_pubkey,
         bus.clone(),
     ));
 
@@ -128,12 +146,6 @@ fn init_services(
         Arc::clone(&transport),
         bus.clone(),
     ));
-
-    let device = rt
-        .block_on(identity_store.load_device())
-        .map_err(|e| std::io::Error::other(e.to_string()))?
-        .ok_or("device deve existir após ensure_device")?;
-    let local_peer_id = PeerId::from_uuid(device.id.as_uuid());
 
     let clipboard_backend = Arc::new(ArboardClipboardBackend::new());
     let clipboard = Arc::new(ClipboardService::new(
@@ -271,6 +283,8 @@ pub fn run() {
     rt.spawn(async move {
         pairing_bg.spawn_cleanup_task();
     });
+    let pairing_net = Arc::clone(&services.pairing);
+    pairing_net.spawn_network_listener();
 
     // Spawnar network watcher task se disponível
     if let Some(net_rx) = net_events_rx {
@@ -281,8 +295,9 @@ pub fn run() {
                 if let Some(peer_id) = discovery_bg.get_own_peer_id().await {
                     let info = winx_application::ports::discovery::AnnounceInfo {
                         peer_id,
-                        username: "".to_string(),
-                        fingerprint: "".to_string(),
+                        username: String::new(),
+                        fingerprint: String::new(),
+                        pubkey_hex: String::new(),
                         port: WINX_KVM_PORT,
                     };
                     if let Err(e) = discovery_bg.reannounce(&info).await {

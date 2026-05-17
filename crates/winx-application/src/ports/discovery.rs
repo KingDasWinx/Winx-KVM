@@ -13,6 +13,8 @@ pub struct AnnounceInfo {
     pub peer_id: PeerId,
     pub username: String,
     pub fingerprint: String,
+    /// Chave pública Ed25519 em hex (64 chars) para validação no pairing.
+    pub pubkey_hex: String,
     pub port: u16,
 }
 

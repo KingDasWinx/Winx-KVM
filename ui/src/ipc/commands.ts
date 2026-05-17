@@ -67,13 +67,8 @@ export async function acceptPairing(peerId: string, peerEphemeralPublicHex: stri
   return await invoke<PairingInitiated>('accept_pairing', { peerId, peerEphemeralPublicHex });
 }
 
-export async function submitPin(
-  sessionId: string,
-  pin: string,
-  peerPublicKeyHex: string,
-  peerUsername: string,
-): Promise<void> {
-  return await invoke<void>('submit_pin', { sessionId, pin, peerPublicKeyHex, peerUsername });
+export async function submitPin(sessionId: string, pin: string): Promise<void> {
+  return await invoke<void>('submit_pin', { sessionId, pin });
 }
 
 export async function cancelPairing(sessionId: string): Promise<void> {
