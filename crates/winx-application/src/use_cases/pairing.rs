@@ -567,8 +567,7 @@ impl PairingService {
             .lock()
             .await
             .get(peer_id)
-            .map(|p| p.username.clone())
-            .unwrap_or_else(|| peer_id.to_string())
+            .map_or_else(|| peer_id.to_string(), |p| p.username.clone())
     }
 
     async fn load_signing_key(&self) -> Result<SigningKey, DomainError> {
@@ -641,7 +640,6 @@ fn verify_message_signature(
         )
     })?;
     let signature = Signature::from_bytes(signature_bytes);
-    use ed25519_dalek::Verifier;
-    Verifier::verify_strict(&vk, &body, &signature)
+    vk.verify_strict(&body, &signature)
         .map_err(|e| DomainError::new(DomainErrorCode::InternalError, e.to_string()))
 }

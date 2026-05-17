@@ -140,8 +140,8 @@ impl PairingSession {
 
     pub fn is_expired(&self) -> bool {
         let initiated_at = match &self.state {
-            PairingState::Initiated { initiated_at, .. } => *initiated_at,
-            PairingState::AwaitingPin { initiated_at, .. } => *initiated_at,
+            PairingState::Initiated { initiated_at, .. }
+            | PairingState::AwaitingPin { initiated_at, .. } => *initiated_at,
             _ => return false,
         };
         let elapsed = OffsetDateTime::now_utc() - initiated_at;

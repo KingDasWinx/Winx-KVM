@@ -156,7 +156,7 @@ impl DiscoveryService {
         mut rx: tokio::sync::mpsc::UnboundedReceiver<T>,
     ) {
         tokio::spawn(async move {
-            while let Some(_) = rx.recv().await {
+            while rx.recv().await.is_some() {
                 if let Some(peer_id) = *self.own_peer_id.lock().await {
                     let info = AnnounceInfo {
                         peer_id,
