@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use async_trait::async_trait;
 use mdns_sd::{IfKind, ServiceDaemon, ServiceEvent, ServiceInfo};
@@ -10,6 +10,36 @@ use winx_domain::shared::ids::PeerId;
 use winx_application::ports::discovery::{AnnounceInfo, DiscoveryAdapter, DiscoveryEvent};
 
 const SERVICE_TYPE: &str = "_winx-kvm._tcp.local.";
+
+fn resolve_interface_names_to_ips(names: &[String]) -> Vec<(String, IpAddr)> {
+    let mut resolved = Vec::new();
+    match crate::network_interfaces::list_active() {
+        Ok(interfaces) => {
+            for name in names {
+                let matched = interfaces
+                    .iter()
+                    .filter(|i| i.name == *name)
+                    .filter_map(|i| i.ipv4.map(|ip| (i.name.clone(), IpAddr::V4(ip))));
+                let mut found = false;
+                for entry in matched {
+                    resolved.push(entry);
+                    found = true;
+                }
+                if !found {
+                    warn!(
+                        "[MDNS] interface '{}' não encontrada ou sem IPv4 — será ignorada",
+                        name
+                    );
+                }
+            }
+        }
+        Err(e) => warn!(
+            "[MDNS] falha ao listar interfaces: {} — fallback para Name",
+            e
+        ),
+    }
+    resolved
+}
 
 /// Adapter mDNS para discovery de peers na rede local.
 ///
@@ -29,9 +59,25 @@ impl MdnsDiscoveryAdapter {
         })?;
 
         info!("[MDNS INIT] ServiceDaemon criado com sucesso");
+
+        Self::spawn_daemon_monitor(&daemon);
         Self::apply_interface_filter(&daemon, enabled_interfaces)?;
 
         Ok(Self { daemon })
+    }
+
+    fn spawn_daemon_monitor(daemon: &ServiceDaemon) {
+        match daemon.monitor() {
+            Ok(rx) => {
+                std::thread::spawn(move || {
+                    while let Ok(ev) = rx.recv() {
+                        info!("[MDNS DAEMON EVENT] {:?}", ev);
+                    }
+                    debug!("[MDNS DAEMON EVENT] monitor encerrado");
+                });
+            }
+            Err(e) => warn!("[MDNS INIT] falha ao subscrever monitor: {}", e),
+        }
     }
 
     fn apply_interface_filter(
@@ -40,30 +86,46 @@ impl MdnsDiscoveryAdapter {
     ) -> anyhow::Result<()> {
         if enabled_interfaces.is_empty() {
             info!("[MDNS INIT] usando todas as interfaces (mdns-sd 0.18.2 exclui point-to-point por padrão)");
-            debug!("[MDNS INIT] Interface filtering: mdns-sd 0.18 exclui WSL/vEthernet/tunnels automaticamente");
-        } else {
-            info!(
-                "[MDNS INIT] desabilitando todas e habilitando selecionadas: {:?}",
-                enabled_interfaces
-            );
-            daemon.disable_interface(IfKind::All).map_err(|e| {
-                warn!(
-                    "[MDNS INIT] falha ao desabilitar todas as interfaces: {}",
-                    e
-                );
-                anyhow::anyhow!("disable_interface(All) falhou: {e}")
-            })?;
+            return Ok(());
+        }
 
+        info!(
+            "[MDNS INIT] desabilitando todas e habilitando selecionadas: {:?}",
+            enabled_interfaces
+        );
+        daemon.disable_interface(IfKind::All).map_err(|e| {
+            warn!(
+                "[MDNS INIT] falha ao desabilitar todas as interfaces: {}",
+                e
+            );
+            anyhow::anyhow!("disable_interface(All) falhou: {e}")
+        })?;
+
+        let resolved = resolve_interface_names_to_ips(enabled_interfaces);
+
+        if resolved.is_empty() {
+            warn!("[MDNS INIT] nenhuma interface resolvida por IP — usando fallback IfKind::Name (menos robusto)");
             for name in enabled_interfaces {
                 daemon
                     .enable_interface(IfKind::Name(name.clone()))
                     .map_err(|e| {
-                        warn!("[MDNS INIT] falha ao habilitar interface '{}': {}", name, e);
+                        warn!("[MDNS INIT] falha ao habilitar Name('{}'): {}", name, e);
                         anyhow::anyhow!("enable_interface('{}') falhou: {e}", name)
                     })?;
             }
-            info!("[MDNS INIT] interfaces selecionadas habilitadas com sucesso");
+        } else {
+            for (name, ip) in &resolved {
+                info!(
+                    "[MDNS INIT] habilitando '{}' via IfKind::Addr({})",
+                    name, ip
+                );
+                daemon.enable_interface(IfKind::Addr(*ip)).map_err(|e| {
+                    warn!("[MDNS INIT] falha ao habilitar Addr({}): {}", ip, e);
+                    anyhow::anyhow!("enable_interface({}) falhou: {e}", ip)
+                })?;
+            }
         }
+        info!("[MDNS INIT] interfaces selecionadas habilitadas com sucesso");
         Ok(())
     }
 }
@@ -96,16 +158,17 @@ impl DiscoveryAdapter for MdnsDiscoveryAdapter {
             SERVICE_TYPE,
             &instance_name,
             &host_name,
-            "", // endereço auto-detectado pela lib
+            "",
             info.port,
             &properties[..],
         )
         .map_err(|e| {
             warn!("[MDNS ANNOUNCE] falha ao criar ServiceInfo: {}", e);
             anyhow::anyhow!("ServiceInfo inválido: {e}")
-        })?;
+        })?
+        .enable_addr_auto();
 
-        info!("[MDNS ANNOUNCE] ServiceInfo criado, registrando no daemon...");
+        info!("[MDNS ANNOUNCE] ServiceInfo criado com addr_auto, registrando no daemon...");
 
         self.daemon.register(service).map_err(|e| {
             warn!("[MDNS ANNOUNCE] daemon.register() falhou: {}", e);
@@ -305,23 +368,48 @@ impl DiscoveryAdapter for MdnsDiscoveryAdapter {
                 warn!("[MDNS SET_INTERFACES] falha ao habilitar All: {}", e);
                 anyhow::anyhow!("enable_interface(All) falhou: {e}")
             })?;
-        } else {
-            info!("[MDNS SET_INTERFACES] reconfigurando para: {:?}", names);
-            self.daemon.disable_interface(IfKind::All).map_err(|e| {
-                warn!("[MDNS SET_INTERFACES] falha ao desabilitar All: {}", e);
-                anyhow::anyhow!("disable_interface(All) falhou: {e}")
-            })?;
+            return Ok(());
+        }
 
+        info!("[MDNS SET_INTERFACES] reconfigurando para: {:?}", names);
+        self.daemon.disable_interface(IfKind::All).map_err(|e| {
+            warn!("[MDNS SET_INTERFACES] falha ao desabilitar All: {}", e);
+            anyhow::anyhow!("disable_interface(All) falhou: {e}")
+        })?;
+
+        let resolved = resolve_interface_names_to_ips(names);
+
+        if resolved.is_empty() {
+            warn!("[MDNS SET_INTERFACES] nenhuma interface resolvida por IP — fallback para Name");
             for name in names {
                 self.daemon
                     .enable_interface(IfKind::Name(name.clone()))
                     .map_err(|e| {
-                        warn!("[MDNS SET_INTERFACES] falha ao habilitar '{}': {}", name, e);
+                        warn!(
+                            "[MDNS SET_INTERFACES] falha ao habilitar Name('{}'): {}",
+                            name, e
+                        );
                         anyhow::anyhow!("enable_interface('{}') falhou: {e}", name)
                     })?;
             }
-            info!("[MDNS SET_INTERFACES] interfaces reconfiguradas com sucesso");
+        } else {
+            for (name, ip) in &resolved {
+                info!(
+                    "[MDNS SET_INTERFACES] habilitando '{}' via IfKind::Addr({})",
+                    name, ip
+                );
+                self.daemon
+                    .enable_interface(IfKind::Addr(*ip))
+                    .map_err(|e| {
+                        warn!(
+                            "[MDNS SET_INTERFACES] falha ao habilitar Addr({}): {}",
+                            ip, e
+                        );
+                        anyhow::anyhow!("enable_interface({}) falhou: {e}", ip)
+                    })?;
+            }
         }
+        info!("[MDNS SET_INTERFACES] interfaces reconfiguradas com sucesso");
         Ok(())
     }
 }

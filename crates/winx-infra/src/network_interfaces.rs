@@ -7,8 +7,6 @@ pub struct NetworkInterfaceInfo {
 }
 
 pub fn list_active() -> anyhow::Result<Vec<NetworkInterfaceInfo>> {
-    use std::net::Ipv4Addr;
-
     let mut result: Vec<NetworkInterfaceInfo> = Vec::new();
 
     for iface in if_addrs::get_if_addrs()? {
