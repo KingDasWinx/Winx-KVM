@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use winx_domain::{
     input_control::{
         events::{FocusSwitched, HotkeyTriggered, InputBlocked},
@@ -212,6 +212,7 @@ impl InputControlService {
         if self.input.set_cursor_clipped(None).await.is_err() {
             warn!("falha ao liberar ClipCursor após desconexão");
         } else {
+            let _ = self.input.set_cursor_visible(true).await;
             self.input.reset_mouse_delta_baseline();
             info!(%peer_id, "input local restaurado após desconexão");
         }
@@ -270,6 +271,9 @@ async fn handle_hotkey(
                 action: HotkeyAction::ToggleLock,
             }));
         }
+        HotkeyAction::ForceReset => {
+            force_local_reset(focus, layout, input, bus).await;
+        }
     }
 }
 
@@ -306,6 +310,38 @@ async fn panic_local(
     bus.publish(DomainEvent::HotkeyTriggered(HotkeyTriggered {
         action: HotkeyAction::PanicLocal,
     }));
+}
+
+async fn force_local_reset(
+    focus: Arc<Mutex<FocusState>>,
+    layout: Arc<Mutex<Option<MonitorLayout>>>,
+    input: Arc<dyn InputBackend>,
+    bus: EventBus,
+) {
+    // Force reset: libera tudo e volta pra local, ignorando estado de conexão.
+    {
+        let mut f = focus.lock().await;
+        f.target = FocusTarget::Local;
+        f.lock_mode = false;
+    }
+
+    input.set_pass_through(true);
+    let _ = input.set_cursor_clipped(None).await;
+    let _ = input.set_cursor_visible(true).await;
+    input.reset_mouse_delta_baseline();
+
+    if let Some(layout) = layout.lock().await.as_ref() {
+        let x = layout.local_right_edge_x().saturating_sub(8);
+        let y = layout.local_monitors.first().map_or(540, |m| {
+            m.y + i32::try_from(m.height).unwrap_or(1080) / 2
+        });
+        let _ = input.warp_cursor(x, y).await;
+    }
+
+    bus.publish(DomainEvent::HotkeyTriggered(HotkeyTriggered {
+        action: HotkeyAction::ForceReset,
+    }));
+    info!("force reset ativado — foco e cursor restaurados");
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -382,10 +418,22 @@ async fn try_edge_switch(
         return;
     }
 
-    let remote = layout_data.remote_virtual;
+    // Calcular coordenadas enquanto temos o lock
+    let _remote = layout_data.remote_virtual;
+    let primary = layout_data.local_monitors.first().copied().unwrap_or_else(|| {
+        use winx_domain::input_control::MonitorRect;
+        MonitorRect {
+            id: winx_domain::input_control::MonitorId(0),
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        }
+    });
+
     drop(layout_guard);
 
-    debug!(
+    info!(
         %screen_x,
         edge,
         %peer,
@@ -393,6 +441,7 @@ async fn try_edge_switch(
     );
 
     let from = current;
+
     switch_focus(
         FocusTarget::Remote(peer),
         from,
@@ -403,13 +452,15 @@ async fn try_edge_switch(
     )
     .await;
 
-    // Prende na borda esquerda do monitor virtual remoto (não no centro, que fica fora da tela).
-    let clip_x = remote.x;
-    let clip_y = remote.y
-        + i32::try_from(remote.height.saturating_sub(1)).unwrap_or(0) / 2;
-    let _ = input
-        .set_cursor_clipped(Some((clip_x, clip_y, 1, 1)))
-        .await;
+    // Esconde cursor, prende num rect 2x2 no centro do monitor primário
+    let safe_x = primary.x + i32::try_from(primary.width).unwrap_or(1920) / 2;
+    let safe_y = primary.y + i32::try_from(primary.height).unwrap_or(1080) / 2;
+
+    let _ = input.warp_cursor(safe_x, safe_y).await;
+    let _ = input.set_cursor_clipped(Some((safe_x - 1, safe_y - 1, 2, 2))).await;
+    let _ = input.set_cursor_visible(false).await;
+    input.reset_mouse_delta_baseline();
+
     let _ = input_tx;
 }
 
@@ -430,6 +481,7 @@ async fn switch_focus(
         FocusTarget::Local => {
             input.set_pass_through(true);
             let _ = input.set_cursor_clipped(None).await;
+            let _ = input.set_cursor_visible(true).await;
             input.reset_mouse_delta_baseline();
         }
         FocusTarget::Remote(_) => {

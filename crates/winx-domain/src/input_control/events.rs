@@ -8,6 +8,13 @@ use super::focus::FocusTarget;
 pub enum HotkeyAction {
     PanicLocal,
     ToggleLock,
+    ForceReset,
+}
+
+impl HotkeyAction {
+    pub fn try_force_reset() -> Option<Self> {
+        Some(HotkeyAction::ForceReset)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

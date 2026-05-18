@@ -17,34 +17,38 @@ use std::thread::{self, JoinHandle};
 
 use async_trait::async_trait;
 use crossbeam_channel::{Receiver, Sender};
-use tracing::{error, info};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use tracing::{error, info, warn};
+use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM, GetLastError};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
-    KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_EXTENDEDKEY,
+    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
     MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
-    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT, VK_HOME, VK_SCROLL,
+    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT, VK_HOME, VK_SCROLL, VK_END,
+    VK_CONTROL, VK_LCONTROL, VK_RCONTROL, VK_MENU, VK_LMENU, VK_RMENU,
+    MapVirtualKeyW, MAPVK_VK_TO_VSC_EX,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, ClipCursor, DispatchMessageW, GetMessageW, PeekMessageW, SetCursorPos,
     SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG,
-    MSLLHOOKSTRUCT, PM_REMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_HOTKEY, WM_KEYUP, WM_MOUSEMOVE,
-    WM_QUIT,
+    MSLLHOOKSTRUCT, PM_REMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP,
+    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_MOUSEMOVE, WM_QUIT,
 };
 use winx_application::ports::{CaptureHandle, InputBackend};
 use winx_domain::input_control::{HotkeyAction, InputEvent, KeyModifiers, MouseButton};
 
 use crate::input_vk_map::{portable_to_vk, vk_to_portable};
 
-const HOTKEY_PANIC: i32 = 1;
-const HOTKEY_LOCK: i32 = 2;
 static PASS_THROUGH: AtomicBool = AtomicBool::new(true);
 static HOOK_TX: OnceLock<Sender<HookMsg>> = OnceLock::new();
 static LAST_MOUSE_X: AtomicI32 = AtomicI32::new(0);
 static LAST_MOUSE_Y: AtomicI32 = AtomicI32::new(0);
 static HAVE_LAST_MOUSE: AtomicBool = AtomicBool::new(false);
 static SKIP_MOUSE_DELTA: AtomicBool = AtomicBool::new(false);
+static CTRL_DOWN: AtomicBool = AtomicBool::new(false);
+static ALT_DOWN: AtomicBool = AtomicBool::new(false);
+static CURSOR_HIDDEN: AtomicBool = AtomicBool::new(false);
 
 /// Delta de mouse com aritmética que não panic em hooks (debug overflow).
 pub(crate) fn mouse_delta(lx: i32, ly: i32, pt_x: i32, pt_y: i32) -> (i32, i32) {
@@ -61,6 +65,7 @@ enum HookMsg {
     Input(InputEvent),
     HotkeyPanic,
     HotkeyLock,
+    HotkeyForceReset,
     Stop,
 }
 
@@ -92,6 +97,22 @@ impl Default for Win32InputBackend {
     }
 }
 
+impl Drop for Win32InputBackend {
+    fn drop(&mut self) {
+        let _ = self.hook_tx.send(HookMsg::Stop);
+        unsafe {
+            let _ = ClipCursor(None);
+            if CURSOR_HIDDEN.load(Ordering::SeqCst) {
+                let mut c = windows::Win32::UI::WindowsAndMessaging::ShowCursor(true);
+                while c < 0 {
+                    c = windows::Win32::UI::WindowsAndMessaging::ShowCursor(true);
+                }
+                CURSOR_HIDDEN.store(false, Ordering::SeqCst);
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl InputBackend for Win32InputBackend {
     async fn start_capture(
@@ -116,6 +137,11 @@ impl InputBackend for Win32InputBackend {
                     HookMsg::Input(ev) => on_event(ev),
                     HookMsg::HotkeyPanic => on_hotkey(HotkeyAction::PanicLocal),
                     HookMsg::HotkeyLock => on_hotkey(HotkeyAction::ToggleLock),
+                    HookMsg::HotkeyForceReset => {
+                        if let Some(action) = HotkeyAction::try_force_reset() {
+                            on_hotkey(action);
+                        }
+                    }
                     HookMsg::Stop => break,
                 }
             }
@@ -182,6 +208,31 @@ impl InputBackend for Win32InputBackend {
     fn set_pass_through(&self, pass_through: bool) {
         self.pass_through.store(pass_through, Ordering::SeqCst);
         PASS_THROUGH.store(pass_through, Ordering::SeqCst);
+        info!(swallow = !pass_through, "swallow mode");
+    }
+
+    async fn set_cursor_visible(&self, visible: bool) -> anyhow::Result<()> {
+        tokio::task::spawn_blocking(move || unsafe {
+            let already_hidden = CURSOR_HIDDEN.load(Ordering::SeqCst);
+            if !visible && !already_hidden {
+                let mut c = windows::Win32::UI::WindowsAndMessaging::ShowCursor(false);
+                while c >= 0 {
+                    c = windows::Win32::UI::WindowsAndMessaging::ShowCursor(false);
+                }
+                CURSOR_HIDDEN.store(true, Ordering::SeqCst);
+                info!("cursor ocultado");
+            } else if visible && already_hidden {
+                let mut c = windows::Win32::UI::WindowsAndMessaging::ShowCursor(true);
+                while c < 0 {
+                    c = windows::Win32::UI::WindowsAndMessaging::ShowCursor(true);
+                }
+                CURSOR_HIDDEN.store(false, Ordering::SeqCst);
+                info!("cursor restaurado");
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("join: {e}"))?
     }
 }
 
@@ -189,7 +240,8 @@ fn send_inputs(inputs: &[INPUT]) -> anyhow::Result<()> {
     // SAFETY: slice INPUT válido.
     let sent = unsafe { SendInput(inputs, std::mem::size_of::<INPUT>() as i32) };
     if sent != inputs.len() as u32 {
-        anyhow::bail!("SendInput enviou {sent} de {}", inputs.len());
+        let err = unsafe { GetLastError() };
+        anyhow::bail!("SendInput enviou {sent}/{} last_err={:#x}", inputs.len(), err.0);
     }
     Ok(())
 }
@@ -253,21 +305,33 @@ fn inject_event(event: InputEvent) -> anyhow::Result<()> {
             pressed,
             modifiers: _,
         } => {
+            use windows::Win32::UI::Input::KeyboardAndMouse::{VIRTUAL_KEY, KEYBD_EVENT_FLAGS};
             let vk = portable_to_vk(code);
-            let mut flags = KEYEVENTF_SCANCODE;
+            let scan_full = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC_EX) };
+            let mut flags = if scan_full != 0 { KEYEVENTF_SCANCODE } else { KEYBD_EVENT_FLAGS(0) };
+            let extended = scan_full & 0xE000 != 0;
+            if extended {
+                flags |= KEYEVENTF_EXTENDEDKEY;
+            }
             if !pressed {
                 flags |= KEYEVENTF_KEYUP;
             }
+            let scan_byte = (scan_full & 0xFF) as u16;
+
             let input = INPUT {
                 r#type: INPUT_KEYBOARD,
                 Anonymous: INPUT_0 {
                     ki: KEYBDINPUT {
-                        wScan: vk,
+                        wVk: if scan_full == 0 { VIRTUAL_KEY(vk as u16) } else { VIRTUAL_KEY(0) },
+                        wScan: scan_byte,
                         dwFlags: flags,
                         ..Default::default()
                     },
                 },
             };
+            if scan_full == 0 {
+                warn!(?vk, "vk sem scancode mapeado — fallback para wVk");
+            }
             send_inputs(&[input])?;
         }
         _ => {}
@@ -276,12 +340,29 @@ fn inject_event(event: InputEvent) -> anyhow::Result<()> {
 }
 
 fn hook_thread_main(hook_tx: Sender<HookMsg>) {
-    if let Err(err) = run_hook_loop(&hook_tx) {
-        error!(?err, "thread de hooks encerrou com erro");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_hook_loop(&hook_tx)
+    }));
+
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::ClipCursor(None);
+        if CURSOR_HIDDEN.load(Ordering::SeqCst) {
+            let mut c = windows::Win32::UI::WindowsAndMessaging::ShowCursor(true);
+            while c < 0 {
+                c = windows::Win32::UI::WindowsAndMessaging::ShowCursor(true);
+            }
+            CURSOR_HIDDEN.store(false, Ordering::SeqCst);
+        }
+    }
+
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => error!(?err, "thread de hooks encerrou com erro"),
+        Err(panic) => error!(?panic, "hook thread panicou — cursor restaurado"),
     }
 }
 
-fn run_hook_loop(hook_tx: &Sender<HookMsg>) -> anyhow::Result<()> {
+fn run_hook_loop(_hook_tx: &Sender<HookMsg>) -> anyhow::Result<()> {
     // SAFETY: módulo válido.
     unsafe {
         let instance = GetModuleHandleW(None)?;
@@ -289,39 +370,11 @@ fn run_hook_loop(hook_tx: &Sender<HookMsg>) -> anyhow::Result<()> {
         let mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), instance, 0)?;
         let kb_hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), instance, 0)?;
 
-        use windows::Win32::UI::Input::KeyboardAndMouse::{
-            RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL,
-        };
-        RegisterHotKey(
-            HWND::default(),
-            HOTKEY_PANIC,
-            MOD_CONTROL | MOD_ALT,
-            VK_HOME.0 as u32,
-        )?;
-        RegisterHotKey(
-            HWND::default(),
-            HOTKEY_LOCK,
-            Default::default(),
-            VK_SCROLL.0 as u32,
-        )?;
-
         info!("hooks Win32 instalados");
 
         let mut msg = MSG::default();
         loop {
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                if msg.message == WM_HOTKEY {
-                    let id = msg.wParam.0 as i32;
-                    match id {
-                        HOTKEY_PANIC => {
-                            let _ = hook_tx.send(HookMsg::HotkeyPanic);
-                        }
-                        HOTKEY_LOCK => {
-                            let _ = hook_tx.send(HookMsg::HotkeyLock);
-                        }
-                        _ => {}
-                    }
-                }
                 if msg.message == WM_QUIT {
                     break;
                 }
@@ -336,8 +389,6 @@ fn run_hook_loop(hook_tx: &Sender<HookMsg>) -> anyhow::Result<()> {
 
         UnhookWindowsHookEx(mouse_hook)?;
         UnhookWindowsHookEx(kb_hook)?;
-        let _ = UnregisterHotKey(HWND::default(), HOTKEY_PANIC);
-        let _ = UnregisterHotKey(HWND::default(), HOTKEY_LOCK);
         let _ = ClipCursor(None);
     }
     Ok(())
@@ -404,13 +455,53 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
 
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 {
+        let info = unsafe { *(lparam.0 as *const KBDLLHOOKSTRUCT) };
+        let msg = wparam.0 as u32;
+        let vk = info.vkCode as u32;
+        let down = matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN);
+        let pressed = msg != WM_KEYUP as u32 && msg != WM_SYSKEYUP as u32;
+
+        // Rastrear modificadores
+        match vk {
+            v if v == VK_LCONTROL.0 as u32 || v == VK_RCONTROL.0 as u32 || v == VK_CONTROL.0 as u32 => {
+                CTRL_DOWN.store(down, Ordering::SeqCst);
+            }
+            v if v == VK_LMENU.0 as u32 || v == VK_RMENU.0 as u32 || v == VK_MENU.0 as u32 => {
+                ALT_DOWN.store(down, Ordering::SeqCst);
+            }
+            _ => {}
+        }
+
+        // Hotkeys inline (independem de PASS_THROUGH)
+        if down && CTRL_DOWN.load(Ordering::SeqCst) && ALT_DOWN.load(Ordering::SeqCst) {
+            if vk == VK_HOME.0 as u32 {
+                if let Some(tx) = HOOK_TX.get() {
+                    let _ = tx.send(HookMsg::HotkeyPanic);
+                    info!("hotkey inline disparado: Ctrl+Alt+Home");
+                }
+                return LRESULT(1);
+            }
+            if vk == VK_END.0 as u32 {
+                if let Some(tx) = HOOK_TX.get() {
+                    let _ = tx.send(HookMsg::HotkeyForceReset);
+                    info!("hotkey inline disparado: Ctrl+Alt+End");
+                }
+                return LRESULT(1);
+            }
+        }
+        if down && vk == VK_SCROLL.0 as u32 {
+            if let Some(tx) = HOOK_TX.get() {
+                let _ = tx.send(HookMsg::HotkeyLock);
+                info!("hotkey inline disparado: Scroll Lock");
+            }
+            return LRESULT(1);
+        }
+
         let swallow = !PASS_THROUGH.load(Ordering::SeqCst);
         if let Some(tx) = HOOK_TX.get() {
-            let info = unsafe { *(lparam.0 as *const KBDLLHOOKSTRUCT) };
-            let pressed = wparam.0 as u32 != WM_KEYUP as u32;
-            if let Some(code) = vk_to_portable(info.vkCode as u16) {
+            if let Some(portable_code) = vk_to_portable(info.vkCode as u16) {
                 let ev = InputEvent::Key {
-                    code,
+                    code: portable_code,
                     pressed,
                     modifiers: KeyModifiers::default(),
                 };

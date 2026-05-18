@@ -31,4 +31,7 @@ pub trait InputBackend: Send + Sync + 'static {
 
     /// Ignora o delta do próximo movimento do mouse (após clip/warp).
     fn reset_mouse_delta_baseline(&self);
+
+    /// Mostra (`true`) ou oculta (`false`) o cursor do Windows.
+    async fn set_cursor_visible(&self, visible: bool) -> anyhow::Result<()>;
 }
