@@ -34,4 +34,46 @@ pub trait InputBackend: Send + Sync + 'static {
 
     /// Mostra (`true`) ou oculta (`false`) o cursor do Windows.
     async fn set_cursor_visible(&self, visible: bool) -> anyhow::Result<()>;
+
+    /// Transição segura para estado remoto (HideSystem + Warp + Clip).
+    /// Sequência: PASS_THROUGH=false → Hide → Warp → Clip
+    async fn transition_to_remote(&self, center_x: i32, center_y: i32) -> anyhow::Result<()> {
+        // 1. PASS_THROUGH já foi setado em switch_focus
+        // 2. Ocultar cursor globalmente
+        self.hide_cursor_system().await?;
+        // 3. Warp com assinatura
+        self.warp_cursor_signed(center_x, center_y).await?;
+        // 4. Clip a um retângulo 4x4
+        self.set_cursor_clipped(Some((center_x - 2, center_y - 2, 4, 4))).await?;
+        self.reset_mouse_delta_baseline();
+        Ok(())
+    }
+
+    /// Transição segura para estado local (Release + Restore + Warp + PASS_THROUGH).
+    /// Sequência: Clip(None) → Restore → Warp(afastado) → PASS_THROUGH=true
+    async fn transition_to_local(&self, edge_x: i32, primary_center_x: i32, primary_center_y: i32) -> anyhow::Result<()> {
+        // 1. Liberar confinamento primeiro
+        self.set_cursor_clipped(None).await?;
+        // 2. Restaurar cursor visual
+        self.restore_cursor_system().await?;
+        // 3. Warp para longe da borda para evitar re-trigger
+        let safe_x = if edge_x > primary_center_x {
+            edge_x - 10
+        } else {
+            edge_x + 10
+        };
+        self.warp_cursor_signed(safe_x, primary_center_y).await?;
+        // 4. PASS_THROUGH será setado em switch_focus
+        self.reset_mouse_delta_baseline();
+        Ok(())
+    }
+
+    /// Oculta cursor globalmente via SetSystemCursor (não afetado por foco de janela)
+    async fn hide_cursor_system(&self) -> anyhow::Result<()>;
+
+    /// Restaura cursor via SystemParametersInfoW
+    async fn restore_cursor_system(&self) -> anyhow::Result<()>;
+
+    /// Warp com assinatura KVM para escapar do hook (0xDEADC0DE)
+    async fn warp_cursor_signed(&self, x: i32, y: i32) -> anyhow::Result<()>;
 }

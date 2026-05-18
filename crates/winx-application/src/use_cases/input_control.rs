@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use winx_domain::{
     input_control::{
         events::{FocusSwitched, HotkeyTriggered, InputBlocked},
@@ -442,6 +442,11 @@ async fn try_edge_switch(
 
     let from = current;
 
+    // Coordenar as transições de foco e cursor com ordem segura
+    let safe_x = primary.x + i32::try_from(primary.width).unwrap_or(1920) / 2;
+    let safe_y = primary.y + i32::try_from(primary.height).unwrap_or(1080) / 2;
+
+    // 1. Transição de foco (PASS_THROUGH e estado)
     switch_focus(
         FocusTarget::Remote(peer),
         from,
@@ -452,14 +457,10 @@ async fn try_edge_switch(
     )
     .await;
 
-    // Esconde cursor, prende num rect 2x2 no centro do monitor primário
-    let safe_x = primary.x + i32::try_from(primary.width).unwrap_or(1920) / 2;
-    let safe_y = primary.y + i32::try_from(primary.height).unwrap_or(1080) / 2;
-
-    let _ = input.warp_cursor(safe_x, safe_y).await;
-    let _ = input.set_cursor_clipped(Some((safe_x - 1, safe_y - 1, 2, 2))).await;
-    let _ = input.set_cursor_visible(false).await;
-    input.reset_mouse_delta_baseline();
+    // 2. Transição segura de cursor com ordem: Hide → Warp → Clip
+    if let Err(err) = input.transition_to_remote(safe_x, safe_y).await {
+        error!(?err, "falha na transição para remoto — cursor pode estar preso");
+    }
 
     let _ = input_tx;
 }
@@ -540,6 +541,15 @@ mod tests {
         }
         fn reset_mouse_delta_baseline(&self) {}
         async fn set_cursor_visible(&self, _: bool) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn hide_cursor_system(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn restore_cursor_system(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn warp_cursor_signed(&self, _: i32, _: i32) -> anyhow::Result<()> {
             Ok(())
         }
     }
