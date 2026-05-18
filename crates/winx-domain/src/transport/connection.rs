@@ -4,11 +4,29 @@ use time::OffsetDateTime;
 use crate::shared::ids::{PeerId, SessionId};
 
 /// Tipo de stream multiplexado na conexão QUIC.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(u8)]
 pub enum StreamKind {
-    Control,
-    Input,
-    Data,
+    Control = 0,
+    Input = 1,
+    Data = 2,
+    Audio = 3,
+}
+
+impl StreamKind {
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_u8(b: u8) -> Option<Self> {
+        match b {
+            0 => Some(Self::Control),
+            1 => Some(Self::Input),
+            2 => Some(Self::Data),
+            3 => Some(Self::Audio),
+            _ => None,
+        }
+    }
 }
 
 /// Estado de uma conexão com um peer remoto.
@@ -139,5 +157,19 @@ mod tests {
         conn.update_stats(stats);
         assert_eq!(conn.stats.rtt_ms, 12);
         assert_eq!(conn.stats.tx_bytes, 100);
+    }
+
+    #[test]
+    fn stream_kind_roundtrip() {
+        assert_eq!(StreamKind::Control.as_u8(), 0);
+        assert_eq!(StreamKind::Input.as_u8(), 1);
+        assert_eq!(StreamKind::Data.as_u8(), 2);
+        assert_eq!(StreamKind::Audio.as_u8(), 3);
+
+        assert_eq!(StreamKind::from_u8(0), Some(StreamKind::Control));
+        assert_eq!(StreamKind::from_u8(1), Some(StreamKind::Input));
+        assert_eq!(StreamKind::from_u8(2), Some(StreamKind::Data));
+        assert_eq!(StreamKind::from_u8(3), Some(StreamKind::Audio));
+        assert_eq!(StreamKind::from_u8(99), None);
     }
 }

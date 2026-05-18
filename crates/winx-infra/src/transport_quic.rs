@@ -243,7 +243,11 @@ impl ClientCertVerifier for Ed25519PeerClientVerifier {
 struct ConnEntry {
     connection: QuicConnection,
     /// `true` se este lado iniciou o handshake QUIC (`connect`); `false` se aceitou (`listen`).
+    #[allow(dead_code)]
     is_quic_client: bool,
+    /// Sender para streams inbound classificados (kind, sender, receiver).
+    #[allow(dead_code)]
+    inbound_streams_tx: mpsc::Sender<(StreamKind, StreamSender, StreamReceiver)>,
 }
 
 pub struct QuicTransportAdapter {
@@ -327,12 +331,14 @@ impl QuicTransportAdapter {
         conn_id: SessionId,
         connection: QuicConnection,
         is_quic_client: bool,
+        inbound_streams_tx: mpsc::Sender<(StreamKind, StreamSender, StreamReceiver)>,
     ) {
         self.connections.lock().await.insert(
             conn_id,
             ConnEntry {
                 connection,
                 is_quic_client,
+                inbound_streams_tx,
             },
         );
     }
@@ -420,18 +426,22 @@ impl TransportAdapter for QuicTransportAdapter {
                             }
                             let conn_id = SessionId::new();
                             let peer_addr = connection.remote_address();
+                            let (inbound_tx, inbound_rx) = mpsc::channel(8);
                             connections.lock().await.insert(
                                 conn_id,
                                 ConnEntry {
                                     connection: connection.clone(),
                                     is_quic_client: false,
+                                    inbound_streams_tx: inbound_tx.clone(),
                                 },
                             );
+                            spawn_inbound_stream_loop(connection.clone(), inbound_tx);
                             let _ = tx
                                 .send(IncomingConnection {
                                     conn_id,
                                     peer_addr,
                                     peer_public_key: peer_key,
+                                    inbound_streams: inbound_rx,
                                 })
                                 .await;
                             spawn_control_loop_responder(connection);
@@ -463,10 +473,15 @@ impl TransportAdapter for QuicTransportAdapter {
 
         let connection = self.endpoint.connect(peer_addr, "winx-kvm.local")?.await?;
         let conn_id = SessionId::new();
-        self.store_connection(conn_id, connection.clone(), true)
+        let (inbound_tx, inbound_rx) = mpsc::channel(8);
+        self.store_connection(conn_id, connection.clone(), true, inbound_tx.clone())
             .await;
+        spawn_inbound_stream_loop(connection.clone(), inbound_tx);
         spawn_control_loop_initiator(connection);
-        Ok(ActiveConnection { conn_id })
+        Ok(ActiveConnection {
+            conn_id,
+            inbound_streams: inbound_rx,
+        })
     }
 
     async fn open_stream(
@@ -474,21 +489,22 @@ impl TransportAdapter for QuicTransportAdapter {
         conn_id: SessionId,
         kind: StreamKind,
     ) -> anyhow::Result<(StreamSender, StreamReceiver)> {
-        let (connection, is_quic_client) = {
+        let connection = {
             let guard = self.connections.lock().await;
             let entry = guard
                 .get(&conn_id)
                 .ok_or_else(|| anyhow::anyhow!("conexão não encontrada"))?;
-            (entry.connection.clone(), entry.is_quic_client)
+            entry.connection.clone()
         };
 
-        let (send, recv) = if is_quic_client {
-            connection.open_bi().await?
-        } else {
-            connection.accept_bi().await?
-        };
+        let (mut send, recv) = connection.open_bi().await?;
 
-        info!(?kind, is_quic_client, "stream QUIC de aplicação aberto");
+        let mut hdr = [0u8; 5];
+        hdr[..4].copy_from_slice(winx_protocol::STREAM_HEADER_MAGIC);
+        hdr[4] = kind.as_u8();
+        send.write_all(&hdr).await?;
+
+        info!(?kind, "stream QUIC outbound aberto com header");
         Ok(bridge_bi_streams(send, recv))
     }
 
@@ -605,4 +621,40 @@ async fn read_frame(
     recv.read_exact(&mut buf).await?;
     let frame = winx_protocol::decode(&buf)?;
     Ok(Some(frame.payload))
+}
+
+fn spawn_inbound_stream_loop(
+    connection: QuicConnection,
+    tx: mpsc::Sender<(StreamKind, StreamSender, StreamReceiver)>,
+) {
+    tokio::spawn(async move {
+        loop {
+            let Ok((send, mut recv)) = connection.accept_bi().await else {
+                break;
+            };
+            let mut hdr = [0u8; 5];
+            let read = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                recv.read_exact(&mut hdr),
+            )
+            .await;
+            let Ok(Ok(_)) = read else {
+                warn!("stream entrante sem header válido — descartado");
+                continue;
+            };
+            if &hdr[..4] != winx_protocol::STREAM_HEADER_MAGIC {
+                warn!(?hdr, "magic inválido — descartado");
+                continue;
+            }
+            let Some(kind) = StreamKind::from_u8(hdr[4]) else {
+                warn!(byte = hdr[4], "kind desconhecido — descartado");
+                continue;
+            };
+            info!(?kind, "stream entrante classificado");
+            let (s, r) = bridge_bi_streams(send, recv);
+            if tx.send((kind, s, r)).await.is_err() {
+                break;
+            }
+        }
+    });
 }

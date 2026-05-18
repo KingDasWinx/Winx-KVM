@@ -539,6 +539,9 @@ mod tests {
             Ok(())
         }
         fn reset_mouse_delta_baseline(&self) {}
+        async fn set_cursor_visible(&self, _: bool) -> anyhow::Result<()> {
+            Ok(())
+        }
     }
 
     #[tokio::test]
@@ -610,8 +613,10 @@ mod tests {
             _: std::net::SocketAddr,
             _: [u8; 32],
         ) -> anyhow::Result<crate::ports::transport::ActiveConnection> {
+            let (_, rx) = tokio::sync::mpsc::channel(8);
             Ok(crate::ports::transport::ActiveConnection {
                 conn_id: winx_domain::shared::ids::SessionId::new(),
+                inbound_streams: rx,
             })
         }
         async fn open_stream(

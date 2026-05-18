@@ -28,7 +28,11 @@ pub use pairing::{
 
 /// Versão atual do wire format. Incremente quando mudar `Payload` de forma
 /// incompatível.
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
+
+/// Magic bytes para início de stream (identifica tipo de stream).
+/// Formato: [MAGIC 4 bytes (b"WXSK")][kind u8] = 5 bytes
+pub const STREAM_HEADER_MAGIC: &[u8; 4] = b"WXSK";
 
 /// Frame externo de todas as mensagens. Carrega a versão do protocolo para
 /// que peers detectem incompatibilidades cedo no handshake.

@@ -93,6 +93,7 @@ fn hotkey_action_str(a: winx_domain::input_control::HotkeyAction) -> String {
     match a {
         HotkeyAction::PanicLocal => "panic_local".to_string(),
         HotkeyAction::ToggleLock => "toggle_lock".to_string(),
+        HotkeyAction::ForceReset => "force_reset".to_string(),
     }
 }
 

@@ -7,7 +7,7 @@ use winx_domain::{
     shared::{ids::PeerId, DomainErrorCode},
     transport::{
         events::{ConnectionEstablished, ConnectionLost, StatsUpdated},
-        Connection, ConnectionStats,
+        Connection, ConnectionStats, StreamKind,
     },
     DomainError, DomainEvent,
 };
@@ -19,7 +19,9 @@ use crate::{
         IdentityStore,
     },
 };
-use winx_domain::transport::StreamKind;
+
+/// Armazena streams inbound por peer e tipo de stream.
+type InboundStreamStore = HashMap<(PeerId, StreamKind), (StreamSender, StreamReceiver)>;
 
 const MAX_RECONNECT_ATTEMPTS: u32 = 3;
 const STATS_RTT_DELTA_MS: u32 = 5;
@@ -30,6 +32,8 @@ pub struct TransportService {
     identity_store: Arc<dyn IdentityStore>,
     discovery_registry: Arc<Mutex<DiscoveryRegistry>>,
     bus: EventBus,
+    /// Armazena streams inbound para acesso posterior pelos use cases.
+    inbound_streams: Arc<Mutex<InboundStreamStore>>,
 }
 
 impl TransportService {
@@ -45,6 +49,7 @@ impl TransportService {
             identity_store,
             discovery_registry,
             bus,
+            inbound_streams: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -56,11 +61,11 @@ impl TransportService {
         let identity_store = Arc::clone(&self.identity_store);
         let bus = self.bus.clone();
         let adapter = Arc::clone(&self.adapter);
+        let inbound_streams = Arc::clone(&self.inbound_streams);
 
         tokio::spawn(async move {
             while let Some(conn) = incoming.recv().await {
-                if let Err(err) =
-                    handle_incoming(conn, &connections, &identity_store, &bus, &adapter).await
+                if let Err(err) = handle_incoming(conn, &connections, &identity_store, &bus, &adapter, &inbound_streams).await
                 {
                     warn!(?err, "falha ao aceitar conexão entrante");
                 }
@@ -189,6 +194,18 @@ impl TransportService {
             .await
             .get(&peer_id)
             .is_some_and(winx_domain::transport::Connection::is_active)
+    }
+
+    /// Recupera e remove um stream inbound armazenado para um peer.
+    pub async fn take_inbound_stream(
+        &self,
+        peer_id: PeerId,
+        kind: StreamKind,
+    ) -> Option<(StreamSender, StreamReceiver)> {
+        self.inbound_streams
+            .lock()
+            .await
+            .remove(&(peer_id, kind))
     }
 
     /// Abre stream QUIC para um peer conectado.
@@ -420,6 +437,7 @@ async fn handle_incoming(
     identity_store: &Arc<dyn IdentityStore>,
     bus: &EventBus,
     adapter: &Arc<dyn TransportAdapter>,
+    inbound_streams: &Arc<Mutex<InboundStreamStore>>,
 ) -> anyhow::Result<()> {
     let trusted = identity_store
         .load_peers()
@@ -454,6 +472,17 @@ async fn handle_incoming(
     conn.is_outbound = false;
     conn.mark_connected();
     drop(conns);
+
+    let mut inbound_rx = incoming.inbound_streams;
+    let streams_store = Arc::clone(inbound_streams);
+    tokio::spawn(async move {
+        while let Some((kind, tx, rx)) = inbound_rx.recv().await {
+            let mut store = streams_store.lock().await;
+            store.insert((peer_id, kind), (tx, rx));
+            drop(store);
+            info!(%peer_id, ?kind, "stream inbound armazenado");
+        }
+    });
 
     bus.publish(DomainEvent::ConnectionEstablished(ConnectionEstablished {
         peer_id,
@@ -530,8 +559,10 @@ mod tests {
             _peer_addr: SocketAddr,
             _peer_public_key: [u8; 32],
         ) -> anyhow::Result<ActiveConnection> {
+            let (_, rx) = tokio::sync::mpsc::channel(8);
             Ok(ActiveConnection {
                 conn_id: SessionId::new(),
+                inbound_streams: rx,
             })
         }
 
@@ -672,16 +703,19 @@ mod tests {
         assert!(is_outbound);
 
         let duplicate_id = SessionId::new();
+        let (_inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(8);
         handle_incoming(
             IncomingConnection {
                 conn_id: duplicate_id,
                 peer_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 7878),
                 peer_public_key: *key.as_bytes(),
+                inbound_streams: inbound_rx,
             },
             &service.test_connections(),
             &identity,
             &service.test_bus(),
             &adapter,
+            &Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         )
         .await
         .unwrap();

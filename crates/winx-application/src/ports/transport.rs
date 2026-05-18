@@ -7,22 +7,26 @@ use winx_domain::{
     transport::{ConnectionStats, StreamKind},
 };
 
+pub type StreamSender = tokio::sync::mpsc::Sender<Vec<u8>>;
+pub type StreamReceiver = tokio::sync::mpsc::Receiver<Vec<u8>>;
+pub type InboundStreamsReceiver =
+    tokio::sync::mpsc::Receiver<(StreamKind, StreamSender, StreamReceiver)>;
+
 /// Conexão QUIC aceita de um peer remoto.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct IncomingConnection {
     pub conn_id: SessionId,
     pub peer_addr: SocketAddr,
     pub peer_public_key: [u8; 32],
+    pub inbound_streams: InboundStreamsReceiver,
 }
 
 /// Conexão QUIC ativa iniciada localmente.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug)]
 pub struct ActiveConnection {
     pub conn_id: SessionId,
+    pub inbound_streams: InboundStreamsReceiver,
 }
-
-pub type StreamSender = tokio::sync::mpsc::Sender<Vec<u8>>;
-pub type StreamReceiver = tokio::sync::mpsc::Receiver<Vec<u8>>;
 
 /// Port de transporte QUIC entre peers pareados.
 #[async_trait]

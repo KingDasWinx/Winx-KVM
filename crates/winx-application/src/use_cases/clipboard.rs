@@ -348,8 +348,10 @@ mod tests {
             _: std::net::SocketAddr,
             _: [u8; 32],
         ) -> anyhow::Result<crate::ports::transport::ActiveConnection> {
+            let (_, rx) = mpsc::channel(8);
             Ok(crate::ports::transport::ActiveConnection {
                 conn_id: winx_domain::shared::ids::SessionId::new(),
+                inbound_streams: rx,
             })
         }
 
