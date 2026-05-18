@@ -36,6 +36,8 @@ pub struct Connection {
     pub peer_id: PeerId,
     pub state: ConnectionState,
     pub stats: ConnectionStats,
+    /// `true` se este device iniciou o handshake QUIC (`connect_peer`).
+    pub is_outbound: bool,
 }
 
 impl Connection {
@@ -46,6 +48,7 @@ impl Connection {
             peer_id,
             state: ConnectionState::Connecting,
             stats: ConnectionStats::default(),
+            is_outbound: false,
         }
     }
 

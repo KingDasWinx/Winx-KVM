@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
@@ -19,6 +19,8 @@ use crate::{
     protocol_convert::{encode_input_payload, input_event_from_dto},
     use_cases::TransportService,
 };
+
+static FIRST_INJECT: AtomicBool = AtomicBool::new(true);
 
 pub struct InputControlService {
     focus: Arc<Mutex<FocusState>>,
@@ -54,6 +56,7 @@ impl InputControlService {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn enable_for_peer(&self, peer_id: PeerId) -> Result<(), DomainError> {
         if *self.enabled.lock().await {
             let active = *self.active_peer.lock().await;
@@ -151,12 +154,17 @@ impl InputControlService {
             .await
             .map_err(|e| internal_err(&e.to_string()))?;
 
+        FIRST_INJECT.store(true, Ordering::SeqCst);
+
         let inject_input = Arc::clone(&self.input);
         tokio::spawn(async move {
             while let Some(bytes) = rx.recv().await {
                 match winx_protocol::decode(&bytes) {
                     Ok(frame) => {
                         if let winx_protocol::Payload::Input(p) = frame.payload {
+                            if FIRST_INJECT.swap(false, Ordering::SeqCst) {
+                                info!("primeiro evento de input remoto recebido");
+                            }
                             let ev = input_event_from_dto(&p.event);
                             if inject_input.inject(ev).await.is_err() {
                                 warn!("falha ao injetar input remoto");
@@ -204,8 +212,10 @@ impl InputControlService {
         if self.input.set_cursor_clipped(None).await.is_err() {
             warn!("falha ao liberar ClipCursor após desconexão");
         } else {
+            self.input.reset_mouse_delta_baseline();
             info!(%peer_id, "input local restaurado após desconexão");
         }
+        FIRST_INJECT.store(true, Ordering::SeqCst);
     }
 
     fn spawn_bus_subscriber(&self) {
@@ -230,6 +240,8 @@ impl InputControlService {
                         f.lock_mode = false;
                         input.set_pass_through(true);
                         let _ = input.set_cursor_clipped(None).await;
+                        input.reset_mouse_delta_baseline();
+                        FIRST_INJECT.store(true, Ordering::SeqCst);
                         info!(peer_id = %e.peer_id, "foco e cursor restaurados (connection lost)");
                     }
                 }
@@ -270,6 +282,8 @@ async fn panic_local(
     _input_tx: Arc<Mutex<Option<StreamSender>>>,
 ) {
     let from = focus.lock().await.target.clone();
+    let input_warp = Arc::clone(&input);
+    let layout_warp = Arc::clone(&layout);
     switch_focus(
         FocusTarget::Local,
         from,
@@ -279,6 +293,16 @@ async fn panic_local(
         bus.clone(),
     )
     .await;
+    if let Some(layout) = layout_warp.lock().await.as_ref() {
+        let x = layout.local_right_edge_x().saturating_sub(8);
+        let y = layout.local_monitors.first().map_or(540, |m| {
+            m.y + i32::try_from(m.height).unwrap_or(1080) / 2
+        });
+        if input_warp.warp_cursor(x, y).await.is_err() {
+            warn!("falha ao reposicionar cursor no panic local");
+        }
+    }
+    input_warp.reset_mouse_delta_baseline();
     bus.publish(DomainEvent::HotkeyTriggered(HotkeyTriggered {
         action: HotkeyAction::PanicLocal,
     }));
@@ -406,6 +430,7 @@ async fn switch_focus(
         FocusTarget::Local => {
             input.set_pass_through(true);
             let _ = input.set_cursor_clipped(None).await;
+            input.reset_mouse_delta_baseline();
         }
         FocusTarget::Remote(_) => {
             input.set_pass_through(false);
@@ -458,6 +483,10 @@ mod tests {
             Ok(())
         }
         fn set_pass_through(&self, _: bool) {}
+        async fn warp_cursor(&self, _: i32, _: i32) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn reset_mouse_delta_baseline(&self) {}
     }
 
     #[tokio::test]

@@ -62,6 +62,8 @@
     "status_disconnected": "Desconectado",
     "connect_button": "Conectar",
     "disconnect_button": "Desconectar",
+    "single_connect_hint": "Apenas um PC deve clicar em Conectar; o outro habilita o input automaticamente ao aceitar a sessão.",
+    "already_connected": "Já conectado a este dispositivo",
     "rtt_label": "Latência: {{ms}}ms",
     "stats_label": "↑{{tx}} ↓{{rx}}"
   },
@@ -104,7 +106,8 @@
     "input": {
       "capture_failed": "Falha ao capturar entrada",
       "injection_failed": "Falha ao enviar entrada para o dispositivo remoto",
-      "monitor_not_found": "Monitor não encontrado"
+      "monitor_not_found": "Monitor não encontrado",
+      "hook_thread_died": "Hooks de entrada pararam. Reinicie o Winx-KVM."
     },
     "media": {
       "vb_cable_missing": "VB-Audio Cable não está instalado",

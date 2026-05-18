@@ -21,15 +21,16 @@ use tracing::{error, info};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
-    KEYEVENTF_SCANCODE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
-    MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
-    MOUSEEVENTF_WHEEL, MOUSEINPUT, VK_HOME, VK_SCROLL,
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
+    KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
+    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT, VK_HOME, VK_SCROLL,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, ClipCursor, DispatchMessageW, GetMessageW, PeekMessageW, SetWindowsHookExW,
-    TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, PM_REMOVE,
-    WH_KEYBOARD_LL, WH_MOUSE_LL, WM_HOTKEY, WM_KEYUP, WM_MOUSEMOVE, WM_QUIT,
+    CallNextHookEx, ClipCursor, DispatchMessageW, GetMessageW, PeekMessageW, SetCursorPos,
+    SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG,
+    MSLLHOOKSTRUCT, PM_REMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_HOTKEY, WM_KEYUP, WM_MOUSEMOVE,
+    WM_QUIT,
 };
 use winx_application::ports::{CaptureHandle, InputBackend};
 use winx_domain::input_control::{HotkeyAction, InputEvent, KeyModifiers, MouseButton};
@@ -43,6 +44,17 @@ static HOOK_TX: OnceLock<Sender<HookMsg>> = OnceLock::new();
 static LAST_MOUSE_X: AtomicI32 = AtomicI32::new(0);
 static LAST_MOUSE_Y: AtomicI32 = AtomicI32::new(0);
 static HAVE_LAST_MOUSE: AtomicBool = AtomicBool::new(false);
+static SKIP_MOUSE_DELTA: AtomicBool = AtomicBool::new(false);
+
+/// Delta de mouse com aritmética que não panic em hooks (debug overflow).
+pub(crate) fn mouse_delta(lx: i32, ly: i32, pt_x: i32, pt_y: i32) -> (i32, i32) {
+    (pt_x.wrapping_sub(lx), pt_y.wrapping_sub(ly))
+}
+
+/// Próximo `WM_MOUSEMOVE` após clip/warp não gera delta espúrio.
+pub fn reset_mouse_delta_baseline() {
+    SKIP_MOUSE_DELTA.store(true, Ordering::SeqCst);
+}
 
 #[derive(Debug)]
 enum HookMsg {
@@ -107,6 +119,7 @@ impl InputBackend for Win32InputBackend {
                     HookMsg::Stop => break,
                 }
             }
+            error!("thread de repasse de hooks encerrou — reinicie o app");
         });
 
         Ok(CaptureHandle { id })
@@ -142,10 +155,28 @@ impl InputBackend for Win32InputBackend {
                     ClipCursor(None)?;
                 }
             }
+            reset_mouse_delta_baseline();
             Ok(())
         })
         .await
         .map_err(|e| anyhow::anyhow!("join: {e}"))?
+    }
+
+    async fn warp_cursor(&self, x: i32, y: i32) -> anyhow::Result<()> {
+        tokio::task::spawn_blocking(move || {
+            // SAFETY: coordenadas de tela válidas.
+            unsafe {
+                SetCursorPos(x, y)?;
+            }
+            reset_mouse_delta_baseline();
+            Ok(())
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("join: {e}"))?
+    }
+
+    fn reset_mouse_delta_baseline(&self) {
+        reset_mouse_delta_baseline();
     }
 
     fn set_pass_through(&self, pass_through: bool) {
@@ -319,10 +350,12 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
             let info = unsafe { *(lparam.0 as *const MSLLHOOKSTRUCT) };
             let ev = match wparam.0 as u32 {
                 x if x == WM_MOUSEMOVE as u32 => {
-                    let (dx, dy) = if HAVE_LAST_MOUSE.load(Ordering::SeqCst) {
+                    let (dx, dy) = if SKIP_MOUSE_DELTA.swap(false, Ordering::SeqCst) {
+                        (0, 0)
+                    } else if HAVE_LAST_MOUSE.load(Ordering::SeqCst) {
                         let lx = LAST_MOUSE_X.load(Ordering::SeqCst);
                         let ly = LAST_MOUSE_Y.load(Ordering::SeqCst);
-                        (info.pt.x - lx, info.pt.y - ly)
+                        mouse_delta(lx, ly, info.pt.x, info.pt.y)
                     } else {
                         HAVE_LAST_MOUSE.store(true, Ordering::SeqCst);
                         (0, 0)
@@ -389,4 +422,21 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
         }
     }
     unsafe { CallNextHookEx(HHOOK::default(), code, wparam, lparam) }
+}
+
+#[cfg(test)]
+mod delta_tests {
+    use super::mouse_delta;
+
+    #[test]
+    fn subtract_overflow_case_does_not_panic() {
+        let _ = mouse_delta(2_000_000_000, 0, -500_000_000, 0);
+    }
+
+    #[test]
+    fn clip_teleport_backward_delta() {
+        let (dx, dy) = mouse_delta(2568, 100, 100, 100);
+        assert_eq!(dx, -2468);
+        assert_eq!(dy, 0);
+    }
 }

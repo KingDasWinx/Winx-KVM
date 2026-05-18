@@ -122,21 +122,30 @@ Critérios visuais nos **dois** PCs (lista atualiza sozinha ao concluir o paream
 
 ### Conectar
 
-1. No card com badge **Paired**, clique **Connect**.  
-2. Toast **“Connected”** quando o QUIC subir; indicador de conexão verde e RTT nas estatísticas do card.  
-3. Input remoto e clipboard passam a funcionar conforme os épicos já implementados (mover foco na borda do monitor, etc.).
-4. **Settings → Home:** o card continua **conectado** (botão **Disconnect**, sem loading infinito ao clicar Connect de novo).
+1. **Somente um PC** clica **Connect** no card pareado (o outro aceita a sessão QUIC entrante automaticamente).  
+2. Toast **“Connected”** no PC que iniciou; no outro, log `conexão entrante aceita` + `input control habilitado` **sem** clicar Connect.  
+3. Indicador verde e RTT no card do PC que conectou.  
+4. **Não** clique Connect nos dois — isso cria duas sessões QUIC e o mouse remoto deixa de funcionar.
 
 ### KVM (mouse após conectar)
 
 Layout v0.1: monitor remoto virtual fica à **direita** do monitor local mais à direita no Windows.
 
-1. Com QUIC conectado, mova o mouse até a **borda direita** do monitor principal (coordenada real da tela, não só “muito para o lado” dentro da janela).
-2. O cursor deve “saltar” para o PC remoto (ClipCursor no monitor virtual); teclado e cliques passam a valer no remoto.
-3. `Ctrl+Alt+Home` no PC onde o mouse estava trava o retorno do foco para **local**.
-4. `Scroll Lock` impede troca de foco ao encostar na borda.
+1. Com QUIC conectado (passo acima), mova o mouse até a **borda direita** do monitor principal (coordenada real da tela).  
+2. O cursor deve “saltar” para o PC remoto; no log do remoto: `primeiro evento de input remoto recebido`.  
+3. `Ctrl+Alt+Home` devolve o cursor à **borda interna** do monitor local (lado direito, alguns pixels para dentro).  
+4. `Scroll Lock` impede troca de foco ao encostar na borda.  
+5. **Disconnect** no PC conectado → o outro deve logar `ConnectionLost` / `input local restaurado` e o cursor volta a se mover em ambos.
 
-**Logs (debug):** com `$env:WINX_LOG = "debug"`, após Connect procure `input control habilitado`; ao cruzar a borda, eventos de foco no bus. Procure também `conexão QUIC estabelecida` e ausência de `conexão rejeitada: peer não confiável` no listener após parear.
+**Logs (debug):** com `$env:WINX_LOG = "debug"`:
+
+| Momento | PC que clicou Connect | PC que só aceitou |
+|---------|----------------------|-------------------|
+| Após Connect | `conexão QUIC estabelecida`, `stream QUIC ... is_quic_client=true`, `input control habilitado` | `conexão entrante aceita`, `input control habilitado` (sem segundo Connect) |
+| Borda direita | `borda direita atingida — trocando foco para remoto` | `primeiro evento de input remoto recebido` |
+| Panic | foco local restaurado | — |
+
+Ausência de `attempt to subtract with overflow` em `input_win32.rs` (panic mata os hotkeys).
 
 ### Atalhos úteis (padrão v0.1)
 
@@ -158,7 +167,8 @@ Tray: clique esquerdo no ícone mostra/oculta a janela; menu **Show** / **Quit**
 | Toast “Pairing request” no PC que iniciou Pair | Bug de versão antiga — atualize o build. |
 | Aparece mas Connect falha | Pareamento feito? Badge **Paired** no card? `peers.toml` nos dois? Firewall UDP **7878**? Notificação de erro na UI? |
 | Card não mostra **Paired** após parear | Reinicie a lista (feche/abra Home) ou verifique `peers.toml`; build deve incluir `is_paired` em `list_discovered_peers` |
-| Conectado mas mouse não cruza a borda | No log, procure `there is no reactor running` após `hooks Win32 instalados` — build antigo; atualize e reinicie o app. Com fix: deve aparecer `borda direita atingida — trocando foco para remoto` ao encostar na borda |
+| Conectado mas mouse não cruza a borda | Connect nos **dois** PCs? Use só um. Log sem `primeiro evento de input remoto` no remoto = stream Input despareado. `attempt to subtract with overflow` = reinicie o app (build corrigido não deve panicar) |
+| Ctrl+Alt+Home não funciona | Hook morreu após panic no mouse — reinicie. Com build novo, panic não deve ocorrer |
 | Nome antigo na rede | Em Settings, salve o username de novo (re-anuncia mDNS); ou reinicie o app nos dois |
 | Tela branca ao abrir | Instale [WebView2 Runtime](https://go.microsoft.com/fwlink/p/?LinkId=2124703) |
 | `tauri build` falha no MSI | Instale WiX 3.x e garanta `light.exe` / `candle.exe` no PATH |

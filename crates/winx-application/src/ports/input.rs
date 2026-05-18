@@ -25,4 +25,10 @@ pub trait InputBackend: Send + Sync + 'static {
 
     /// Define se o hook deve repassar eventos ao Windows (`true`) ou engolir (`false`).
     fn set_pass_through(&self, pass_through: bool);
+
+    /// Move o cursor para coordenadas de tela absolutas.
+    async fn warp_cursor(&self, x: i32, y: i32) -> anyhow::Result<()>;
+
+    /// Ignora o delta do próximo movimento do mouse (após clip/warp).
+    fn reset_mouse_delta_baseline(&self);
 }

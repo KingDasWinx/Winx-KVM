@@ -55,10 +55,13 @@ impl TransportService {
         let connections = Arc::clone(&self.connections);
         let identity_store = Arc::clone(&self.identity_store);
         let bus = self.bus.clone();
+        let adapter = Arc::clone(&self.adapter);
 
         tokio::spawn(async move {
             while let Some(conn) = incoming.recv().await {
-                if let Err(err) = handle_incoming(conn, &connections, &identity_store, &bus).await {
+                if let Err(err) =
+                    handle_incoming(conn, &connections, &identity_store, &bus, &adapter).await
+                {
                     warn!(?err, "falha ao aceitar conexão entrante");
                 }
             }
@@ -120,6 +123,7 @@ impl TransportService {
             })?;
 
         conn.id = active.conn_id;
+        conn.is_outbound = true;
         conn.mark_connected();
         drop(entry);
 
@@ -415,6 +419,7 @@ async fn handle_incoming(
     connections: &Arc<Mutex<HashMap<PeerId, Connection>>>,
     identity_store: &Arc<dyn IdentityStore>,
     bus: &EventBus,
+    adapter: &Arc<dyn TransportAdapter>,
 ) -> anyhow::Result<()> {
     let trusted = identity_store
         .load_peers()
@@ -428,10 +433,25 @@ async fn handle_incoming(
 
     let peer_id = trusted.id;
     let mut conns = connections.lock().await;
+    if let Some(existing) = conns.get(&peer_id) {
+        if matches!(
+            existing.state,
+            winx_domain::transport::ConnectionState::Connected { .. }
+        ) {
+            let duplicate_id = incoming.conn_id;
+            drop(conns);
+            adapter
+                .close(duplicate_id, "duplicate connection")
+                .await?;
+            info!(%peer_id, "conexão entrante duplicada rejeitada");
+            return Ok(());
+        }
+    }
     let conn = conns
         .entry(peer_id)
         .or_insert_with(|| Connection::new(peer_id));
     conn.id = incoming.conn_id;
+    conn.is_outbound = false;
     conn.mark_connected();
     drop(conns);
 
@@ -446,6 +466,27 @@ async fn handle_incoming(
 
 fn internal_err(msg: &str) -> DomainError {
     DomainError::new(DomainErrorCode::InternalError, msg)
+}
+
+#[cfg(test)]
+impl TransportService {
+    async fn test_conn_snapshot(
+        &self,
+        peer_id: PeerId,
+    ) -> Option<(winx_domain::shared::ids::SessionId, bool)> {
+        let conns = self.connections.lock().await;
+        conns
+            .get(&peer_id)
+            .map(|c| (c.id, c.is_outbound))
+    }
+
+    fn test_connections(&self) -> Arc<Mutex<HashMap<PeerId, Connection>>> {
+        Arc::clone(&self.connections)
+    }
+
+    fn test_bus(&self) -> EventBus {
+        self.bus.clone()
+    }
 }
 
 #[cfg(test)]
@@ -467,7 +508,15 @@ mod tests {
     use super::*;
     use crate::ports::transport::{ActiveConnection, IncomingConnection, TransportAdapter};
 
-    struct MockTransportAdapter;
+    struct MockTransportAdapter {
+        closed: Arc<Mutex<Vec<SessionId>>>,
+    }
+
+    impl MockTransportAdapter {
+        fn new(closed: Arc<Mutex<Vec<SessionId>>>) -> Self {
+            Self { closed }
+        }
+    }
 
     #[async_trait]
     impl TransportAdapter for MockTransportAdapter {
@@ -507,7 +556,8 @@ mod tests {
             })
         }
 
-        async fn close(&self, _conn_id: SessionId, _reason: &str) -> anyhow::Result<()> {
+        async fn close(&self, conn_id: SessionId, _reason: &str) -> anyhow::Result<()> {
+            self.closed.lock().await.push(conn_id);
             Ok(())
         }
 
@@ -557,7 +607,7 @@ mod tests {
         let bus = EventBus::new();
         let mut rx = bus.subscribe();
 
-        let adapter = Arc::new(MockTransportAdapter);
+        let adapter = Arc::new(MockTransportAdapter::new(Arc::new(Mutex::new(Vec::new()))));
         let identity = Arc::new(MockIdentityStore {
             peers: vec![TrustedPeer::new(peer_id, "Peer A", key)],
         });
@@ -579,7 +629,7 @@ mod tests {
         let peer_id = PeerId::from_uuid(Uuid::new_v4());
         let key = PublicKey::new([0x22; 32]);
         let bus = EventBus::new();
-        let adapter = Arc::new(MockTransportAdapter);
+        let adapter = Arc::new(MockTransportAdapter::new(Arc::new(Mutex::new(Vec::new()))));
         let identity = Arc::new(MockIdentityStore {
             peers: vec![TrustedPeer::new(peer_id, "Peer B", key)],
         });
@@ -594,5 +644,53 @@ mod tests {
         service.disconnect_peer(peer_id).await.unwrap();
         let event = rx.recv().await.unwrap();
         assert!(matches!(event, DomainEvent::ConnectionLost(_)));
+    }
+
+    #[tokio::test]
+    async fn incoming_rejected_when_outbound_already_connected() {
+        let peer_id = PeerId::from_uuid(Uuid::new_v4());
+        let key = PublicKey::new([0x33; 32]);
+        let bus = EventBus::new();
+        let closed = Arc::new(Mutex::new(Vec::<SessionId>::new()));
+        let adapter: Arc<dyn TransportAdapter> =
+            Arc::new(MockTransportAdapter::new(Arc::clone(&closed)));
+        let identity: Arc<dyn IdentityStore> = Arc::new(MockIdentityStore {
+            peers: vec![TrustedPeer::new(peer_id, "Peer C", key)],
+        });
+        let registry = Arc::new(Mutex::new(DiscoveryRegistry::new()));
+        seed_discovered(&registry, peer_id).await;
+
+        let service = TransportService::new(
+            Arc::clone(&adapter),
+            Arc::clone(&identity),
+            registry,
+            bus,
+        );
+        service.connect_peer(peer_id).await.unwrap();
+
+        let (outbound_id, is_outbound) = service.test_conn_snapshot(peer_id).await.unwrap();
+        assert!(is_outbound);
+
+        let duplicate_id = SessionId::new();
+        handle_incoming(
+            IncomingConnection {
+                conn_id: duplicate_id,
+                peer_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 7878),
+                peer_public_key: *key.as_bytes(),
+            },
+            &service.test_connections(),
+            &identity,
+            &service.test_bus(),
+            &adapter,
+        )
+        .await
+        .unwrap();
+
+        let (kept_id, still_outbound) = service.test_conn_snapshot(peer_id).await.unwrap();
+        assert_eq!(kept_id, outbound_id);
+        assert!(still_outbound);
+
+        let closed_ids = closed.lock().await;
+        assert!(closed_ids.contains(&duplicate_id));
     }
 }

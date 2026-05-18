@@ -112,20 +112,26 @@ function PeerCard({ peer, connection, focus, onPair, onConnect, onDisconnect }: 
               {t('transport.disconnect_button')}
             </Button>
           ) : (
-            <Button
-              size="xs"
-              variant="filled"
-              loading={isBusy}
-              disabled={!peer.is_paired}
-              title={
-                !peer.is_paired
-                  ? t('error.transport.peer_not_trusted')
-                  : undefined
-              }
-              onClick={() => onConnect(peer.id)}
+            <Tooltip
+              label={t('transport.already_connected')}
+              disabled={!isConnected}
+              withArrow
             >
-              {t('transport.connect_button')}
-            </Button>
+              <Button
+                size="xs"
+                variant="filled"
+                loading={isBusy}
+                disabled={!peer.is_paired || isConnected}
+                title={
+                  !peer.is_paired
+                    ? t('error.transport.peer_not_trusted')
+                    : undefined
+                }
+                onClick={() => onConnect(peer.id)}
+              >
+                {t('transport.connect_button')}
+              </Button>
+            </Tooltip>
           )}
         </Group>
 
@@ -278,6 +284,9 @@ export function PeersPanel({ onPairRequest }: PeersPanelProps) {
   return (
     <Stack gap="sm">
       <Title order={3}>{t('discovery.section_title')}</Title>
+      <Text size="xs" c="dimmed">
+        {t('transport.single_connect_hint')}
+      </Text>
 
       {peers === null ? (
         <>
