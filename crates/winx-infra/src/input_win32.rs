@@ -231,7 +231,7 @@ impl InputBackend for Win32InputBackend {
     fn set_pass_through(&self, pass_through: bool) {
         self.pass_through.store(pass_through, Ordering::SeqCst);
         PASS_THROUGH.store(pass_through, Ordering::SeqCst);
-        info!(swallow = !pass_through, "swallow mode");
+        // info!(swallow = !pass_through, "swallow mode");
     }
 
     async fn set_cursor_visible(&self, visible: bool) -> anyhow::Result<()> {
