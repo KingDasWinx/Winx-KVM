@@ -36,14 +36,15 @@ pub trait InputBackend: Send + Sync + 'static {
     async fn set_cursor_visible(&self, visible: bool) -> anyhow::Result<()>;
 
     /// Transição segura para estado remoto (HideSystem + Warp + Clip).
-    /// Sequência: PASS_THROUGH=false → Hide → Warp → Clip
+    /// Sequência: Hide (não-crítico) → Warp (crítico) → Clip (crítico)
     async fn transition_to_remote(&self, center_x: i32, center_y: i32) -> anyhow::Result<()> {
-        // 1. PASS_THROUGH já foi setado em switch_focus
-        // 2. Ocultar cursor globalmente
-        self.hide_cursor_system().await?;
-        // 3. Warp com assinatura
+        // 1. Ocultar cursor globalmente — falha é não-crítica (só cosmética)
+        if let Err(e) = self.hide_cursor_system().await {
+            tracing::warn!(?e, "falha ao ocultar cursor (não-crítico, continuando)");
+        }
+        // 2. Warp com assinatura — crítico: sem warp, cursor fica preso na borda
         self.warp_cursor_signed(center_x, center_y).await?;
-        // 4. Clip a um retângulo 4x4
+        // 3. Clip a um retângulo 4x4 — crítico: sem clip, cursor pode escapar
         self.set_cursor_clipped(Some((center_x - 2, center_y - 2, 4, 4))).await?;
         self.reset_mouse_delta_baseline();
         Ok(())

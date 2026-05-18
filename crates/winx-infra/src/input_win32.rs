@@ -18,7 +18,7 @@ use std::thread::{self, JoinHandle};
 use async_trait::async_trait;
 use crossbeam_channel::{Receiver, Sender};
 use tracing::{error, info, warn};
-use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM, GetLastError, RECT};
+use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM, GetLastError};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
@@ -28,14 +28,14 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT, VK_HOME, VK_SCROLL, VK_END,
     VK_CONTROL, VK_LCONTROL, VK_RCONTROL, VK_MENU, VK_LMENU, VK_RMENU,
     MapVirtualKeyW, MAPVK_VK_TO_VSC_EX, MOUSEEVENTF_ABSOLUTE,
+    RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, ClipCursor, DispatchMessageW, GetMessageW, GetSystemMetrics,
-    PeekMessageW, SetCursorPos, SetSystemCursor, SystemParametersInfoW,
-    SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HHOOK, HCURSOR, KBDLLHOOKSTRUCT, MSG,
-    MSLLHOOKSTRUCT, PM_REMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP,
-    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_MOUSEMOVE, WM_QUIT, LLMHF_INJECTED, OCR_NORMAL,
-    SPI_SETCURSORS, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SM_CXSCREEN, SM_CYSCREEN,
+    PeekMessageW, SetCursorPos, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
+    HHOOK, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, PM_REMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL,
+    WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_MOUSEMOVE, WM_QUIT, WM_HOTKEY,
+    LLMHF_INJECTED, SM_CXSCREEN, SM_CYSCREEN,
 };
 use winx_application::ports::{CaptureHandle, InputBackend};
 use winx_domain::input_control::{HotkeyAction, InputEvent, KeyModifiers, MouseButton};
@@ -55,27 +55,20 @@ static CTRL_DOWN: AtomicBool = AtomicBool::new(false);
 static ALT_DOWN: AtomicBool = AtomicBool::new(false);
 static CURSOR_HIDDEN: AtomicBool = AtomicBool::new(false);
 
-/// Cria um cursor transparente para ocultação global
-fn create_transparent_cursor() -> HCURSOR {
-    // Usar CreateCursor de forma segura - na prática, o SetSystemCursor
-    // será chamado que restaurará o comportamento default
-    // Para uma implantação real, seria necessário usar uma API alternativa
-    // ou armazenar um cursor pré-criado de forma segura.
-    HCURSOR::default()
-}
-
 /// Restauração incondicional e síncrona dos recursos de hardware.
 /// Garante que o usuário recupere o controle físico mesmo se a tarefa Tokio travar.
 pub fn unconditional_release_hardware_sync() {
     PASS_THROUGH.store(true, Ordering::SeqCst);
     unsafe {
         let _ = ClipCursor(None);
-        let _ = SystemParametersInfoW(
-            SPI_SETCURSORS,
-            0,
-            None,
-            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-        );
+        // Restaurar cursor se estava oculto
+        if CURSOR_HIDDEN.load(Ordering::SeqCst) {
+            let mut c = windows::Win32::UI::WindowsAndMessaging::ShowCursor(true);
+            while c < 0 {
+                c = windows::Win32::UI::WindowsAndMessaging::ShowCursor(true);
+            }
+            CURSOR_HIDDEN.store(false, Ordering::SeqCst);
+        }
     }
     info!("liberação incondicional de hardware executada");
 }
@@ -124,111 +117,6 @@ impl Win32InputBackend {
 impl Default for Win32InputBackend {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Estrutura de gerenciamento de cursor para transições seguras
-pub struct CursorManager;
-
-impl CursorManager {
-    /// Oculta o cursor em todo o sistema operacional substituindo a renderização primária
-    pub async fn hide_system_cursor() -> anyhow::Result<()> {
-        tokio::task::spawn_blocking(|| {
-            let blank = create_transparent_cursor();
-            unsafe {
-                SetSystemCursor(blank, OCR_NORMAL)?;
-            }
-            info!("cursor ocultado globalmente via SetSystemCursor");
-            Ok(())
-        })
-        .await?
-    }
-
-    /// Restaura o cursor padrão do sistema
-    pub async fn restore_system_cursor() -> anyhow::Result<()> {
-        tokio::task::spawn_blocking(|| {
-            unsafe {
-                SystemParametersInfoW(
-                    SPI_SETCURSORS,
-                    0,
-                    None,
-                    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-                )?;
-            }
-            info!("cursor restaurado via SystemParametersInfoW");
-            Ok(())
-        })
-        .await?
-    }
-
-    /// Restringe o movimento físico do cursor a um retângulo de amortecimento centrado
-    pub async fn establish_clip_boundary(cx: i32, cy: i32) -> anyhow::Result<()> {
-        tokio::task::spawn_blocking(move || {
-            let rect = RECT {
-                left: cx - 2,
-                top: cy - 2,
-                right: cx + 2,
-                bottom: cy + 2,
-            };
-            unsafe {
-                ClipCursor(Some(&rect))?;
-            }
-            info!(left=rect.left, top=rect.top, right=rect.right, bottom=rect.bottom, "confinamento de cursor estabelecido");
-            Ok(())
-        })
-        .await?
-    }
-
-    /// Remove qualquer confinamento de cursor
-    pub async fn release_clip_boundary() -> anyhow::Result<()> {
-        tokio::task::spawn_blocking(|| {
-            unsafe {
-                ClipCursor(None)?;
-            }
-            info!("confinamento de cursor removido");
-            Ok(())
-        })
-        .await?
-    }
-
-    /// Executa o teleporte assinado para o cursor com assinatura KVM_SIGNATURE
-    pub async fn execute_signed_teleport(x: i32, y: i32) -> anyhow::Result<()> {
-        tokio::task::spawn_blocking(move || {
-            unsafe {
-                let screen_width = GetSystemMetrics(SM_CXSCREEN);
-                let screen_height = GetSystemMetrics(SM_CYSCREEN);
-
-                if screen_width == 0 || screen_height == 0 {
-                    anyhow::bail!("Dimensões de monitor inválidas");
-                }
-
-                // Normalização espacial para MOUSEEVENTF_ABSOLUTE (escala 0-65535)
-                let norm_x = ((x as i64) * 65535 / (screen_width as i64)) as i32;
-                let norm_y = ((y as i64) * 65535 / (screen_height as i64)) as i32;
-
-                let input_packet = INPUT {
-                    r#type: INPUT_MOUSE,
-                    Anonymous: INPUT_0 {
-                        mi: MOUSEINPUT {
-                            dx: norm_x,
-                            dy: norm_y,
-                            mouseData: 0,
-                            dwFlags: MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE,
-                            time: 0,
-                            dwExtraInfo: KVM_SIGNATURE,
-                        },
-                    },
-                };
-
-                let executed = SendInput(&[input_packet], std::mem::size_of::<INPUT>() as i32);
-                if executed != 1 {
-                    anyhow::bail!("SendInput assinado falhou: {}", executed);
-                }
-                info!(x, y, norm_x, norm_y, "teleporte de cursor assinado executado");
-                Ok(())
-            }
-        })
-        .await?
     }
 }
 
@@ -371,15 +259,49 @@ impl InputBackend for Win32InputBackend {
     }
 
     async fn hide_cursor_system(&self) -> anyhow::Result<()> {
-        CursorManager::hide_system_cursor().await
+        self.set_cursor_visible(false).await
     }
 
     async fn restore_cursor_system(&self) -> anyhow::Result<()> {
-        CursorManager::restore_system_cursor().await
+        self.set_cursor_visible(true).await
     }
 
     async fn warp_cursor_signed(&self, x: i32, y: i32) -> anyhow::Result<()> {
-        CursorManager::execute_signed_teleport(x, y).await
+        tokio::task::spawn_blocking(move || {
+            unsafe {
+                let screen_width = GetSystemMetrics(SM_CXSCREEN);
+                let screen_height = GetSystemMetrics(SM_CYSCREEN);
+
+                if screen_width == 0 || screen_height == 0 {
+                    anyhow::bail!("Dimensões de monitor inválidas");
+                }
+
+                let norm_x = ((x as i64) * 65535 / (screen_width as i64)) as i32;
+                let norm_y = ((y as i64) * 65535 / (screen_height as i64)) as i32;
+
+                let input_packet = INPUT {
+                    r#type: INPUT_MOUSE,
+                    Anonymous: INPUT_0 {
+                        mi: MOUSEINPUT {
+                            dx: norm_x,
+                            dy: norm_y,
+                            mouseData: 0,
+                            dwFlags: MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE,
+                            time: 0,
+                            dwExtraInfo: KVM_SIGNATURE,
+                        },
+                    },
+                };
+
+                let executed = SendInput(&[input_packet], std::mem::size_of::<INPUT>() as i32);
+                if executed != 1 {
+                    anyhow::bail!("SendInput assinado falhou: {}", executed);
+                }
+                info!(x, y, norm_x, norm_y, "teleporte de cursor assinado executado");
+                Ok(())
+            }
+        })
+        .await?
     }
 }
 
@@ -519,21 +441,71 @@ fn run_hook_loop(_hook_tx: &Sender<HookMsg>) -> anyhow::Result<()> {
 
         info!("hooks Win32 instalados");
 
+        // Registrar hotkeys globais como fallback para casos onde o WH_KEYBOARD_LL é desabilitado
+        let hotkey_panic_ok = RegisterHotKey(None, 1, MOD_CONTROL | MOD_ALT, u32::from(VK_HOME.0)).is_ok();
+        let hotkey_reset_ok = RegisterHotKey(None, 2, MOD_CONTROL | MOD_ALT, u32::from(VK_END.0)).is_ok();
+        if !hotkey_panic_ok {
+            warn!("RegisterHotKey Ctrl+Alt+Home falhou — apenas hook inline ativo");
+        }
+        if !hotkey_reset_ok {
+            warn!("RegisterHotKey Ctrl+Alt+End falhou — apenas hook inline ativo");
+        }
+
         let mut msg = MSG::default();
-        loop {
+        'message_loop: loop {
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                 if msg.message == WM_QUIT {
-                    break;
+                    break 'message_loop;
                 }
+                if msg.message == WM_HOTKEY {
+                    if let Some(tx) = HOOK_TX.get() {
+                        match msg.wParam.0 as u32 {
+                            1 => {
+                                let _ = tx.send(HookMsg::HotkeyPanic);
+                                info!("hotkey via RegisterHotKey disparou: Ctrl+Alt+Home");
+                            }
+                            2 => {
+                                let _ = tx.send(HookMsg::HotkeyForceReset);
+                                info!("hotkey via RegisterHotKey disparou: Ctrl+Alt+End");
+                            }
+                            _ => {}
+                        }
+                    }
+                } else {
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+            }
+
+            if GetMessageW(&mut msg, None, 0, 0).0 <= 0 {
+                break;
+            }
+            if msg.message == WM_HOTKEY {
+                if let Some(tx) = HOOK_TX.get() {
+                    match msg.wParam.0 as u32 {
+                        1 => {
+                            let _ = tx.send(HookMsg::HotkeyPanic);
+                            info!("hotkey via RegisterHotKey disparou: Ctrl+Alt+Home");
+                        }
+                        2 => {
+                            let _ = tx.send(HookMsg::HotkeyForceReset);
+                            info!("hotkey via RegisterHotKey disparou: Ctrl+Alt+End");
+                        }
+                        _ => {}
+                    }
+                }
+            } else {
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
-
-            if GetMessageW(&mut msg, None, 0, 0).0 == 0 {
-                break;
-            }
         }
 
+        if hotkey_panic_ok {
+            let _ = UnregisterHotKey(None, 1);
+        }
+        if hotkey_reset_ok {
+            let _ = UnregisterHotKey(None, 2);
+        }
         UnhookWindowsHookEx(mouse_hook)?;
         UnhookWindowsHookEx(kb_hook)?;
         let _ = ClipCursor(None);

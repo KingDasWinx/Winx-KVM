@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
@@ -33,6 +33,7 @@ pub struct InputControlService {
     input_tx: Arc<Mutex<Option<StreamSender>>>,
     seq: Arc<AtomicU64>,
     enabled: Arc<Mutex<bool>>,
+    remote_dx_accum: Arc<AtomicI32>,
 }
 
 impl InputControlService {
@@ -53,6 +54,7 @@ impl InputControlService {
             input_tx: Arc::new(Mutex::new(None)),
             seq: Arc::new(AtomicU64::new(0)),
             enabled: Arc::new(Mutex::new(false)),
+            remote_dx_accum: Arc::new(AtomicI32::new(0)),
         }
     }
 
@@ -97,6 +99,7 @@ impl InputControlService {
         let service_active = Arc::clone(&self.active_peer);
         let service_self_input = Arc::clone(&self.input);
         let service_enabled = Arc::clone(&self.enabled);
+        let service_remote_dx = Arc::clone(&self.remote_dx_accum);
 
         // Hooks Win32 disparam em std::thread — não usar `tokio::spawn` direto no callback.
         let runtime = tokio::runtime::Handle::current();
@@ -112,13 +115,14 @@ impl InputControlService {
                 let active = service_active.clone();
                 let input_be = service_self_input.clone();
                 let enabled = service_enabled.clone();
+                let remote_dx = service_remote_dx.clone();
                 let seq = Arc::clone(&service_seq);
                 runtime.spawn(async move {
                     if !*enabled.lock().await {
                         return;
                     }
                     handle_local_input(
-                        ev, focus, layout, input_tx, transport, bus, active, input_be, &seq,
+                        ev, focus, layout, input_tx, transport, bus, active, input_be, &seq, remote_dx,
                     )
                     .await;
                 });
@@ -155,6 +159,7 @@ impl InputControlService {
             .map_err(|e| internal_err(&e.to_string()))?;
 
         FIRST_INJECT.store(true, Ordering::SeqCst);
+        self.remote_dx_accum.store(0, Ordering::SeqCst);
 
         let inject_input = Arc::clone(&self.input);
         tokio::spawn(async move {
@@ -166,6 +171,7 @@ impl InputControlService {
                                 info!("primeiro evento de input remoto recebido");
                             }
                             let ev = input_event_from_dto(&p.event);
+                            tracing::debug!(?ev, "input remoto injetado");
                             if inject_input.inject(ev).await.is_err() {
                                 warn!("falha ao injetar input remoto");
                             }
@@ -201,6 +207,7 @@ impl InputControlService {
         *self.active_peer.lock().await = None;
         *self.enabled.lock().await = false;
         *self.input_tx.lock().await = None;
+        self.remote_dx_accum.store(0, Ordering::SeqCst);
 
         {
             let mut f = self.focus.lock().await;
@@ -226,6 +233,7 @@ impl InputControlService {
         let input = Arc::clone(&self.input);
         let input_tx = Arc::clone(&self.input_tx);
         let enabled = Arc::clone(&self.enabled);
+        let remote_dx = Arc::clone(&self.remote_dx_accum);
 
         tokio::spawn(async move {
             while let Ok(event) = rx.recv().await {
@@ -236,6 +244,7 @@ impl InputControlService {
                         *active.lock().await = None;
                         *enabled.lock().await = false;
                         *input_tx.lock().await = None;
+                        remote_dx.store(0, Ordering::SeqCst);
                         let mut f = focus.lock().await;
                         f.target = FocusTarget::Local;
                         f.lock_mode = false;
@@ -355,6 +364,7 @@ async fn handle_local_input(
     active: Arc<Mutex<Option<PeerId>>>,
     input: Arc<dyn InputBackend>,
     seq: &Arc<AtomicU64>,
+    remote_dx_accum: Arc<AtomicI32>,
 ) {
     let state = focus.lock().await.clone();
     if state.lock_mode {
@@ -379,10 +389,34 @@ async fn handle_local_input(
         }
         FocusTarget::Remote(_peer) => {
             input.set_pass_through(false);
+            // Detectar volta para local via movimento esquerda acumulado > 100px
+            if let InputEvent::MouseMove { dx, .. } = &ev {
+                if *dx > 0 {
+                    // Movimento pra direita: mantém intenção de estar no remoto
+                    remote_dx_accum.store(0, Ordering::SeqCst);
+                } else if *dx < 0 {
+                    // Movimento pra esquerda: acumula
+                    let new_accum = remote_dx_accum.fetch_add(*dx, Ordering::SeqCst) + *dx;
+                    if new_accum < -100 {
+                        remote_dx_accum.store(0, Ordering::SeqCst);
+                        // Retornar pra local
+                        try_switch_back_to_local(
+                            Arc::clone(&focus),
+                            Arc::clone(&layout),
+                            Arc::clone(&input),
+                            bus.clone(),
+                            Arc::clone(&active),
+                        )
+                        .await;
+                        return;
+                    }
+                }
+            }
+            // Enviar input para o remoto
             if let Some(tx) = input_tx.lock().await.as_ref() {
                 let n = seq.fetch_add(1, Ordering::SeqCst);
                 if let Ok(bytes) = encode_input_payload(n, &ev) {
-                    // Length-prefix é aplicado em `bridge_bi_streams` (transport QUIC).
+                    tracing::debug!(?ev, seq=n, "input enviado ao remoto peer");
                     if tx.send(bytes).await.is_err() {
                         warn!("falha ao enviar input no stream");
                     }
@@ -418,7 +452,6 @@ async fn try_edge_switch(
         return;
     }
 
-    // Calcular coordenadas enquanto temos o lock
     let _remote = layout_data.remote_virtual;
     let primary = layout_data.local_monitors.first().copied().unwrap_or_else(|| {
         use winx_domain::input_control::MonitorRect;
@@ -441,12 +474,18 @@ async fn try_edge_switch(
     );
 
     let from = current;
-
-    // Coordenar as transições de foco e cursor com ordem segura
     let safe_x = primary.x + i32::try_from(primary.width).unwrap_or(1920) / 2;
     let safe_y = primary.y + i32::try_from(primary.height).unwrap_or(1080) / 2;
 
-    // 1. Transição de foco (PASS_THROUGH e estado)
+    // 1. Transição FÍSICA de cursor PRIMEIRO (Hide → Warp → Clip)
+    // Se falhar, não mudar foco
+    if let Err(err) = input.transition_to_remote(safe_x, safe_y).await {
+        error!(?err, "falha na transição para remoto — mantendo foco local");
+        let _ = input.set_cursor_clipped(None).await;
+        return;
+    }
+
+    // 2. Transição LÓGICA de foco — só após sucesso físico
     switch_focus(
         FocusTarget::Remote(peer),
         from,
@@ -457,12 +496,59 @@ async fn try_edge_switch(
     )
     .await;
 
-    // 2. Transição segura de cursor com ordem: Hide → Warp → Clip
-    if let Err(err) = input.transition_to_remote(safe_x, safe_y).await {
-        error!(?err, "falha na transição para remoto — cursor pode estar preso");
+    let _ = input_tx;
+}
+
+async fn try_switch_back_to_local(
+    focus: Arc<Mutex<FocusState>>,
+    layout: Arc<Mutex<Option<MonitorLayout>>>,
+    input: Arc<dyn InputBackend>,
+    bus: EventBus,
+    _active: Arc<Mutex<Option<PeerId>>>,
+) {
+    let current = focus.lock().await.target.clone();
+    match &current {
+        FocusTarget::Remote(_peer) => {}
+        _ => return,
     }
 
-    let _ = input_tx;
+    let layout_guard = layout.lock().await;
+    let Some(layout_data) = layout_guard.as_ref() else {
+        return;
+    };
+
+    let edge_x = layout_data.local_right_edge_x();
+    let primary = layout_data.local_monitors.first().copied().unwrap_or_else(|| {
+        use winx_domain::input_control::MonitorRect;
+        MonitorRect {
+            id: winx_domain::input_control::MonitorId(0),
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        }
+    });
+    let primary_center_x = primary.x + i32::try_from(primary.width).unwrap_or(1920) / 2;
+    let primary_center_y = primary.y + i32::try_from(primary.height).unwrap_or(1080) / 2;
+
+    drop(layout_guard);
+
+    if let Err(err) = input.transition_to_local(edge_x, primary_center_x, primary_center_y).await {
+        warn!(?err, "falha ao retornar para local via borda esquerda");
+        return;
+    }
+
+    info!("voltando para foco local via borda esquerda acumulada");
+
+    switch_focus(
+        FocusTarget::Local,
+        current,
+        focus,
+        layout,
+        input,
+        bus,
+    )
+    .await;
 }
 
 async fn switch_focus(
