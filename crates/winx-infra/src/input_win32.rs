@@ -33,7 +33,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::Input::{
     GetRawInputData, RegisterRawInputDevices, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER, RAWMOUSE,
-    RIDEV_INPUTSINK, RIDEV_REMOVE, RID_INPUT, RIM_TYPEMOUSE, MOUSE_MOVE_RELATIVE,
+    RIDEV_INPUTSINK, RIDEV_REMOVE, RID_INPUT, RIM_TYPEMOUSE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, ClipCursor, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
@@ -158,7 +158,12 @@ unsafe extern "system" fn raw_input_host_wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    let _ = hwnd;
+    if msg == WM_INPUT && USE_RAW_MOUSE_DELTA.load(Ordering::SeqCst) {
+        if let Some(tx) = HOOK_TX.get() {
+            dispatch_raw_mouse_input(tx, lparam);
+        }
+        return LRESULT(0);
+    }
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 
@@ -357,15 +362,18 @@ impl InputBackend for Win32InputBackend {
     }
 
     fn set_raw_mouse_capture(&self, enabled: bool) {
-        USE_RAW_MOUSE_DELTA.store(enabled, Ordering::SeqCst);
         if enabled {
             let hwnd = isize_to_hwnd(RAW_INPUT_HWND.load(Ordering::SeqCst));
             if hwnd.0.is_null() {
-                warn!("Raw Input host HWND ainda não criado — fallback hook pt");
+                warn!("Raw Input host HWND ainda não criado — fallback hook pt (USE_RAW_MOUSE_DELTA não alterado)");
                 return;
             }
             register_raw_mouse_device(hwnd);
+            // Só ativa o flag após registro bem-sucedido para evitar janela onde
+            // USE_RAW_MOUSE_DELTA=true mas WM_INPUT ainda não chega.
+            USE_RAW_MOUSE_DELTA.store(true, Ordering::SeqCst);
         } else {
+            USE_RAW_MOUSE_DELTA.store(false, Ordering::SeqCst);
             unregister_raw_mouse_device();
         }
     }
@@ -690,7 +698,10 @@ fn dispatch_raw_mouse_input(hook_tx: &Sender<HookMsg>, lparam: LPARAM) {
     }
     // SAFETY: tipo mouse confirmado.
     let mouse: RAWMOUSE = unsafe { raw.data.mouse };
-    if mouse.usFlags.0 & MOUSE_MOVE_RELATIVE.0 == 0 {
+    // MOUSE_MOVE_RELATIVE == 0x0000; testar bit 0 ausente indica movimento relativo.
+    // Ignorar eventos absolutos (tablets, touchscreen, injeções absolutas).
+    const MOUSE_MOVE_ABSOLUTE_FLAG: u16 = 0x0001;
+    if mouse.usFlags.0 & MOUSE_MOVE_ABSOLUTE_FLAG != 0 {
         return;
     }
     let dx = mouse.lLastX;
@@ -734,9 +745,9 @@ fn hook_thread_main(hook_tx: Sender<HookMsg>) {
 fn run_hook_loop(_hook_tx: &Sender<HookMsg>) -> anyhow::Result<()> {
     let raw_hwnd = ensure_raw_input_host_window()?;
     RAW_INPUT_HWND.store(hwnd_to_isize(raw_hwnd), Ordering::SeqCst);
-    if register_raw_mouse_device(raw_hwnd) {
-        info!("Raw Input pré-registrado na thread do hook");
-    }
+    // Não pré-registra Raw Input aqui: set_raw_mouse_capture(true) registra quando
+    // o foco vai para remoto, evitando que RAW_MOUSE_REGISTERED já seja true e
+    // impeça o RegisterRawInputDevices no momento certo.
 
     // SAFETY: módulo válido.
     unsafe {
