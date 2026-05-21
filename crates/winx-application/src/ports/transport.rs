@@ -56,4 +56,7 @@ pub trait TransportAdapter: Send + Sync + 'static {
 
     /// Adiciona chave Ed25519 de um peer recém-pareado ao verificador TLS.
     async fn add_trusted_key(&self, key: [u8; 32]);
+
+    /// Envia `Heartbeat` num stream Control efêmero e mede RTT até `HeartbeatAck`.
+    async fn probe_control_heartbeat(&self, conn_id: SessionId) -> anyhow::Result<u32>;
 }

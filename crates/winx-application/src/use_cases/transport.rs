@@ -4,7 +4,7 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 use winx_domain::{
     discovery::DiscoveryRegistry,
-    shared::{ids::PeerId, DomainErrorCode},
+    shared::{ids::{PeerId, SessionId}, DomainErrorCode},
     transport::{
         events::{ConnectionEstablished, ConnectionLost, StatsUpdated},
         Connection, ConnectionStats, StreamKind,
@@ -208,6 +208,34 @@ impl TransportService {
             .remove(&(peer_id, kind))
     }
 
+    /// `true` se este device iniciou o handshake QUIC (`connect_peer`).
+    pub async fn is_peer_outbound(&self, peer_id: PeerId) -> bool {
+        self.connections
+            .lock()
+            .await
+            .get(&peer_id)
+            .is_some_and(|c| c.is_outbound)
+    }
+
+    /// Aguarda um stream inbound classificado pelo peer remoto (poll + sleep).
+    pub async fn wait_inbound_stream(
+        &self,
+        peer_id: PeerId,
+        kind: StreamKind,
+        timeout: std::time::Duration,
+    ) -> Option<(StreamSender, StreamReceiver)> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if let Some(pair) = self.take_inbound_stream(peer_id, kind).await {
+                return Some(pair);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
     /// Abre stream QUIC para um peer conectado.
     pub async fn open_stream_for_peer(
         &self,
@@ -229,6 +257,32 @@ impl TransportService {
             .open_stream(conn_id, kind)
             .await
             .map_err(|e| internal_err(&e.to_string()))
+    }
+
+    pub async fn probe_control_heartbeat_for_peer(&self, peer_id: PeerId) -> Result<u32, DomainError> {
+        let conn_id = {
+            let conns = self.connections.lock().await;
+            let conn = conns.get(&peer_id).ok_or_else(|| {
+                DomainError::new(
+                    DomainErrorCode::TransportConnectionFailed,
+                    "nenhuma conexão ativa para este peer",
+                )
+            })?;
+            conn.id
+        };
+
+        self.adapter
+            .probe_control_heartbeat(conn_id)
+            .await
+            .map_err(|e| internal_err(&e.to_string()))
+    }
+
+    pub async fn connection_id_for_peer(&self, peer_id: PeerId) -> Option<SessionId> {
+        self.connections
+            .lock()
+            .await
+            .get(&peer_id)
+            .map(|c| c.id)
     }
 
     pub async fn list_connections(&self) -> Vec<(PeerId, winx_domain::transport::ConnectionState)> {
@@ -593,6 +647,10 @@ mod tests {
         }
 
         async fn add_trusted_key(&self, _key: [u8; 32]) {}
+
+        async fn probe_control_heartbeat(&self, _conn_id: SessionId) -> anyhow::Result<u32> {
+            Ok(5)
+        }
     }
 
     struct MockIdentityStore {

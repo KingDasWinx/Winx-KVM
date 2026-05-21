@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 pub mod clipboard;
+pub mod diagnostics;
 pub mod input;
 pub mod pairing;
 
@@ -19,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use clipboard::ClipboardPayload;
+pub use diagnostics::DiagPing;
 pub use input::{InputEventDto, InputPayload};
 pub use pairing::{
     decode_pairing_datagram, encode_pairing_body, encode_pairing_datagram,

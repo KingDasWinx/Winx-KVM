@@ -8,8 +8,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use winx_application::{
-    ports::IdentityStore, ClipboardService, DiscoveryService, EnsureDevice, EventBus,
-    InputControlService, PairingService, TransportService,
+    ports::IdentityStore, ClipboardService, ConnectionLabService, DiscoveryService, EnsureDevice,
+    EventBus, InputControlService, PairingService, TransportService,
 };
 
 /// Estado compartilhado entre todos os commands (event bus global).
@@ -64,6 +64,11 @@ pub struct InputControlState {
 /// Estado do bounded context DataExchange (clipboard).
 pub struct ClipboardState {
     pub clipboard: Arc<ClipboardService>,
+}
+
+/// Estado da aba Lab (diagnóstico).
+pub struct LabState {
+    pub lab: Arc<ConnectionLabService>,
 }
 
 /// Estado de configuração de firewall.

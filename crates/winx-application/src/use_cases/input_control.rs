@@ -1,15 +1,17 @@
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 use winx_domain::{
     input_control::{
-        events::{FocusSwitched, HotkeyTriggered, InputBlocked},
-        FocusState, FocusTarget, HotkeyAction, InputEvent, MonitorLayout,
+        accumulate_return_left, apply_focus_target, events::{FocusSwitched, HotkeyTriggered, InputBlocked},
+        should_switch_to_remote, toggle_lock_mode, EdgeDetectInput, FocusState, FocusTarget,
+        HotkeyAction, InputEvent, MonitorLayout,
     },
     shared::{ids::PeerId, DomainErrorCode},
-    transport::StreamKind,
     DomainError, DomainEvent,
 };
 
@@ -17,10 +19,17 @@ use crate::{
     bus::EventBus,
     ports::{transport::StreamSender, InputBackend, MonitorBackend},
     protocol_convert::{encode_input_payload, input_event_from_dto},
-    use_cases::TransportService,
+    use_cases::{input_streams, TransportService},
 };
 
 static FIRST_INJECT: AtomicBool = AtomicBool::new(true);
+
+#[derive(Debug, Clone, Serialize)]
+pub struct KeyboardMirrorStatus {
+    pub active: bool,
+    pub seconds_left: u32,
+    pub keys_sent: u64,
+}
 
 pub struct InputControlService {
     focus: Arc<Mutex<FocusState>>,
@@ -34,6 +43,9 @@ pub struct InputControlService {
     seq: Arc<AtomicU64>,
     enabled: Arc<Mutex<bool>>,
     remote_dx_accum: Arc<AtomicI32>,
+    keyboard_mirror: Arc<AtomicBool>,
+    mirror_keys_sent: Arc<AtomicU64>,
+    mirror_deadline: Arc<Mutex<Option<Instant>>>,
 }
 
 impl InputControlService {
@@ -55,7 +67,114 @@ impl InputControlService {
             seq: Arc::new(AtomicU64::new(0)),
             enabled: Arc::new(Mutex::new(false)),
             remote_dx_accum: Arc::new(AtomicI32::new(0)),
+            keyboard_mirror: Arc::new(AtomicBool::new(false)),
+            mirror_keys_sent: Arc::new(AtomicU64::new(0)),
+            mirror_deadline: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub async fn start_keyboard_mirror(
+        &self,
+        peer_id: PeerId,
+        duration_secs: u32,
+    ) -> Result<(), DomainError> {
+        if !self.transport.is_peer_connected(peer_id).await {
+            return Err(DomainError::new(
+                DomainErrorCode::TransportConnectionFailed,
+                "peer não conectado via QUIC",
+            ));
+        }
+
+        if !*self.enabled.lock().await {
+            self.enable_for_peer(peer_id).await?;
+        } else {
+            let active = *self.active_peer.lock().await;
+            if active != Some(peer_id) {
+                return Err(DomainError::new(
+                    DomainErrorCode::InternalError,
+                    "input control ativo para outro peer",
+                ));
+            }
+        }
+
+        let duration = Duration::from_secs(u64::from(duration_secs.max(1)));
+        self.mirror_keys_sent.store(0, Ordering::SeqCst);
+        *self.mirror_deadline.lock().await = Some(Instant::now() + duration);
+        self.keyboard_mirror.store(true, Ordering::SeqCst);
+
+        let mirror_flag = Arc::clone(&self.keyboard_mirror);
+        let deadline_store = Arc::clone(&self.mirror_deadline);
+        tokio::spawn(async move {
+            tokio::time::sleep(duration).await;
+            mirror_flag.store(false, Ordering::SeqCst);
+            *deadline_store.lock().await = None;
+            info!("keyboard mirror encerrado");
+        });
+
+        info!(%peer_id, duration_secs, "keyboard mirror iniciado");
+        Ok(())
+    }
+
+    pub async fn get_keyboard_mirror_status(&self) -> KeyboardMirrorStatus {
+        let active = self.keyboard_mirror.load(Ordering::SeqCst);
+        let keys_sent = self.mirror_keys_sent.load(Ordering::SeqCst);
+        let seconds_left = if active {
+            let guard = self.mirror_deadline.lock().await;
+            guard
+                .map(|deadline| {
+                    deadline
+                        .saturating_duration_since(Instant::now())
+                        .as_secs()
+                })
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        KeyboardMirrorStatus {
+            active,
+            seconds_left: u32::try_from(seconds_left).unwrap_or(0),
+            keys_sent,
+        }
+    }
+
+    pub async fn send_test_click(&self, peer_id: PeerId) -> Result<(), DomainError> {
+        if !self.transport.is_peer_connected(peer_id).await {
+            return Err(DomainError::new(
+                DomainErrorCode::TransportConnectionFailed,
+                "peer não conectado via QUIC",
+            ));
+        }
+        if !*self.enabled.lock().await {
+            self.enable_for_peer(peer_id).await?;
+        }
+
+        let events = [
+            InputEvent::MouseButton {
+                button: winx_domain::input_control::MouseButton::Left,
+                pressed: true,
+            },
+            InputEvent::MouseButton {
+                button: winx_domain::input_control::MouseButton::Left,
+                pressed: false,
+            },
+        ];
+
+        let input_tx = self.input_tx.lock().await;
+        let Some(tx) = input_tx.as_ref() else {
+            return Err(DomainError::new(
+                DomainErrorCode::TransportConnectionFailed,
+                "stream Input não disponível",
+            ));
+        };
+
+        for ev in events {
+            let n = self.seq.fetch_add(1, Ordering::SeqCst);
+            let bytes = encode_input_payload(n, &ev).map_err(|e| internal_err(&e.to_string()))?;
+            tx.send(bytes)
+                .await
+                .map_err(|_| internal_err("falha ao enviar clique de teste"))?;
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -84,10 +203,7 @@ impl InputControlService {
         *self.layout.lock().await = Some(layout);
         *self.active_peer.lock().await = Some(peer_id);
 
-        let (tx, mut rx) = self
-            .transport
-            .open_stream_for_peer(peer_id, StreamKind::Input)
-            .await?;
+        let (tx, mut rx) = input_streams::acquire_input_streams(&self.transport, peer_id).await?;
         *self.input_tx.lock().await = Some(tx);
 
         let service_focus = Arc::clone(&self.focus);
@@ -99,7 +215,9 @@ impl InputControlService {
         let service_active = Arc::clone(&self.active_peer);
         let service_self_input = Arc::clone(&self.input);
         let service_enabled = Arc::clone(&self.enabled);
-        let service_remote_dx = Arc::clone(&self.remote_dx_accum);
+                let service_remote_dx = Arc::clone(&self.remote_dx_accum);
+        let service_mirror = Arc::clone(&self.keyboard_mirror);
+        let service_mirror_keys = Arc::clone(&self.mirror_keys_sent);
 
         // Hooks Win32 disparam em std::thread — não usar `tokio::spawn` direto no callback.
         let runtime = tokio::runtime::Handle::current();
@@ -116,13 +234,26 @@ impl InputControlService {
                 let input_be = service_self_input.clone();
                 let enabled = service_enabled.clone();
                 let remote_dx = service_remote_dx.clone();
+                let mirror = service_mirror.clone();
+                let mirror_keys = service_mirror_keys.clone();
                 let seq = Arc::clone(&service_seq);
                 runtime.spawn(async move {
-                    if !*enabled.lock().await {
+                    if !*enabled.lock().await && !mirror.load(Ordering::SeqCst) {
                         return;
                     }
                     handle_local_input(
-                        ev, focus, layout, input_tx, transport, bus, active, input_be, &seq, remote_dx,
+                        ev,
+                        focus,
+                        layout,
+                        input_tx,
+                        transport,
+                        bus,
+                        active,
+                        input_be,
+                        &seq,
+                        remote_dx,
+                        mirror,
+                        mirror_keys,
                     )
                     .await;
                 });
@@ -275,7 +406,7 @@ async fn handle_hotkey(
         }
         HotkeyAction::ToggleLock => {
             let mut f = focus.lock().await;
-            f.lock_mode = !f.lock_mode;
+            let _ = toggle_lock_mode(&mut f);
             bus.publish(DomainEvent::HotkeyTriggered(HotkeyTriggered {
                 action: HotkeyAction::ToggleLock,
             }));
@@ -365,7 +496,23 @@ async fn handle_local_input(
     input: Arc<dyn InputBackend>,
     seq: &Arc<AtomicU64>,
     remote_dx_accum: Arc<AtomicI32>,
+    keyboard_mirror: Arc<AtomicBool>,
+    mirror_keys_sent: Arc<AtomicU64>,
 ) {
+    if keyboard_mirror.load(Ordering::SeqCst) {
+        if let InputEvent::Key { .. } = &ev {
+            if let Some(tx) = input_tx.lock().await.as_ref() {
+                let n = seq.fetch_add(1, Ordering::SeqCst);
+                if let Ok(bytes) = encode_input_payload(n, &ev) {
+                    if tx.send(bytes).await.is_ok() {
+                        mirror_keys_sent.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            }
+        }
+        return;
+    }
+
     let state = focus.lock().await.clone();
     if state.lock_mode {
         return;
@@ -384,32 +531,38 @@ async fn handle_local_input(
                 if dx == 0 && dy == 0 {
                     return;
                 }
-                try_edge_switch(screen_x, focus, layout, input, bus, active, input_tx).await;
+                let layout_guard = layout.lock().await;
+                if let Some(layout_data) = layout_guard.as_ref() {
+                    if should_switch_to_remote(
+                        EdgeDetectInput {
+                            screen_x,
+                            lock_mode: state.lock_mode,
+                        },
+                        layout_data,
+                    ) {
+                        drop(layout_guard);
+                        try_edge_switch(screen_x, focus, layout, input, bus, active, input_tx)
+                            .await;
+                    }
+                }
             }
         }
         FocusTarget::Remote(_peer) => {
             input.set_pass_through(false);
-            // Detectar volta para local via movimento esquerda acumulado > 100px
             if let InputEvent::MouseMove { dx, .. } = &ev {
-                if *dx > 0 {
-                    // Movimento pra direita: mantém intenção de estar no remoto
-                    remote_dx_accum.store(0, Ordering::SeqCst);
-                } else if *dx < 0 {
-                    // Movimento pra esquerda: acumula
-                    let new_accum = remote_dx_accum.fetch_add(*dx, Ordering::SeqCst) + *dx;
-                    if new_accum < -100 {
-                        remote_dx_accum.store(0, Ordering::SeqCst);
-                        // Retornar pra local
-                        try_switch_back_to_local(
-                            Arc::clone(&focus),
-                            Arc::clone(&layout),
-                            Arc::clone(&input),
-                            bus.clone(),
-                            Arc::clone(&active),
-                        )
-                        .await;
-                        return;
-                    }
+                let current = remote_dx_accum.load(Ordering::SeqCst);
+                let (new_acc, go_back) = accumulate_return_left(*dx, current);
+                remote_dx_accum.store(new_acc, Ordering::SeqCst);
+                if go_back {
+                    try_switch_back_to_local(
+                        Arc::clone(&focus),
+                        Arc::clone(&layout),
+                        Arc::clone(&input),
+                        bus.clone(),
+                        Arc::clone(&active),
+                    )
+                    .await;
+                    return;
                 }
             }
             // Enviar input para o remoto
@@ -439,8 +592,13 @@ async fn try_edge_switch(
     let Some(layout_data) = layout_guard.as_ref() else {
         return;
     };
-    let edge = layout_data.local_right_edge_x();
-    if screen_x < edge - 2 {
+    if !should_switch_to_remote(
+        EdgeDetectInput {
+            screen_x,
+            lock_mode: focus.lock().await.lock_mode,
+        },
+        layout_data,
+    ) {
         return;
     }
     let Some(peer) = *active.lock().await else {
@@ -452,7 +610,7 @@ async fn try_edge_switch(
         return;
     }
 
-    let _remote = layout_data.remote_virtual;
+    let edge_x = layout_data.local_right_edge_x();
     let primary = layout_data.local_monitors.first().copied().unwrap_or_else(|| {
         use winx_domain::input_control::MonitorRect;
         MonitorRect {
@@ -468,7 +626,7 @@ async fn try_edge_switch(
 
     info!(
         %screen_x,
-        edge,
+        edge = edge_x,
         %peer,
         "borda direita atingida — trocando foco para remoto"
     );
@@ -507,10 +665,9 @@ async fn try_switch_back_to_local(
     _active: Arc<Mutex<Option<PeerId>>>,
 ) {
     let current = focus.lock().await.target.clone();
-    match &current {
-        FocusTarget::Remote(_peer) => {}
-        _ => return,
-    }
+    let FocusTarget::Remote(_peer) = &current else {
+        return;
+    };
 
     let layout_guard = layout.lock().await;
     let Some(layout_data) = layout_guard.as_ref() else {
@@ -553,16 +710,16 @@ async fn try_switch_back_to_local(
 
 async fn switch_focus(
     to: FocusTarget,
-    from: FocusTarget,
+    _from: FocusTarget,
     focus: Arc<Mutex<FocusState>>,
     layout: Arc<Mutex<Option<MonitorLayout>>>,
     input: Arc<dyn InputBackend>,
     bus: EventBus,
 ) {
-    {
+    let transition = {
         let mut f = focus.lock().await;
-        f.target = to.clone();
-    }
+        apply_focus_target(&mut f, to.clone())
+    };
 
     match &to {
         FocusTarget::Local => {
@@ -577,8 +734,8 @@ async fn switch_focus(
     }
 
     bus.publish(DomainEvent::FocusSwitched(FocusSwitched {
-        from,
-        to: to.clone(),
+        from: transition.from,
+        to: transition.to,
     }));
     bus.publish(DomainEvent::InputBlocked(InputBlocked {
         blocked: matches!(to, FocusTarget::Remote(_)),
@@ -598,6 +755,7 @@ fn internal_err(msg: &str) -> DomainError {
 mod tests {
     use uuid::Uuid;
     use winx_domain::input_control::MonitorRect;
+    use winx_domain::transport::StreamKind;
 
     use super::*;
 
@@ -683,6 +841,43 @@ mod tests {
         assert!(matches!(f.target, FocusTarget::Remote(_)));
     }
 
+    #[tokio::test]
+    async fn lock_mode_prevents_edge_switch() {
+        let peer_id = PeerId::from_uuid(Uuid::new_v4());
+        let bus = EventBus::new();
+        let focus = Arc::new(Mutex::new(FocusState::default()));
+        {
+            let mut f = focus.lock().await;
+            f.lock_mode = true;
+        }
+        let layout = Arc::new(Mutex::new(Some(MonitorLayout::default_side_by_side(
+            vec![MonitorRect {
+                id: winx_domain::input_control::MonitorId(1),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            }],
+            peer_id,
+        ))));
+        let active = Arc::new(Mutex::new(Some(peer_id)));
+        let input_tx = Arc::new(Mutex::new(None));
+
+        try_edge_switch(
+            1920,
+            Arc::clone(&focus),
+            Arc::clone(&layout),
+            Arc::new(MockInput),
+            bus,
+            active,
+            input_tx,
+        )
+        .await;
+
+        let f = focus.lock().await;
+        assert!(matches!(f.target, FocusTarget::Local));
+    }
+
     struct MockMonitors;
 
     #[async_trait::async_trait]
@@ -740,6 +935,13 @@ mod tests {
             Ok(())
         }
         async fn add_trusted_key(&self, _: [u8; 32]) {}
+
+        async fn probe_control_heartbeat(
+            &self,
+            _: winx_domain::shared::ids::SessionId,
+        ) -> anyhow::Result<u32> {
+            Ok(1)
+        }
     }
 
     struct NoopIdentity;

@@ -1,10 +1,11 @@
 import { NavLink, Stack, Text, Title } from '@mantine/core';
-import { IconHome, IconSettings } from '@tabler/icons-react';
+import { IconFlask, IconHome, IconSettings } from '@tabler/icons-react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 export function AppSidebar() {
   const { t } = useTranslation('common');
+  const { t: tLab } = useTranslation('lab');
   const navigate = useNavigate();
   const { pathname } = useLocation();
 
@@ -21,6 +22,12 @@ export function AppSidebar() {
           leftSection={<IconHome size={18} stroke={1.5} />}
           active={pathname === '/'}
           onClick={() => navigate('/')}
+        />
+        <NavLink
+          label={tLab('nav.lab')}
+          leftSection={<IconFlask size={18} stroke={1.5} />}
+          active={pathname === '/lab'}
+          onClick={() => navigate('/lab')}
         />
         <NavLink
           label={t('nav.settings')}

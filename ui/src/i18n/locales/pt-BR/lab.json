@@ -1,0 +1,52 @@
+{
+  "nav": {
+    "lab": "Lab"
+  },
+  "title": "Laboratório de conexão",
+  "hint_single_connect": "Use Connect em apenas um PC. Ambos devem estar pareados antes.",
+  "peer_select": {
+    "label": "Peer alvo",
+    "placeholder": "Selecione um peer pareado",
+    "none_paired": "Nenhum peer pareado na rede.",
+    "connected": "Conectado",
+    "not_connected": "Não conectado"
+  },
+  "connectivity": {
+    "title": "Probes de conectividade",
+    "run_all": "Executar todos os probes",
+    "running": "Executando…",
+    "service": {
+      "mdns": "Discovery (mDNS, UDP 5353)",
+      "pairing_udp": "Canal de pareamento (UDP 7879)",
+      "quic": "Transporte QUIC (UDP 7878)",
+      "quic_control": "Stream Control (Heartbeat)",
+      "input_stream": "Stream Input"
+    },
+    "status": {
+      "ok": "OK",
+      "fail": "Falhou"
+    },
+    "latency": "Latência: {{ms}} ms",
+    "detail": "Detalhe",
+    "column": {
+      "service": "Serviço",
+      "status": "Status",
+      "latency": "Latência",
+      "detail": "Detalhe"
+    }
+  },
+  "keyboard": {
+    "title": "Teste de espelho de teclado",
+    "hint": "Captura teclas por 5 segundos e envia ao PC remoto (abra o Bloco de notas lá para verificar).",
+    "start": "Espelhar teclado (5 s)",
+    "running": "Ouvindo… {{seconds}} s restantes",
+    "keys_sent": "Teclas enviadas: {{count}}",
+    "test_click": "Enviar clique de teste"
+  },
+  "errors": {
+    "not_connected": "Conecte ao peer antes dos testes de transporte.",
+    "not_paired": "Pareie com o peer primeiro.",
+    "select_peer": "Selecione um peer.",
+    "suite_failed": "Falha na suíte de probes"
+  }
+}

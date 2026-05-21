@@ -45,6 +45,10 @@ impl PairingTransport for UdpPairingTransport {
                 match socket.recv_from(&mut buf).await {
                     Ok((len, from_addr)) => {
                         let data = &buf[..len];
+                        if let Some(ping) = winx_protocol::diagnostics::DiagPing::decode(data) {
+                            let _ = socket.send_to(&ping.pong_bytes(), from_addr).await;
+                            continue;
+                        }
                         match decode_pairing_datagram(data) {
                             Ok((message, signature)) => {
                                 if message_requires_signature(&message) && signature.is_none() {

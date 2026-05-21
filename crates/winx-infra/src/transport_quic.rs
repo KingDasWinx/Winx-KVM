@@ -542,6 +542,59 @@ impl TransportAdapter for QuicTransportAdapter {
             }
         }
     }
+
+    async fn probe_control_heartbeat(&self, conn_id: SessionId) -> anyhow::Result<u32> {
+        let connection = {
+            let guard = self.connections.lock().await;
+            guard
+                .get(&conn_id)
+                .map(|e| e.connection.clone())
+                .ok_or_else(|| anyhow::anyhow!("conexão não encontrada"))?
+        };
+
+        let (mut send, mut recv) = connection.open_bi().await?;
+        let mut hdr = [0u8; 5];
+        hdr[..4].copy_from_slice(winx_protocol::STREAM_HEADER_MAGIC);
+        hdr[4] = StreamKind::Control.as_u8();
+        send.write_all(&hdr).await?;
+
+        let started = std::time::Instant::now();
+        let frame = winx_protocol::Frame::new(winx_protocol::Payload::Heartbeat);
+        write_frame(&mut send, &frame).await?;
+
+        let deadline = started + std::time::Duration::from_secs(3);
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                anyhow::bail!("timeout aguardando HeartbeatAck");
+            }
+            let read = tokio::time::timeout(remaining, read_frame(&mut recv)).await;
+            match read {
+                Ok(Ok(Some(winx_protocol::Payload::HeartbeatAck))) => {
+                    let rtt = started.elapsed();
+                    let _ = send.finish();
+                    return Ok(
+                        u32::try_from(rtt.as_millis().min(u128::from(u32::MAX)))
+                            .unwrap_or(u32::MAX),
+                    );
+                }
+                Ok(Ok(Some(_))) => continue,
+                Ok(Ok(None)) => anyhow::bail!("stream control fechado antes do ack"),
+                Ok(Err(e)) => return Err(e),
+                Err(_) => anyhow::bail!("timeout aguardando HeartbeatAck"),
+            }
+        }
+    }
+}
+
+async fn write_frame(send: &mut quinn::SendStream, frame: &winx_protocol::Frame) -> anyhow::Result<()> {
+    let bytes = winx_protocol::encode(frame)?;
+    let len = u32::try_from(bytes.len())
+        .unwrap_or(u32::MAX)
+        .to_be_bytes();
+    send.write_all(&len).await?;
+    send.write_all(&bytes).await?;
+    Ok(())
 }
 
 fn peer_key_from_connection(connection: &QuicConnection) -> Option<[u8; 32]> {

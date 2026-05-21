@@ -12,8 +12,9 @@ pub enum HotkeyAction {
 }
 
 impl HotkeyAction {
-    pub fn try_force_reset() -> Option<Self> {
-        Some(HotkeyAction::ForceReset)
+    #[must_use]
+    pub const fn force_reset() -> Self {
+        HotkeyAction::ForceReset
     }
 }
 

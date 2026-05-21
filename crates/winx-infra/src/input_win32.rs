@@ -28,7 +28,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT, VK_HOME, VK_SCROLL, VK_END,
     VK_CONTROL, VK_LCONTROL, VK_RCONTROL, VK_MENU, VK_LMENU, VK_RMENU,
     MapVirtualKeyW, MAPVK_VK_TO_VSC_EX, MOUSEEVENTF_ABSOLUTE,
-    RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL,
+    RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, ClipCursor, DispatchMessageW, GetMessageW, GetSystemMetrics,
@@ -40,10 +40,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use winx_application::ports::{CaptureHandle, InputBackend};
 use winx_domain::input_control::{HotkeyAction, InputEvent, KeyModifiers, MouseButton};
 
+use crate::cursor_trap::{hide_cursor_trap, release_cursor_trap_sync, show_cursor_trap};
 use crate::input_vk_map::{portable_to_vk, vk_to_portable};
 
 /// Assinatura única para eventos injetados internamente pelo KVM
-pub const KVM_SIGNATURE: usize = 0xDEADC0DE;
+pub const KVM_SIGNATURE: usize = 0xDEAD_C0DE;
 
 static PASS_THROUGH: AtomicBool = AtomicBool::new(true);
 static HOOK_TX: OnceLock<Sender<HookMsg>> = OnceLock::new();
@@ -59,6 +60,7 @@ static CURSOR_HIDDEN: AtomicBool = AtomicBool::new(false);
 /// Garante que o usuário recupere o controle físico mesmo se a tarefa Tokio travar.
 pub fn unconditional_release_hardware_sync() {
     PASS_THROUGH.store(true, Ordering::SeqCst);
+    release_cursor_trap_sync();
     unsafe {
         let _ = ClipCursor(None);
         // Restaurar cursor se estava oculto
@@ -102,7 +104,7 @@ pub struct Win32InputBackend {
 
 impl Win32InputBackend {
     pub fn new() -> Self {
-        let (hook_tx, hook_rx) = crossbeam_channel::unbounded();
+        let (hook_tx, hook_rx) = crossbeam_channel::bounded(4096);
         let _ = HOOK_TX.set(hook_tx.clone());
         Self {
             pass_through: Arc::new(AtomicBool::new(true)),
@@ -123,6 +125,7 @@ impl Default for Win32InputBackend {
 impl Drop for Win32InputBackend {
     fn drop(&mut self) {
         let _ = self.hook_tx.send(HookMsg::Stop);
+        release_cursor_trap_sync();
         unsafe {
             let _ = ClipCursor(None);
             if CURSOR_HIDDEN.load(Ordering::SeqCst) {
@@ -160,11 +163,7 @@ impl InputBackend for Win32InputBackend {
                     HookMsg::Input(ev) => on_event(ev),
                     HookMsg::HotkeyPanic => on_hotkey(HotkeyAction::PanicLocal),
                     HookMsg::HotkeyLock => on_hotkey(HotkeyAction::ToggleLock),
-                    HookMsg::HotkeyForceReset => {
-                        if let Some(action) = HotkeyAction::try_force_reset() {
-                            on_hotkey(action);
-                        }
-                    }
+                    HookMsg::HotkeyForceReset => on_hotkey(HotkeyAction::force_reset()),
                     HookMsg::Stop => break,
                 }
             }
@@ -188,6 +187,9 @@ impl InputBackend for Win32InputBackend {
     async fn set_cursor_clipped(&self, rect: Option<(i32, i32, u32, u32)>) -> anyhow::Result<()> {
         tokio::task::spawn_blocking(move || {
             if let Some((x, y, w, h)) = rect {
+                if let Err(e) = show_cursor_trap() {
+                    warn!(?e, "cursor trap falhou — usando apenas ClipCursor");
+                }
                 let clip = windows::Win32::Foundation::RECT {
                     left: x,
                     top: y,
@@ -199,6 +201,7 @@ impl InputBackend for Win32InputBackend {
                     ClipCursor(Some(&clip))?;
                 }
             } else {
+                hide_cursor_trap();
                 // SAFETY: liberar cursor.
                 unsafe {
                     ClipCursor(None)?;
@@ -209,6 +212,35 @@ impl InputBackend for Win32InputBackend {
         })
         .await
         .map_err(|e| anyhow::anyhow!("join: {e}"))?
+    }
+
+    async fn transition_to_remote(&self, center_x: i32, center_y: i32) -> anyhow::Result<()> {
+        if let Err(e) = self.hide_cursor_system().await {
+            warn!(?e, "falha ao ocultar cursor (não-crítico, continuando)");
+        }
+        self.warp_cursor_signed(center_x, center_y).await?;
+        self.set_cursor_clipped(Some((center_x - 2, center_y - 2, 4, 4)))
+            .await?;
+        self.reset_mouse_delta_baseline();
+        Ok(())
+    }
+
+    async fn transition_to_local(
+        &self,
+        edge_x: i32,
+        primary_center_x: i32,
+        primary_center_y: i32,
+    ) -> anyhow::Result<()> {
+        self.set_cursor_clipped(None).await?;
+        self.restore_cursor_system().await?;
+        let safe_x = if edge_x > primary_center_x {
+            edge_x - 10
+        } else {
+            edge_x + 10
+        };
+        self.warp_cursor_signed(safe_x, primary_center_y).await?;
+        self.reset_mouse_delta_baseline();
+        Ok(())
     }
 
     async fn warp_cursor(&self, x: i32, y: i32) -> anyhow::Result<()> {
@@ -413,6 +445,7 @@ fn hook_thread_main(hook_tx: Sender<HookMsg>) {
         run_hook_loop(&hook_tx)
     }));
 
+    release_cursor_trap_sync();
     unsafe {
         let _ = windows::Win32::UI::WindowsAndMessaging::ClipCursor(None);
         if CURSOR_HIDDEN.load(Ordering::SeqCst) {
@@ -442,13 +475,20 @@ fn run_hook_loop(_hook_tx: &Sender<HookMsg>) -> anyhow::Result<()> {
         info!("hooks Win32 instalados");
 
         // Registrar hotkeys globais como fallback para casos onde o WH_KEYBOARD_LL é desabilitado
-        let hotkey_panic_ok = RegisterHotKey(None, 1, MOD_CONTROL | MOD_ALT, u32::from(VK_HOME.0)).is_ok();
-        let hotkey_reset_ok = RegisterHotKey(None, 2, MOD_CONTROL | MOD_ALT, u32::from(VK_END.0)).is_ok();
+        let hotkey_panic_ok =
+            RegisterHotKey(None, 1, MOD_CONTROL | MOD_ALT, u32::from(VK_HOME.0)).is_ok();
+        let hotkey_reset_ok =
+            RegisterHotKey(None, 2, MOD_CONTROL | MOD_ALT, u32::from(VK_END.0)).is_ok();
+        let hotkey_scroll_ok =
+            RegisterHotKey(None, 3, MOD_NOREPEAT, u32::from(VK_SCROLL.0)).is_ok();
         if !hotkey_panic_ok {
             warn!("RegisterHotKey Ctrl+Alt+Home falhou — apenas hook inline ativo");
         }
         if !hotkey_reset_ok {
             warn!("RegisterHotKey Ctrl+Alt+End falhou — apenas hook inline ativo");
+        }
+        if !hotkey_scroll_ok {
+            warn!("RegisterHotKey Scroll Lock falhou — apenas hook inline ativo");
         }
 
         let mut msg = MSG::default();
@@ -461,12 +501,16 @@ fn run_hook_loop(_hook_tx: &Sender<HookMsg>) -> anyhow::Result<()> {
                     if let Some(tx) = HOOK_TX.get() {
                         match msg.wParam.0 as u32 {
                             1 => {
-                                let _ = tx.send(HookMsg::HotkeyPanic);
+                                let _ = tx.try_send(HookMsg::HotkeyPanic);
                                 info!("hotkey via RegisterHotKey disparou: Ctrl+Alt+Home");
                             }
                             2 => {
-                                let _ = tx.send(HookMsg::HotkeyForceReset);
+                                let _ = tx.try_send(HookMsg::HotkeyForceReset);
                                 info!("hotkey via RegisterHotKey disparou: Ctrl+Alt+End");
+                            }
+                            3 => {
+                                let _ = tx.try_send(HookMsg::HotkeyLock);
+                                info!("hotkey via RegisterHotKey disparou: Scroll Lock");
                             }
                             _ => {}
                         }
@@ -484,12 +528,16 @@ fn run_hook_loop(_hook_tx: &Sender<HookMsg>) -> anyhow::Result<()> {
                 if let Some(tx) = HOOK_TX.get() {
                     match msg.wParam.0 as u32 {
                         1 => {
-                            let _ = tx.send(HookMsg::HotkeyPanic);
+                            let _ = tx.try_send(HookMsg::HotkeyPanic);
                             info!("hotkey via RegisterHotKey disparou: Ctrl+Alt+Home");
                         }
                         2 => {
-                            let _ = tx.send(HookMsg::HotkeyForceReset);
+                            let _ = tx.try_send(HookMsg::HotkeyForceReset);
                             info!("hotkey via RegisterHotKey disparou: Ctrl+Alt+End");
+                        }
+                        3 => {
+                            let _ = tx.try_send(HookMsg::HotkeyLock);
+                            info!("hotkey via RegisterHotKey disparou: Scroll Lock");
                         }
                         _ => {}
                     }
@@ -505,6 +553,9 @@ fn run_hook_loop(_hook_tx: &Sender<HookMsg>) -> anyhow::Result<()> {
         }
         if hotkey_reset_ok {
             let _ = UnregisterHotKey(None, 2);
+        }
+        if hotkey_scroll_ok {
+            let _ = UnregisterHotKey(None, 3);
         }
         UnhookWindowsHookEx(mouse_hook)?;
         UnhookWindowsHookEx(kb_hook)?;
@@ -573,7 +624,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                 _ => None,
             };
             if let Some(ev) = ev {
-                let _ = tx.send(HookMsg::Input(ev));
+                let _ = tx.try_send(HookMsg::Input(ev));
             }
         }
         if swallow {
@@ -606,14 +657,14 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
         if down && CTRL_DOWN.load(Ordering::SeqCst) && ALT_DOWN.load(Ordering::SeqCst) {
             if vk == VK_HOME.0 as u32 {
                 if let Some(tx) = HOOK_TX.get() {
-                    let _ = tx.send(HookMsg::HotkeyPanic);
+                    let _ = tx.try_send(HookMsg::HotkeyPanic);
                     info!("hotkey inline disparado: Ctrl+Alt+Home");
                 }
                 return LRESULT(1);
             }
             if vk == VK_END.0 as u32 {
                 if let Some(tx) = HOOK_TX.get() {
-                    let _ = tx.send(HookMsg::HotkeyForceReset);
+                    let _ = tx.try_send(HookMsg::HotkeyForceReset);
                     info!("hotkey inline disparado: Ctrl+Alt+End");
                 }
                 return LRESULT(1);
@@ -621,7 +672,7 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
         }
         if down && vk == VK_SCROLL.0 as u32 {
             if let Some(tx) = HOOK_TX.get() {
-                let _ = tx.send(HookMsg::HotkeyLock);
+                let _ = tx.try_send(HookMsg::HotkeyLock);
                 info!("hotkey inline disparado: Scroll Lock");
             }
             return LRESULT(1);
@@ -635,7 +686,7 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
                     pressed,
                     modifiers: KeyModifiers::default(),
                 };
-                let _ = tx.send(HookMsg::Input(ev));
+                let _ = tx.try_send(HookMsg::Input(ev));
             }
         }
         if swallow {

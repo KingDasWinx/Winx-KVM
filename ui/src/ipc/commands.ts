@@ -162,3 +162,44 @@ export async function getDiscoveryInterfaces(): Promise<string[]> {
 export async function setDiscoveryInterfaces(interfaces: string[]): Promise<void> {
   return await invoke<void>('set_discovery_interfaces', { interfaces });
 }
+
+export interface ProbeResultDto {
+  service: string;
+  ok: boolean;
+  latency_ms?: number;
+  detail: string;
+}
+
+export interface LabProbeResultsDto {
+  peer_id: string;
+  probes: ProbeResultDto[];
+  ran_at_ms: number;
+}
+
+export async function runConnectivitySuite(peerId: string): Promise<LabProbeResultsDto> {
+  return await invoke<LabProbeResultsDto>('run_connectivity_suite', { peerId });
+}
+
+export interface KeyboardMirrorStatusDto {
+  active: boolean;
+  seconds_left: number;
+  keys_sent: number;
+}
+
+export async function startKeyboardMirrorTest(
+  peerId: string,
+  durationSecs?: number,
+): Promise<void> {
+  return await invoke<void>('start_keyboard_mirror_test', {
+    peerId,
+    durationSecs,
+  });
+}
+
+export async function getKeyboardMirrorStatus(): Promise<KeyboardMirrorStatusDto> {
+  return await invoke<KeyboardMirrorStatusDto>('get_keyboard_mirror_status');
+}
+
+export async function sendTestClick(peerId: string): Promise<void> {
+  return await invoke<void>('send_test_click', { peerId });
+}

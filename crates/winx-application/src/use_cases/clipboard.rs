@@ -384,6 +384,13 @@ mod tests {
         }
 
         async fn add_trusted_key(&self, _: [u8; 32]) {}
+
+        async fn probe_control_heartbeat(
+            &self,
+            _: winx_domain::shared::ids::SessionId,
+        ) -> anyhow::Result<u32> {
+            Ok(1)
+        }
     }
 
     struct NoopIdentity;

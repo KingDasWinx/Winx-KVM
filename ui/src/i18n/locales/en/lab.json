@@ -1,0 +1,52 @@
+{
+  "nav": {
+    "lab": "Lab"
+  },
+  "title": "Connection lab",
+  "hint_single_connect": "Use Connect on only one PC. Both sides must be paired first.",
+  "peer_select": {
+    "label": "Target peer",
+    "placeholder": "Select a paired peer",
+    "none_paired": "No paired peers on the network.",
+    "connected": "Connected",
+    "not_connected": "Not connected"
+  },
+  "connectivity": {
+    "title": "Connectivity probes",
+    "run_all": "Run all probes",
+    "running": "Running…",
+    "service": {
+      "mdns": "Discovery (mDNS, UDP 5353)",
+      "pairing_udp": "Pairing channel (UDP 7879)",
+      "quic": "QUIC transport (UDP 7878)",
+      "quic_control": "Control stream (Heartbeat)",
+      "input_stream": "Input stream"
+    },
+    "status": {
+      "ok": "OK",
+      "fail": "Failed"
+    },
+    "latency": "Latency: {{ms}} ms",
+    "detail": "Detail",
+    "column": {
+      "service": "Service",
+      "status": "Status",
+      "latency": "Latency",
+      "detail": "Detail"
+    }
+  },
+  "keyboard": {
+    "title": "Keyboard mirror test",
+    "hint": "Captures keys for 5 seconds and sends them to the remote PC (open Notepad there to verify).",
+    "start": "Mirror keyboard (5 s)",
+    "running": "Listening… {{seconds}} s left",
+    "keys_sent": "Keys sent: {{count}}",
+    "test_click": "Send test click"
+  },
+  "errors": {
+    "not_connected": "Connect to the peer before running transport tests.",
+    "not_paired": "Pair with the peer first.",
+    "select_peer": "Select a peer.",
+    "suite_failed": "Probe suite failed"
+  }
+}

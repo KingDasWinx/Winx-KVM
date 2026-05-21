@@ -10,6 +10,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod clipboard_arboard;
+pub mod cursor_trap;
+pub mod dpi;
 pub mod config_store_toml;
 pub mod discovery_mdns;
 pub mod pairing_udp;
@@ -33,6 +35,7 @@ pub use input_win32::Win32InputBackend;
 pub use monitor_win32::Win32MonitorBackend;
 pub use network_interfaces_provider::IfAddrsNetworkProvider;
 pub use secret_store_keyring::KeyringSecretStore;
+pub use dpi::ensure_per_monitor_v2;
 pub use transport_quic::{generate_or_load_quic_cert, QuicTransportAdapter};
 
 // Adapters futuros (sprint a sprint):

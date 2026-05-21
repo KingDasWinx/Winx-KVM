@@ -23,8 +23,8 @@ use tokio::sync::Mutex;
 use tracing::{error, info};
 use winx_application::{
     ports::{IdentityStore, MonitorBackend, SecretStore, WINX_KVM_PORT},
-    ClipboardService, DiscoveryService, EnsureDevice, InputControlService, PairingService,
-    TransportService,
+    ClipboardService, ConnectionLabService, DiscoveryService, EnsureDevice, InputControlService,
+    PairingService, TransportService,
 };
 use winx_domain::{discovery::DiscoveryRegistry, shared::ids::PeerId};
 use winx_infra::{
@@ -34,8 +34,8 @@ use winx_infra::{
 };
 
 use app_state::{
-    AppState, ClipboardState, DiscoveryState, IdentityState, InputControlState, PairingState,
-    TransportState,
+    AppState, ClipboardState, DiscoveryState, IdentityState, InputControlState, LabState,
+    PairingState, TransportState,
 };
 
 /// Toda inicialização async (identity, QUIC, etc.) acontece aqui, dentro do runtime Tokio,
@@ -47,6 +47,7 @@ struct InitializedServices {
     pairing: Arc<PairingService>,
     transport: Arc<TransportService>,
     input_control: Arc<InputControlService>,
+    connection_lab: Arc<ConnectionLabService>,
     clipboard: Arc<ClipboardService>,
     config_store: Arc<TomlConfigStore>,
     device: winx_domain::identity::Device,
@@ -147,6 +148,13 @@ fn init_services(
         bus.clone(),
     ));
 
+    let connection_lab = Arc::new(ConnectionLabService::new(
+        Arc::clone(&discovery),
+        Arc::clone(&transport),
+        Arc::clone(&input_control),
+        Arc::clone(&identity_store) as Arc<dyn IdentityStore>,
+    ));
+
     let clipboard_backend = Arc::new(ArboardClipboardBackend::new());
     let clipboard = Arc::new(ClipboardService::new(
         clipboard_backend,
@@ -163,6 +171,7 @@ fn init_services(
         pairing,
         transport,
         input_control,
+        connection_lab,
         clipboard,
         config_store,
         device,
@@ -173,6 +182,7 @@ fn init_services(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     telemetry::init();
+    winx_infra::ensure_per_monitor_v2();
     info!(version = env!("CARGO_PKG_VERSION"), "iniciando Winx-KVM");
 
     // Sub-comando helper executado pelo filho elevado via UAC.
@@ -331,6 +341,9 @@ pub fn run() {
             app.manage(InputControlState {
                 input_control: services.input_control,
             });
+            app.manage(LabState {
+                lab: services.connection_lab,
+            });
             app.manage(ClipboardState {
                 clipboard: services.clipboard,
             });
@@ -406,6 +419,10 @@ pub fn run() {
             commands::list_connection_states,
             commands::get_focus_state,
             commands::enable_input_control,
+            commands::run_connectivity_suite,
+            commands::start_keyboard_mirror_test,
+            commands::get_keyboard_mirror_status,
+            commands::send_test_click,
             commands::get_clipboard_auto_sync,
             commands::set_clipboard_auto_sync,
             commands::enable_clipboard_sync,
