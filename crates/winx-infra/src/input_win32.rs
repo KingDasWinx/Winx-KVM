@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use crossbeam_channel::{Receiver, Sender};
 use tracing::{debug, error, info, warn};
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM, GetLastError, HINSTANCE};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM, GetLastError, HINSTANCE, POINT};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
@@ -37,8 +37,9 @@ use windows::Win32::UI::Input::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, ClipCursor, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    GetMessageW, GetSystemMetrics, PeekMessageW, RegisterClassW, SetCursorPos, SetWindowsHookExW,
-    TranslateMessage, UnhookWindowsHookEx, UnregisterClassW, CS_HREDRAW, CS_VREDRAW, HHOOK,
+    GetMessageW, GetSystemMetrics, PeekMessageW, RegisterClassW, SetCursorPos, SetForegroundWindow,
+    SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, UnregisterClassW, WindowFromPoint,
+    CS_HREDRAW, CS_VREDRAW, HHOOK,
     KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, PM_REMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_INPUT,
     WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_MOUSEMOVE, WM_QUIT, WM_HOTKEY,
     LLMHF_INJECTED, LLKHF_INJECTED, SM_CXSCREEN, SM_CYSCREEN, WINDOW_EX_STYLE, WINDOW_STYLE,
@@ -624,6 +625,12 @@ fn inject_event(event: InputEvent) -> anyhow::Result<()> {
                         },
                     };
                     send_inputs(&[input_packet])?;
+
+                    // Ativar a janela sob o cursor para que teclas subsequentes sejam entregues.
+                    let hwnd = WindowFromPoint(POINT { x: *x, y: *y });
+                    if !hwnd.is_invalid() {
+                        let _ = SetForegroundWindow(hwnd);
+                    }
                 }
             }
         }
