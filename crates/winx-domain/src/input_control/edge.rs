@@ -5,9 +5,6 @@ use super::layout::{BorderSide, MonitorLayout};
 /// Tolerância em pixels antes da borda de saída (`coord >= edge - tol`).
 pub const EDGE_TOLERANCE_PX: i32 = 2;
 
-/// Movimento acumulado no eixo de retorno para voltar ao local.
-pub const RETURN_LEFT_THRESHOLD_PX: i32 = 100;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EdgeDetectInput {
     pub screen_x: i32,
@@ -29,16 +26,16 @@ pub fn should_switch_to_remote(input: EdgeDetectInput, layout: &MonitorLayout) -
     }
 }
 
+/// Retorna `true` quando a posição X estimada do cursor remoto atingiu a borda de retorno.
+///
+/// `remote_cursor_x_est` é mantido pelo use case em coordenadas locais ao monitor remoto (0..width).
+/// O retorno ocorre pela borda oposta à saída: saiu pela Right → volta pela Left (x ≤ tol).
 #[must_use]
-pub fn accumulate_return_left(dx: i32, current_accum: i32) -> (i32, bool) {
-    if dx >= 0 {
-        return (0, false);
-    }
-    let next = current_accum.saturating_add(dx);
-    if next < -RETURN_LEFT_THRESHOLD_PX {
-        (0, true)
-    } else {
-        (next, false)
+pub fn should_return_to_local(remote_cursor_x_est: i32, layout: &MonitorLayout) -> bool {
+    match layout.edge.local_exit {
+        BorderSide::Right | BorderSide::Left => remote_cursor_x_est <= EDGE_TOLERANCE_PX,
+        // Bordas verticais: implementar quando layout configurável estiver disponível.
+        BorderSide::Top | BorderSide::Bottom => false,
     }
 }
 
@@ -103,18 +100,20 @@ mod tests {
     }
 
     #[test]
-    fn return_left_triggers_after_threshold() {
-        let (acc, go) = accumulate_return_left(-40, -60);
-        assert!(!go);
-        assert_eq!(acc, -100);
-        let (_, go) = accumulate_return_left(-5, -100);
-        assert!(go);
+    fn return_triggers_at_left_edge() {
+        let layout = layout_1920();
+        // Na borda esquerda (x=2 = EDGE_TOLERANCE_PX) → deve retornar
+        assert!(should_return_to_local(2, &layout));
+        assert!(should_return_to_local(0, &layout));
+        assert!(should_return_to_local(1, &layout));
     }
 
     #[test]
-    fn return_left_resets_on_right_movement() {
-        let (acc, go) = accumulate_return_left(1, -50);
-        assert!(!go);
-        assert_eq!(acc, 0);
+    fn return_does_not_trigger_far_from_edge() {
+        let layout = layout_1920();
+        // No centro da tela ou à direita → não deve retornar
+        assert!(!should_return_to_local(3, &layout));
+        assert!(!should_return_to_local(100, &layout));
+        assert!(!should_return_to_local(960, &layout));
     }
 }

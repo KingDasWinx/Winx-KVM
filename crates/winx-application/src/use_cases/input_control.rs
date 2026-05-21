@@ -7,9 +7,10 @@ use tokio::sync::{Mutex, Notify};
 use tracing::{debug, error, info, warn};
 use winx_domain::{
     input_control::{
-        accumulate_return_left, apply_focus_target, events::{FocusSwitched, HotkeyTriggered, InputBlocked},
-        should_switch_to_remote, toggle_lock_mode, EdgeDetectInput, FocusState, FocusTarget,
-        HotkeyAction, InputEvent, MonitorLayout, MOUSE_COALESCE_FLUSH_MS, MOUSE_SEND_MIN_MANHATTAN,
+        apply_focus_target, events::{FocusSwitched, HotkeyTriggered, InputBlocked},
+        should_return_to_local, should_switch_to_remote, toggle_lock_mode, EdgeDetectInput,
+        FocusState, FocusTarget, HotkeyAction, InputEvent, MonitorLayout,
+        MOUSE_COALESCE_FLUSH_MS, MOUSE_SEND_MIN_MANHATTAN,
     },
     shared::{ids::PeerId, DomainErrorCode},
     DomainError, DomainEvent,
@@ -67,7 +68,7 @@ pub struct InputControlService {
     input_tx: Arc<Mutex<Option<StreamSender>>>,
     seq: Arc<AtomicU64>,
     enabled: Arc<Mutex<bool>>,
-    remote_dx_accum: Arc<AtomicI32>,
+    remote_cursor_x_est: Arc<AtomicI32>,
     keyboard_mirror: Arc<AtomicBool>,
     mirror_keys_sent: Arc<AtomicU64>,
     mirror_keys_hooked: Arc<AtomicU64>,
@@ -97,7 +98,7 @@ impl InputControlService {
             input_tx: Arc::new(Mutex::new(None)),
             seq: Arc::new(AtomicU64::new(0)),
             enabled: Arc::new(Mutex::new(false)),
-            remote_dx_accum: Arc::new(AtomicI32::new(0)),
+            remote_cursor_x_est: Arc::new(AtomicI32::new(0)),
             keyboard_mirror: Arc::new(AtomicBool::new(false)),
             mirror_keys_sent: Arc::new(AtomicU64::new(0)),
             mirror_keys_hooked: Arc::new(AtomicU64::new(0)),
@@ -322,7 +323,7 @@ impl InputControlService {
         let service_active = Arc::clone(&self.active_peer);
         let service_self_input = Arc::clone(&self.input);
         let service_enabled = Arc::clone(&self.enabled);
-                let service_remote_dx = Arc::clone(&self.remote_dx_accum);
+                let service_remote_dx = Arc::clone(&self.remote_cursor_x_est);
         let service_mirror = Arc::clone(&self.keyboard_mirror);
         let service_mirror_keys = Arc::clone(&self.mirror_keys_sent);
         let service_mirror_hooked = Arc::clone(&self.mirror_keys_hooked);
@@ -426,7 +427,7 @@ impl InputControlService {
             .map_err(|e| internal_err(&e.to_string()))?;
 
         FIRST_INJECT.store(true, Ordering::SeqCst);
-        self.remote_dx_accum.store(0, Ordering::SeqCst);
+        self.remote_cursor_x_est.store(0, Ordering::SeqCst);
 
         let inject_input = Arc::clone(&self.input);
         let remote_frames = Arc::clone(&self.remote_frames_received);
@@ -503,7 +504,7 @@ impl InputControlService {
         *self.active_peer.lock().await = None;
         *self.enabled.lock().await = false;
         *self.input_tx.lock().await = None;
-        self.remote_dx_accum.store(0, Ordering::SeqCst);
+        self.remote_cursor_x_est.store(0, Ordering::SeqCst);
 
         {
             let mut f = self.focus.lock().await;
@@ -529,7 +530,7 @@ impl InputControlService {
         let input = Arc::clone(&self.input);
         let input_tx = Arc::clone(&self.input_tx);
         let enabled = Arc::clone(&self.enabled);
-        let remote_dx = Arc::clone(&self.remote_dx_accum);
+        let remote_dx = Arc::clone(&self.remote_cursor_x_est);
 
         tokio::spawn(async move {
             while let Ok(event) = rx.recv().await {
@@ -704,7 +705,7 @@ async fn handle_local_input(
     active: Arc<Mutex<Option<PeerId>>>,
     input: Arc<dyn InputBackend>,
     seq: &Arc<AtomicU64>,
-    remote_dx_accum: Arc<AtomicI32>,
+    remote_cursor_x_est: Arc<AtomicI32>,
     keyboard_mirror: Arc<AtomicBool>,
     mirror_keys_sent: Arc<AtomicU64>,
     mirror_keys_hooked: Arc<AtomicU64>,
@@ -779,7 +780,7 @@ async fn handle_local_input(
                         layout_data,
                     ) {
                         drop(layout_guard);
-                        try_edge_switch(screen_x, screen_y, focus, layout, input, bus, active, input_tx)
+                        try_edge_switch(screen_x, screen_y, focus, layout, input, bus, active, input_tx, Arc::clone(&remote_cursor_x_est))
                             .await;
                     }
                 }
@@ -792,9 +793,22 @@ async fn handle_local_input(
                     if ev.is_noop_mouse_move() || ev.is_noise_mouse_move(MOUSE_SEND_MIN_MANHATTAN) {
                         return;
                     }
-                    let current = remote_dx_accum.load(Ordering::SeqCst);
-                    let (new_acc, go_back) = accumulate_return_left(*dx, current);
-                    remote_dx_accum.store(new_acc, Ordering::SeqCst);
+                    // Rastrear posição X estimada do cursor no espaço do monitor remoto.
+                    // scaled_dx usa a mesma escala aplicada ao delta enviado ao peer.
+                    let scale_q8 = mouse_send.scale_q8.load(Ordering::SeqCst);
+                    let scaled_dx = ((i64::from(*dx) * i64::from(scale_q8)) / 256) as i32;
+                    let go_back = {
+                        let layout_guard = layout.lock().await;
+                        if let Some(layout_data) = layout_guard.as_ref() {
+                            let remote_w = layout_data.remote_virtual.width as i32;
+                            let old_x = remote_cursor_x_est.load(Ordering::SeqCst);
+                            let new_x = (old_x + scaled_dx).clamp(0, remote_w);
+                            remote_cursor_x_est.store(new_x, Ordering::SeqCst);
+                            should_return_to_local(new_x, layout_data)
+                        } else {
+                            false
+                        }
+                    };
                     if go_back {
                         try_switch_back_to_local(
                             Arc::clone(&focus),
@@ -839,6 +853,7 @@ async fn try_edge_switch(
     bus: EventBus,
     active: Arc<Mutex<Option<PeerId>>>,
     input_tx: Arc<Mutex<Option<StreamSender>>>,
+    remote_cursor_x_est: Arc<AtomicI32>,
 ) {
     let layout_guard = layout.lock().await;
     let Some(layout_data) = layout_guard.as_ref() else {
@@ -877,6 +892,9 @@ async fn try_edge_switch(
 
     // Ponto de entrada no monitor remoto (Y proporcional preservado)
     let remote_entry = layout_data.map_crossing_point(screen_x, screen_y);
+
+    // Inicializar rastreador de posição X estimada com o ponto de entrada
+    remote_cursor_x_est.store(remote_entry.0, Ordering::SeqCst);
 
     drop(layout_guard);
 
@@ -1106,6 +1124,7 @@ mod tests {
             svc.bus.clone(),
             Arc::clone(&svc.active_peer),
             Arc::clone(&svc.input_tx),
+            Arc::new(AtomicI32::new(0)),
         )
         .await;
 
@@ -1144,6 +1163,7 @@ mod tests {
             bus,
             active,
             input_tx,
+            Arc::new(AtomicI32::new(0)),
         )
         .await;
 
