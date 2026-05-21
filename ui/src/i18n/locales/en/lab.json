@@ -38,10 +38,13 @@
   "keyboard": {
     "title": "Keyboard mirror test",
     "hint": "Captures keys for 5 seconds and sends them to the remote PC (open Notepad there to verify).",
+    "hint_connect_side": "Type on this PC (the one that pressed Connect). On the remote PC, open Notepad to see the text.",
     "start": "Mirror keyboard (5 s)",
     "running": "Listening… {{seconds}} s left",
     "keys_sent": "Keys sent: {{count}}",
-    "test_click": "Send test click"
+    "test_click": "Send test click",
+    "click_sent": "Test click sent",
+    "error_failed": "Input test failed. Check that you are on the PC that initiated Connect."
   },
   "errors": {
     "not_connected": "Connect to the peer before running transport tests.",

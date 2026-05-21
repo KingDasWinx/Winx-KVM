@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button, Card, Group, Stack, Text, Title } from '@mantine/core';
+import { notifications } from '@mantine/notifications';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -8,6 +9,7 @@ import {
   startKeyboardMirrorTest,
   type KeyboardMirrorStatusDto,
 } from '../../ipc/commands';
+import { notifyDomainError } from '../../lib/parseDomainError';
 
 interface KeyboardMirrorPanelProps {
   peerId: string | null;
@@ -19,6 +21,7 @@ export function KeyboardMirrorPanel({
   peerConnected,
 }: KeyboardMirrorPanelProps) {
   const { t } = useTranslation('lab');
+  const { t: tCommon } = useTranslation('common');
   const [status, setStatus] = useState<KeyboardMirrorStatusDto | null>(null);
   const [starting, setStarting] = useState(false);
   const [clickSending, setClickSending] = useState(false);
@@ -45,6 +48,18 @@ export function KeyboardMirrorPanel({
     }, 200);
   }
 
+  function showLabError(err: unknown) {
+    if (typeof err === 'string' && err.startsWith('{')) {
+      notifyDomainError(err, tCommon);
+    } else {
+      notifications.show({
+        title: t('keyboard.title'),
+        message: t('keyboard.error_failed'),
+        color: 'red',
+      });
+    }
+  }
+
   async function handleStart() {
     if (!peerId) return;
     setStarting(true);
@@ -55,6 +70,7 @@ export function KeyboardMirrorPanel({
       startPolling();
     } catch (err: unknown) {
       console.error('start_keyboard_mirror_test', err);
+      showLabError(err);
     } finally {
       setStarting(false);
     }
@@ -65,8 +81,14 @@ export function KeyboardMirrorPanel({
     setClickSending(true);
     try {
       await sendTestClick(peerId);
+      notifications.show({
+        title: t('keyboard.title'),
+        message: t('keyboard.click_sent'),
+        color: 'teal',
+      });
     } catch (err: unknown) {
       console.error('send_test_click', err);
+      showLabError(err);
     } finally {
       setClickSending(false);
     }
@@ -80,6 +102,9 @@ export function KeyboardMirrorPanel({
         <Title order={4}>{t('keyboard.title')}</Title>
         <Text size="sm" c="dimmed">
           {t('keyboard.hint')}
+        </Text>
+        <Text size="sm" c="dimmed">
+          {t('keyboard.hint_connect_side')}
         </Text>
 
         {!peerConnected && peerId && (
@@ -108,9 +133,9 @@ export function KeyboardMirrorPanel({
           </Button>
         </Group>
 
-        {status && (mirrorActive || status.keys_sent > 0) && (
-          <Text size="sm" c="dimmed">
-            {t('keyboard.keys_sent', { count: status.keys_sent })}
+        {(mirrorActive || (status?.keys_sent ?? 0) > 0) && (
+          <Text size="sm" c={status && status.keys_sent > 0 ? 'teal' : 'dimmed'}>
+            {t('keyboard.keys_sent', { count: status?.keys_sent ?? 0 })}
           </Text>
         )}
       </Stack>

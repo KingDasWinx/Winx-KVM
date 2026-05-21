@@ -14,7 +14,7 @@ use winx_protocol::DiagPing;
 
 use crate::{
     ports::{pairing::pairing_socket_addr, IdentityStore},
-    use_cases::{input_streams, DiscoveryService, InputControlService, TransportService},
+    use_cases::{DiscoveryService, InputControlService, TransportService},
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -158,18 +158,33 @@ impl ConnectionLabService {
             };
         }
 
+        let transport_rtt = self
+            .transport
+            .get_stats(peer_id)
+            .await
+            .ok()
+            .map(|s| s.rtt_ms);
+
         match self.transport.probe_control_heartbeat_for_peer(peer_id).await {
-            Ok(rtt) => ProbeResult {
-                service: "quic_control".into(),
-                ok: true,
-                latency_ms: Some(rtt),
-                detail: "HeartbeatAck recebido".into(),
-            },
+            Ok(rtt) => {
+                let detail = match transport_rtt {
+                    Some(trtt) => format!(
+                        "HeartbeatAck recebido (RTT heartbeat={rtt} ms, RTT transporte={trtt} ms)"
+                    ),
+                    None => format!("HeartbeatAck recebido (RTT heartbeat={rtt} ms)"),
+                };
+                ProbeResult {
+                    service: "quic_control".into(),
+                    ok: true,
+                    latency_ms: Some(rtt),
+                    detail,
+                }
+            }
             Err(err) => ProbeResult {
                 service: "quic_control".into(),
                 ok: false,
                 latency_ms: None,
-                detail: err.message.clone(),
+                detail: format!("control_stream_no_ack: {}", err.message),
             },
         }
     }
@@ -185,21 +200,21 @@ impl ConnectionLabService {
         }
 
         let started = std::time::Instant::now();
-        match input_streams::acquire_input_streams(&self.transport, peer_id).await {
-            Ok(_) => ProbeResult {
+        match self.input.send_lab_ping(peer_id).await {
+            Ok(()) => ProbeResult {
                 service: "input_stream".into(),
                 ok: true,
                 latency_ms: Some(
                     u32::try_from(started.elapsed().as_millis().min(u128::from(u32::MAX)))
                         .unwrap_or(u32::MAX),
                 ),
-                detail: "stream Input disponível".into(),
+                detail: "ping Input enviado no stream".into(),
             },
             Err(err) => ProbeResult {
                 service: "input_stream".into(),
                 ok: false,
                 latency_ms: None,
-                detail: err.message.clone(),
+                detail: format!("input_stream_send_failed: {}", err.message),
             },
         }
     }
@@ -258,7 +273,7 @@ async fn probe_udp_ping(
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 #[cfg(test)]

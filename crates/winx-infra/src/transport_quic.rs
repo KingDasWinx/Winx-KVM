@@ -18,7 +18,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, UnixT
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::DistinguishedName;
 use rustls::{DigitallySignedStruct, Error as RustlsError, SignatureScheme};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, Notify};
 use tracing::{info, warn};
 use winx_application::ports::transport::{
     ActiveConnection, IncomingConnection, StreamReceiver, StreamSender, TransportAdapter,
@@ -240,6 +240,8 @@ impl ClientCertVerifier for Ed25519PeerClientVerifier {
     }
 }
 
+type ControlProbeReply = Result<u32, String>;
+
 struct ConnEntry {
     connection: QuicConnection,
     /// `true` se este lado iniciou o handshake QUIC (`connect`); `false` se aceitou (`listen`).
@@ -248,6 +250,9 @@ struct ConnEntry {
     /// Sender para streams inbound classificados (kind, sender, receiver).
     #[allow(dead_code)]
     inbound_streams_tx: mpsc::Sender<(StreamKind, StreamSender, StreamReceiver)>,
+    /// Waiter one-shot para probe Lab (`Heartbeat` → `HeartbeatAck` RTT).
+    control_probe: Arc<Mutex<Option<tokio::sync::oneshot::Sender<ControlProbeReply>>>>,
+    control_probe_notify: Arc<Notify>,
 }
 
 pub struct QuicTransportAdapter {
@@ -332,6 +337,8 @@ impl QuicTransportAdapter {
         connection: QuicConnection,
         is_quic_client: bool,
         inbound_streams_tx: mpsc::Sender<(StreamKind, StreamSender, StreamReceiver)>,
+        control_probe: Arc<Mutex<Option<tokio::sync::oneshot::Sender<ControlProbeReply>>>>,
+        control_probe_notify: Arc<Notify>,
     ) {
         self.connections.lock().await.insert(
             conn_id,
@@ -339,6 +346,8 @@ impl QuicTransportAdapter {
                 connection,
                 is_quic_client,
                 inbound_streams_tx,
+                control_probe,
+                control_probe_notify,
             },
         );
     }
@@ -427,15 +436,25 @@ impl TransportAdapter for QuicTransportAdapter {
                             let conn_id = SessionId::new();
                             let peer_addr = connection.remote_address();
                             let (inbound_tx, inbound_rx) = mpsc::channel(8);
+                            let control_probe =
+                                Arc::new(Mutex::new(None::<tokio::sync::oneshot::Sender<ControlProbeReply>>));
+                            let control_probe_notify = Arc::new(Notify::new());
                             connections.lock().await.insert(
                                 conn_id,
                                 ConnEntry {
                                     connection: connection.clone(),
                                     is_quic_client: false,
                                     inbound_streams_tx: inbound_tx.clone(),
+                                    control_probe: Arc::clone(&control_probe),
+                                    control_probe_notify: Arc::clone(&control_probe_notify),
                                 },
                             );
-                            spawn_inbound_stream_loop(connection.clone(), inbound_tx);
+                            spawn_inbound_stream_loop(
+                                connection.clone(),
+                                inbound_tx,
+                                control_probe,
+                                control_probe_notify,
+                            );
                             let _ = tx
                                 .send(IncomingConnection {
                                     conn_id,
@@ -444,7 +463,6 @@ impl TransportAdapter for QuicTransportAdapter {
                                     inbound_streams: inbound_rx,
                                 })
                                 .await;
-                            spawn_control_loop_responder(connection);
                         }
                         Err(err) => warn!(?err, "falha ao aceitar conexão QUIC"),
                     }
@@ -474,10 +492,29 @@ impl TransportAdapter for QuicTransportAdapter {
         let connection = self.endpoint.connect(peer_addr, "winx-kvm.local")?.await?;
         let conn_id = SessionId::new();
         let (inbound_tx, inbound_rx) = mpsc::channel(8);
-        self.store_connection(conn_id, connection.clone(), true, inbound_tx.clone())
-            .await;
-        spawn_inbound_stream_loop(connection.clone(), inbound_tx);
-        spawn_control_loop_initiator(connection);
+        let control_probe =
+            Arc::new(Mutex::new(None::<tokio::sync::oneshot::Sender<ControlProbeReply>>));
+        let control_probe_notify = Arc::new(Notify::new());
+        self.store_connection(
+            conn_id,
+            connection.clone(),
+            true,
+            inbound_tx.clone(),
+            Arc::clone(&control_probe),
+            Arc::clone(&control_probe_notify),
+        )
+        .await;
+        spawn_inbound_stream_loop(
+            connection.clone(),
+            inbound_tx,
+            Arc::clone(&control_probe),
+            Arc::clone(&control_probe_notify),
+        );
+        spawn_outbound_control_stream(
+            connection,
+            control_probe,
+            control_probe_notify,
+        );
         Ok(ActiveConnection {
             conn_id,
             inbound_streams: inbound_rx,
@@ -544,45 +581,26 @@ impl TransportAdapter for QuicTransportAdapter {
     }
 
     async fn probe_control_heartbeat(&self, conn_id: SessionId) -> anyhow::Result<u32> {
-        let connection = {
+        let (control_probe, notify) = {
             let guard = self.connections.lock().await;
-            guard
+            let entry = guard
                 .get(&conn_id)
-                .map(|e| e.connection.clone())
-                .ok_or_else(|| anyhow::anyhow!("conexão não encontrada"))?
+                .ok_or_else(|| anyhow::anyhow!("conexão não encontrada"))?;
+            (
+                Arc::clone(&entry.control_probe),
+                Arc::clone(&entry.control_probe_notify),
+            )
         };
 
-        let (mut send, mut recv) = connection.open_bi().await?;
-        let mut hdr = [0u8; 5];
-        hdr[..4].copy_from_slice(winx_protocol::STREAM_HEADER_MAGIC);
-        hdr[4] = StreamKind::Control.as_u8();
-        send.write_all(&hdr).await?;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        *control_probe.lock().await = Some(tx);
+        notify.notify_one();
 
-        let started = std::time::Instant::now();
-        let frame = winx_protocol::Frame::new(winx_protocol::Payload::Heartbeat);
-        write_frame(&mut send, &frame).await?;
-
-        let deadline = started + std::time::Duration::from_secs(3);
-        loop {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() {
-                anyhow::bail!("timeout aguardando HeartbeatAck");
-            }
-            let read = tokio::time::timeout(remaining, read_frame(&mut recv)).await;
-            match read {
-                Ok(Ok(Some(winx_protocol::Payload::HeartbeatAck))) => {
-                    let rtt = started.elapsed();
-                    let _ = send.finish();
-                    return Ok(
-                        u32::try_from(rtt.as_millis().min(u128::from(u32::MAX)))
-                            .unwrap_or(u32::MAX),
-                    );
-                }
-                Ok(Ok(Some(_))) => continue,
-                Ok(Ok(None)) => anyhow::bail!("stream control fechado antes do ack"),
-                Ok(Err(e)) => return Err(e),
-                Err(_) => anyhow::bail!("timeout aguardando HeartbeatAck"),
-            }
+        match tokio::time::timeout(std::time::Duration::from_secs(3), rx).await {
+            Ok(Ok(Ok(rtt_ms))) => Ok(rtt_ms),
+            Ok(Ok(Err(msg))) => anyhow::bail!("{msg}"),
+            Ok(Err(_)) => anyhow::bail!("control stream encerrou antes do HeartbeatAck"),
+            Err(_) => anyhow::bail!("timeout aguardando HeartbeatAck"),
         }
     }
 }
@@ -606,56 +624,112 @@ fn peer_key_from_connection(connection: &QuicConnection) -> Option<[u8; 32]> {
     extract_ed25519_public_key(first.as_ref())
 }
 
-fn spawn_control_loop_responder(connection: QuicConnection) {
-    tokio::spawn(async move {
-        let Ok((mut send, mut recv)) = connection.accept_bi().await else {
-            return;
-        };
-        run_control_stream(&mut send, &mut recv).await;
-    });
-}
-
-fn spawn_control_loop_initiator(connection: QuicConnection) {
+fn spawn_outbound_control_stream(
+    connection: QuicConnection,
+    control_probe: Arc<Mutex<Option<tokio::sync::oneshot::Sender<ControlProbeReply>>>>,
+    control_probe_notify: Arc<Notify>,
+) {
     tokio::spawn(async move {
         let Ok((mut send, mut recv)) = connection.open_bi().await else {
             return;
         };
-        run_control_stream(&mut send, &mut recv).await;
+        let mut hdr = [0u8; 5];
+        hdr[..4].copy_from_slice(winx_protocol::STREAM_HEADER_MAGIC);
+        hdr[4] = StreamKind::Control.as_u8();
+        if send.write_all(&hdr).await.is_err() {
+            return;
+        }
+        run_control_stream(&mut send, &mut recv, control_probe, control_probe_notify).await;
     });
 }
 
-async fn run_control_stream(send: &mut quinn::SendStream, recv: &mut quinn::RecvStream) {
+async fn run_control_stream(
+    send: &mut quinn::SendStream,
+    recv: &mut quinn::RecvStream,
+    control_probe: Arc<Mutex<Option<tokio::sync::oneshot::Sender<ControlProbeReply>>>>,
+    control_probe_notify: Arc<Notify>,
+) {
+    let probe_started = Arc::new(Mutex::new(None::<std::time::Instant>));
     let mut heartbeat_tick = tokio::time::interval(std::time::Duration::from_secs(5));
+    heartbeat_tick.tick().await;
+
     loop {
         tokio::select! {
+            () = control_probe_notify.notified() => {
+                if send_probe_heartbeat(send, &control_probe, &probe_started).await {
+                    break;
+                }
+            }
             _ = heartbeat_tick.tick() => {
+                if control_probe.lock().await.is_some() {
+                    continue;
+                }
                 let frame = winx_protocol::Frame::new(winx_protocol::Payload::Heartbeat);
-                if let Ok(bytes) = winx_protocol::encode(&frame) {
-                    let len = u32::try_from(bytes.len())
-                        .unwrap_or(u32::MAX)
-                        .to_be_bytes();
-                    if send.write_all(&len).await.is_err() { break; }
-                    if send.write_all(&bytes).await.is_err() { break; }
+                if write_frame(send, &frame).await.is_err() {
+                    fail_probe_waiter_async(&control_probe, "falha ao enviar Heartbeat keep-alive").await;
+                    break;
                 }
             }
             read = read_frame(recv) => {
                 match read {
-                    Ok(Some(payload)) => {
-                        if matches!(payload, winx_protocol::Payload::Heartbeat) {
-                            let ack = winx_protocol::Frame::new(winx_protocol::Payload::HeartbeatAck);
-                            if let Ok(bytes) = winx_protocol::encode(&ack) {
-                                let len = u32::try_from(bytes.len())
-                        .unwrap_or(u32::MAX)
-                        .to_be_bytes();
-                                let _ = send.write_all(&len).await;
-                                let _ = send.write_all(&bytes).await;
+                    Ok(Some(winx_protocol::Payload::HeartbeatAck)) => {
+                        if let Some(started) = probe_started.lock().await.take() {
+                            let rtt_ms = u32::try_from(
+                                started.elapsed().as_millis().min(u128::from(u32::MAX)),
+                            )
+                            .unwrap_or(u32::MAX);
+                            if let Some(waiter) = control_probe.lock().await.take() {
+                                let _ = waiter.send(Ok(rtt_ms));
                             }
                         }
                     }
-                    Ok(None) | Err(_) => break,
+                    Ok(Some(winx_protocol::Payload::Heartbeat)) => {
+                        let ack =
+                            winx_protocol::Frame::new(winx_protocol::Payload::HeartbeatAck);
+                        if write_frame(send, &ack).await.is_err() {
+                            fail_probe_waiter_async(&control_probe, "falha ao enviar HeartbeatAck")
+                                .await;
+                            break;
+                        }
+                    }
+                    Ok(Some(_)) => {}
+                    Ok(None) => {
+                        fail_probe_waiter_async(&control_probe, "stream control fechado").await;
+                        break;
+                    }
+                    Err(_) => {
+                        fail_probe_waiter_async(&control_probe, "erro ao ler stream control").await;
+                        break;
+                    }
                 }
             }
         }
+    }
+}
+
+async fn send_probe_heartbeat(
+    send: &mut quinn::SendStream,
+    control_probe: &Arc<Mutex<Option<tokio::sync::oneshot::Sender<ControlProbeReply>>>>,
+    probe_started: &Arc<Mutex<Option<std::time::Instant>>>,
+) -> bool {
+    if control_probe.lock().await.is_none() {
+        return false;
+    }
+    *probe_started.lock().await = Some(std::time::Instant::now());
+    let frame = winx_protocol::Frame::new(winx_protocol::Payload::Heartbeat);
+    if write_frame(send, &frame).await.is_err() {
+        fail_probe_waiter_async(control_probe, "falha ao enviar Heartbeat de probe").await;
+        return true;
+    }
+    false
+}
+
+async fn fail_probe_waiter_async(
+    control_probe: &Arc<Mutex<Option<tokio::sync::oneshot::Sender<ControlProbeReply>>>>,
+    msg: &str,
+) {
+    if let Some(waiter) = control_probe.lock().await.take() {
+        let _ = waiter.send(Err(msg.to_string()));
     }
 }
 
@@ -679,10 +753,12 @@ async fn read_frame(
 fn spawn_inbound_stream_loop(
     connection: QuicConnection,
     tx: mpsc::Sender<(StreamKind, StreamSender, StreamReceiver)>,
+    control_probe: Arc<Mutex<Option<tokio::sync::oneshot::Sender<ControlProbeReply>>>>,
+    control_probe_notify: Arc<Notify>,
 ) {
     tokio::spawn(async move {
         loop {
-            let Ok((send, mut recv)) = connection.accept_bi().await else {
+            let Ok((mut send, mut recv)) = connection.accept_bi().await else {
                 break;
             };
             let mut hdr = [0u8; 5];
@@ -691,7 +767,7 @@ fn spawn_inbound_stream_loop(
                 recv.read_exact(&mut hdr),
             )
             .await;
-            let Ok(Ok(_)) = read else {
+            let Ok(Ok(())) = read else {
                 warn!("stream entrante sem header válido — descartado");
                 continue;
             };
@@ -704,9 +780,17 @@ fn spawn_inbound_stream_loop(
                 continue;
             };
             info!(?kind, "stream entrante classificado");
-            let (s, r) = bridge_bi_streams(send, recv);
-            if tx.send((kind, s, r)).await.is_err() {
-                break;
+            if kind == StreamKind::Control {
+                let cp = Arc::clone(&control_probe);
+                let notify = Arc::clone(&control_probe_notify);
+                tokio::spawn(async move {
+                    run_control_stream(&mut send, &mut recv, cp, notify).await;
+                });
+            } else {
+                let (s, r) = bridge_bi_streams(send, recv);
+                if tx.send((kind, s, r)).await.is_err() {
+                    break;
+                }
             }
         }
     });

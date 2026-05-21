@@ -85,9 +85,7 @@ impl InputControlService {
             ));
         }
 
-        if !*self.enabled.lock().await {
-            self.enable_for_peer(peer_id).await?;
-        } else {
+        if *self.enabled.lock().await {
             let active = *self.active_peer.lock().await;
             if active != Some(peer_id) {
                 return Err(DomainError::new(
@@ -95,6 +93,8 @@ impl InputControlService {
                     "input control ativo para outro peer",
                 ));
             }
+        } else {
+            self.enable_for_peer(peer_id).await?;
         }
 
         let duration = Duration::from_secs(u64::from(duration_secs.max(1)));
@@ -174,6 +174,34 @@ impl InputControlService {
                 .await
                 .map_err(|_| internal_err("falha ao enviar clique de teste"))?;
         }
+        Ok(())
+    }
+
+    /// Envia um frame Input mínimo no stream para validar conectividade (Lab).
+    pub async fn send_lab_ping(&self, peer_id: PeerId) -> Result<(), DomainError> {
+        if !self.transport.is_peer_connected(peer_id).await {
+            return Err(DomainError::new(
+                DomainErrorCode::TransportConnectionFailed,
+                "peer não conectado via QUIC",
+            ));
+        }
+
+        let (tx, _rx) = input_streams::acquire_input_streams(&self.transport, peer_id).await?;
+        let ev = InputEvent::Key {
+            code: winx_domain::input_control::PortableKeyCode(0),
+            pressed: false,
+            modifiers: winx_domain::input_control::KeyModifiers {
+                ctrl: false,
+                alt: false,
+                shift: false,
+                meta: false,
+            },
+        };
+        let n = self.seq.fetch_add(1, Ordering::SeqCst);
+        let bytes = encode_input_payload(n, &ev).map_err(|e| internal_err(&e.to_string()))?;
+        tx.send(bytes)
+            .await
+            .map_err(|_| internal_err("falha ao enviar ping Input no stream"))?;
         Ok(())
     }
 

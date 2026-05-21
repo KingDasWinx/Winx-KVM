@@ -38,10 +38,13 @@
   "keyboard": {
     "title": "Teste de espelho de teclado",
     "hint": "Captura teclas por 5 segundos e envia ao PC remoto (abra o Bloco de notas lá para verificar).",
+    "hint_connect_side": "Digite neste PC (quem pressionou Connect). No remoto, abra o Bloco de notas para ver o texto.",
     "start": "Espelhar teclado (5 s)",
     "running": "Ouvindo… {{seconds}} s restantes",
     "keys_sent": "Teclas enviadas: {{count}}",
-    "test_click": "Enviar clique de teste"
+    "test_click": "Enviar clique de teste",
+    "click_sent": "Clique de teste enviado",
+    "error_failed": "Falha no teste de input. Confirme que está no PC que iniciou o Connect."
   },
   "errors": {
     "not_connected": "Conecte ao peer antes dos testes de transporte.",
