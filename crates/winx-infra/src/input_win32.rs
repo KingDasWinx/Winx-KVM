@@ -627,7 +627,7 @@ fn inject_event(event: InputEvent) -> anyhow::Result<()> {
                     send_inputs(&[input_packet])?;
 
                     // Ativar a janela sob o cursor para que teclas subsequentes sejam entregues.
-                    let hwnd = WindowFromPoint(POINT { x: *x, y: *y });
+                    let hwnd = WindowFromPoint(POINT { x, y });
                     if !hwnd.is_invalid() {
                         let _ = SetForegroundWindow(hwnd);
                     }
@@ -1038,7 +1038,7 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
 
 #[cfg(test)]
 mod delta_tests {
-    use super::{kb_hook_flags_is_injected, kb_hook_lparam_is_autorepeat, mouse_delta};
+    use super::{kb_hook_flags_is_injected, mouse_delta};
     use windows::Win32::UI::WindowsAndMessaging::LLKHF_INJECTED;
 
     #[test]
