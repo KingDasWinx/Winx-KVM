@@ -6,6 +6,7 @@ pub mod discovery;
 pub mod identity;
 pub mod input_control;
 pub mod input_streams;
+pub mod mouse_coalesce;
 pub mod pairing;
 pub mod transport;
 pub mod update_device_profile;

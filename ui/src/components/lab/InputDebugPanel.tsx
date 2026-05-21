@@ -49,6 +49,7 @@ export function InputDebugPanel({ mirrorActive }: InputDebugPanelProps) {
         { key: t('debug.remote_received'), value: stats.remote_frames_received },
         { key: t('debug.remote_inject_ok'), value: stats.remote_inject_ok },
         { key: t('debug.remote_inject_fail'), value: stats.remote_inject_fail },
+        { key: t('debug.mouse_frames_sent'), value: stats.mouse_frames_sent },
         { key: t('debug.input_enabled'), value: stats.input_enabled },
         { key: t('debug.has_input_tx'), value: stats.has_input_tx },
       ]

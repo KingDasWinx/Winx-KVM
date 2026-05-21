@@ -62,6 +62,7 @@
     "remote_received": "Frames remotos recebidos",
     "remote_inject_ok": "Injeções remotas OK",
     "remote_inject_fail": "Injeções remotas falharam",
+    "mouse_frames_sent": "Frames de mouse enviados (agregados)",
     "input_enabled": "Input control habilitado",
     "has_input_tx": "Stream Input aberto"
   },

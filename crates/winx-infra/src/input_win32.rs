@@ -30,15 +30,21 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MapVirtualKeyW, MAPVK_VK_TO_VSC_EX, MOUSEEVENTF_ABSOLUTE,
     RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
 };
+use windows::Win32::UI::Input::{
+    GetRawInputData, RegisterRawInputDevices, RAWINPUT, RAWINPUTHEADER, RAWMOUSE, RIDEV_INPUTSINK,
+    RID_INPUT, RIM_TYPEMOUSE, MOUSE_MOVE_RELATIVE,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, ClipCursor, DispatchMessageW, GetMessageW, GetSystemMetrics,
     PeekMessageW, SetCursorPos, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
     HHOOK, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, PM_REMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL,
-    WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_MOUSEMOVE, WM_QUIT, WM_HOTKEY,
+    WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_MOUSEMOVE, WM_QUIT, WM_HOTKEY,
     LLMHF_INJECTED, LLKHF_INJECTED, SM_CXSCREEN, SM_CYSCREEN,
 };
 use winx_application::ports::{CaptureHandle, InputBackend};
-use winx_domain::input_control::{HotkeyAction, InputEvent, KeyModifiers, MouseButton};
+use winx_domain::input_control::{
+    HotkeyAction, InputEvent, KeyModifiers, MouseButton, MOUSE_SEND_MIN_MANHATTAN,
+};
 
 use crate::cursor_trap::{hide_cursor_trap, release_cursor_trap_sync, show_cursor_trap};
 use crate::input_vk_map::{portable_to_vk, vk_to_portable};
@@ -67,6 +73,9 @@ static SKIP_MOUSE_DELTA: AtomicBool = AtomicBool::new(false);
 static CTRL_DOWN: AtomicBool = AtomicBool::new(false);
 static ALT_DOWN: AtomicBool = AtomicBool::new(false);
 static CURSOR_HIDDEN: AtomicBool = AtomicBool::new(false);
+/// Foco remoto no sender: deltas vêm de Raw Input, não de `pt` no clip.
+static USE_RAW_MOUSE_DELTA: AtomicBool = AtomicBool::new(false);
+static RAW_MOUSE_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 /// Restauração incondicional e síncrona dos recursos de hardware.
 /// Garante que o usuário recupere o controle físico mesmo se a tarefa Tokio travar.
@@ -226,15 +235,26 @@ impl InputBackend for Win32InputBackend {
         .map_err(|e| anyhow::anyhow!("join: {e}"))?
     }
 
-    async fn transition_to_remote(&self, center_x: i32, center_y: i32) -> anyhow::Result<()> {
+    async fn transition_to_remote(
+        &self,
+        center_x: i32,
+        center_y: i32,
+        clip_rect: (i32, i32, u32, u32),
+    ) -> anyhow::Result<()> {
         if let Err(e) = self.hide_cursor_system().await {
             warn!(?e, "falha ao ocultar cursor (não-crítico, continuando)");
         }
         self.warp_cursor_signed(center_x, center_y).await?;
-        self.set_cursor_clipped(Some((center_x - 2, center_y - 2, 4, 4)))
-            .await?;
+        self.set_cursor_clipped(Some(clip_rect)).await?;
         self.reset_mouse_delta_baseline();
         Ok(())
+    }
+
+    fn set_raw_mouse_capture(&self, enabled: bool) {
+        USE_RAW_MOUSE_DELTA.store(enabled, Ordering::SeqCst);
+        if enabled {
+            register_raw_mouse_device();
+        }
     }
 
     async fn transition_to_local(
@@ -362,7 +382,13 @@ fn send_inputs(inputs: &[INPUT]) -> anyhow::Result<()> {
 fn inject_event(event: InputEvent) -> anyhow::Result<()> {
     match event {
         InputEvent::MouseMove { dx, dy, .. } => {
-            if dx == 0 && dy == 0 {
+            let mv = InputEvent::MouseMove {
+                dx,
+                dy,
+                screen_x: 0,
+                screen_y: 0,
+            };
+            if mv.is_noop_mouse_move() || mv.is_noise_mouse_move(MOUSE_SEND_MIN_MANHATTAN) {
                 return Ok(());
             }
             let input = INPUT {
@@ -465,6 +491,84 @@ fn inject_event(event: InputEvent) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn register_raw_mouse_device() {
+    if RAW_MOUSE_REGISTERED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let device = windows::Win32::UI::Input::RAWINPUTDEVICE {
+        usUsagePage: 0x01,
+        usUsage: 0x02,
+        dwFlags: RIDEV_INPUTSINK,
+        hwndTarget: windows::Win32::Foundation::HWND::default(),
+    };
+    // SAFETY: array válido.
+    let ok = unsafe {
+        RegisterRawInputDevices(
+            &[device],
+            std::mem::size_of::<windows::Win32::UI::Input::RAWINPUTDEVICE>() as u32,
+        )
+    };
+    if let Err(err) = ok {
+        warn!(?err, "RegisterRawInputDevices falhou — fallback para hook pt");
+        RAW_MOUSE_REGISTERED.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Processa `WM_INPUT` e envia deltas relativos do hardware (foco remoto no sender).
+fn dispatch_raw_mouse_input(hook_tx: &Sender<HookMsg>, lparam: LPARAM) {
+    let handle = windows::Win32::UI::Input::HRAWINPUT(lparam.0 as *mut _);
+    let mut size = 0u32;
+    // SAFETY: size query.
+    let status = unsafe {
+        GetRawInputData(
+            handle,
+            RID_INPUT,
+            None,
+            &mut size,
+            std::mem::size_of::<RAWINPUTHEADER>() as u32,
+        )
+    };
+    if status == u32::MAX || size == 0 {
+        return;
+    }
+    let mut buf = vec![0u8; size as usize];
+    // SAFETY: buffer sized by GetRawInputData.
+    let read = unsafe {
+        GetRawInputData(
+            handle,
+            RID_INPUT,
+            Some(buf.as_mut_ptr().cast()),
+            &mut size,
+            std::mem::size_of::<RAWINPUTHEADER>() as u32,
+        )
+    };
+    if read == u32::MAX || read == 0 {
+        return;
+    }
+    // SAFETY: `read` bytes inicializados pelo SO.
+    let raw = unsafe { &*(buf.as_ptr().cast::<RAWINPUT>()) };
+    if raw.header.dwType != u32::from(RIM_TYPEMOUSE.0) {
+        return;
+    }
+    // SAFETY: tipo mouse confirmado.
+    let mouse: RAWMOUSE = unsafe { raw.data.mouse };
+    if mouse.usFlags.0 & MOUSE_MOVE_RELATIVE.0 == 0 {
+        return;
+    }
+    let dx = mouse.lLastX;
+    let dy = mouse.lLastY;
+    let ev = InputEvent::MouseMove {
+        dx,
+        dy,
+        screen_x: 0,
+        screen_y: 0,
+    };
+    if ev.is_noop_mouse_move() || ev.is_noise_mouse_move(MOUSE_SEND_MIN_MANHATTAN) {
+        return;
+    }
+    let _ = hook_tx.try_send(HookMsg::Input(ev));
+}
+
 fn hook_thread_main(hook_tx: Sender<HookMsg>) {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         run_hook_loop(&hook_tx)
@@ -522,6 +626,12 @@ fn run_hook_loop(_hook_tx: &Sender<HookMsg>) -> anyhow::Result<()> {
                 if msg.message == WM_QUIT {
                     break 'message_loop;
                 }
+                if msg.message == WM_INPUT && USE_RAW_MOUSE_DELTA.load(Ordering::SeqCst) {
+                    if let Some(tx) = HOOK_TX.get() {
+                        dispatch_raw_mouse_input(tx, msg.lParam);
+                    }
+                    continue;
+                }
                 if msg.message == WM_HOTKEY {
                     if let Some(tx) = HOOK_TX.get() {
                         match msg.wParam.0 as u32 {
@@ -548,6 +658,12 @@ fn run_hook_loop(_hook_tx: &Sender<HookMsg>) -> anyhow::Result<()> {
 
             if GetMessageW(&mut msg, None, 0, 0).0 <= 0 {
                 break;
+            }
+            if msg.message == WM_INPUT && USE_RAW_MOUSE_DELTA.load(Ordering::SeqCst) {
+                if let Some(tx) = HOOK_TX.get() {
+                    dispatch_raw_mouse_input(tx, msg.lParam);
+                }
+                continue;
             }
             if msg.message == WM_HOTKEY {
                 if let Some(tx) = HOOK_TX.get() {
@@ -619,15 +735,22 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                     };
                     LAST_MOUSE_X.store(info.pt.x, Ordering::SeqCst);
                     LAST_MOUSE_Y.store(info.pt.y, Ordering::SeqCst);
-                    if dx == 0 && dy == 0 {
+                    if USE_RAW_MOUSE_DELTA.load(Ordering::SeqCst) {
                         None
                     } else {
-                        Some(InputEvent::MouseMove {
+                        let ev = InputEvent::MouseMove {
                             dx,
                             dy,
                             screen_x: info.pt.x,
                             screen_y: info.pt.y,
-                        })
+                        };
+                        if ev.is_noop_mouse_move()
+                            || ev.is_noise_mouse_move(MOUSE_SEND_MIN_MANHATTAN)
+                        {
+                            None
+                        } else {
+                            Some(ev)
+                        }
                     }
                 }
                 0x0201 => Some(InputEvent::MouseButton {

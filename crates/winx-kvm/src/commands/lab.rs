@@ -40,6 +40,7 @@ pub struct InputDebugStatsDto {
     pub remote_frames_received: u64,
     pub remote_inject_ok: u64,
     pub remote_inject_fail: u64,
+    pub mouse_frames_sent: u64,
     pub input_enabled: bool,
     pub has_input_tx: bool,
 }
@@ -87,6 +88,7 @@ impl From<InputDebugStats> for InputDebugStatsDto {
             remote_frames_received: s.remote_frames_received,
             remote_inject_ok: s.remote_inject_ok,
             remote_inject_fail: s.remote_inject_fail,
+            mouse_frames_sent: s.mouse_frames_sent,
             input_enabled: s.input_enabled,
             has_input_tx: s.has_input_tx,
         }

@@ -3,13 +3,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tracing::{debug, error, info, warn};
 use winx_domain::{
     input_control::{
         accumulate_return_left, apply_focus_target, events::{FocusSwitched, HotkeyTriggered, InputBlocked},
         should_switch_to_remote, toggle_lock_mode, EdgeDetectInput, FocusState, FocusTarget,
-        HotkeyAction, InputEvent, MonitorLayout,
+        HotkeyAction, InputEvent, MonitorLayout, MOUSE_COALESCE_FLUSH_MS, MOUSE_SEND_MIN_MANHATTAN,
     },
     shared::{ids::PeerId, DomainErrorCode},
     DomainError, DomainEvent,
@@ -19,8 +19,17 @@ use crate::{
     bus::EventBus,
     ports::{transport::StreamSender, InputBackend, MonitorBackend},
     protocol_convert::{encode_input_payload, input_event_from_dto},
-    use_cases::{input_streams, TransportService},
+    use_cases::{input_streams, mouse_coalesce::MouseCoalescer, TransportService},
 };
+
+/// Estado de envio agregado de mouse para o peer remoto.
+pub struct MouseSendState {
+    pub coalesce: Mutex<MouseCoalescer>,
+    pub flush_notify: Notify,
+    /// Escala de sensibilidade remota × 256 (1.0 = 256).
+    pub scale_q8: AtomicI32,
+    pub frames_sent: AtomicU64,
+}
 
 static FIRST_INJECT: AtomicBool = AtomicBool::new(true);
 
@@ -42,6 +51,7 @@ pub struct InputDebugStats {
     pub remote_frames_received: u64,
     pub remote_inject_ok: u64,
     pub remote_inject_fail: u64,
+    pub mouse_frames_sent: u64,
     pub input_enabled: bool,
     pub has_input_tx: bool,
 }
@@ -66,6 +76,7 @@ pub struct InputControlService {
     remote_inject_ok: Arc<AtomicU64>,
     remote_inject_fail: Arc<AtomicU64>,
     mirror_deadline: Arc<Mutex<Option<Instant>>>,
+    mouse_send: Arc<MouseSendState>,
 }
 
 impl InputControlService {
@@ -95,6 +106,12 @@ impl InputControlService {
             remote_inject_ok: Arc::new(AtomicU64::new(0)),
             remote_inject_fail: Arc::new(AtomicU64::new(0)),
             mirror_deadline: Arc::new(Mutex::new(None)),
+            mouse_send: Arc::new(MouseSendState {
+                coalesce: Mutex::new(MouseCoalescer::new()),
+                flush_notify: Notify::new(),
+                scale_q8: AtomicI32::new(256),
+                frames_sent: AtomicU64::new(0),
+            }),
         }
     }
 
@@ -107,6 +124,7 @@ impl InputControlService {
             remote_frames_received: self.remote_frames_received.load(Ordering::SeqCst),
             remote_inject_ok: self.remote_inject_ok.load(Ordering::SeqCst),
             remote_inject_fail: self.remote_inject_fail.load(Ordering::SeqCst),
+            mouse_frames_sent: self.mouse_send.frames_sent.load(Ordering::SeqCst),
             input_enabled: *self.enabled.lock().await,
             has_input_tx: self.input_tx.lock().await.is_some(),
         }
@@ -284,7 +302,11 @@ impl InputControlService {
             .await
             .map_err(|e| internal_err(&e.to_string()))?;
 
-        let layout = MonitorLayout::default_side_by_side(local, peer_id);
+        let layout = MonitorLayout::default_side_by_side(local.clone(), peer_id);
+        let scale = layout.remote_mouse_scale();
+        self.mouse_send
+            .scale_q8
+            .store((scale * 256.0).round() as i32, Ordering::SeqCst);
         *self.layout.lock().await = Some(layout);
         *self.active_peer.lock().await = Some(peer_id);
 
@@ -305,6 +327,27 @@ impl InputControlService {
         let service_mirror_keys = Arc::clone(&self.mirror_keys_sent);
         let service_mirror_hooked = Arc::clone(&self.mirror_keys_hooked);
         let service_mirror_send_errors = Arc::clone(&self.mirror_keys_send_errors);
+        let service_mouse_send = Arc::clone(&self.mouse_send);
+
+        let mouse_send_flush = Arc::clone(&self.mouse_send);
+        let input_tx_flush = Arc::clone(&self.input_tx);
+        let seq_flush = Arc::clone(&self.seq);
+        let enabled_flush = Arc::clone(&self.enabled);
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_millis(MOUSE_COALESCE_FLUSH_MS));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {}
+                    () = mouse_send_flush.flush_notify.notified() => {}
+                }
+                if !*enabled_flush.lock().await {
+                    continue;
+                }
+                flush_mouse_to_peer(&mouse_send_flush, &input_tx_flush, &seq_flush).await;
+            }
+        });
 
         // Hooks Win32 disparam em std::thread — não usar `tokio::spawn` direto no callback.
         let runtime = tokio::runtime::Handle::current();
@@ -325,6 +368,7 @@ impl InputControlService {
                 let mirror_keys = service_mirror_keys.clone();
                 let mirror_hooked = service_mirror_hooked.clone();
                 let mirror_send_errors = service_mirror_send_errors.clone();
+                let mouse_send = service_mouse_send.clone();
                 let seq = Arc::clone(&service_seq);
                 runtime.spawn(async move {
                     if !*enabled.lock().await && !mirror.load(Ordering::SeqCst) {
@@ -345,6 +389,7 @@ impl InputControlService {
                         mirror_keys,
                         mirror_hooked,
                         mirror_send_errors,
+                        mouse_send,
                     )
                     .await;
                 });
@@ -393,7 +438,9 @@ impl InputControlService {
                     Ok(frame) => {
                         if let winx_protocol::Payload::Input(p) = frame.payload {
                             let ev = input_event_from_dto(&p.event);
-                            if ev.is_noop_mouse_move() {
+                            if ev.is_noop_mouse_move()
+                                || ev.is_noise_mouse_move(MOUSE_SEND_MIN_MANHATTAN)
+                            {
                                 continue;
                             }
                             remote_frames.fetch_add(1, Ordering::SeqCst);
@@ -602,6 +649,50 @@ async fn force_local_reset(
     info!("force reset ativado — foco e cursor restaurados");
 }
 
+fn scale_mouse_delta(dx: i32, dy: i32, scale_q8: i32) -> (i32, i32) {
+    let sx = ((i64::from(dx) * i64::from(scale_q8)) / 256) as i32;
+    let sy = ((i64::from(dy) * i64::from(scale_q8)) / 256) as i32;
+    (sx, sy)
+}
+
+async fn flush_mouse_to_peer(
+    mouse_send: &MouseSendState,
+    input_tx: &Arc<Mutex<Option<StreamSender>>>,
+    seq: &Arc<AtomicU64>,
+) {
+    let taken = {
+        let mut c = mouse_send.coalesce.lock().await;
+        c.take_if_significant(MOUSE_SEND_MIN_MANHATTAN)
+    };
+    let Some((dx, dy)) = taken else {
+        return;
+    };
+    let scale_q8 = mouse_send.scale_q8.load(Ordering::SeqCst);
+    let (dx, dy) = scale_mouse_delta(dx, dy, scale_q8);
+    if dx == 0 && dy == 0 {
+        return;
+    }
+    let ev = InputEvent::MouseMove {
+        dx,
+        dy,
+        screen_x: 0,
+        screen_y: 0,
+    };
+    let guard = input_tx.lock().await;
+    let Some(tx) = guard.as_ref() else {
+        return;
+    };
+    let n = seq.fetch_add(1, Ordering::SeqCst);
+    if let Ok(bytes) = encode_input_payload(n, &ev) {
+        if tx.send(bytes).await.is_ok() {
+            mouse_send.frames_sent.fetch_add(1, Ordering::SeqCst);
+            debug!(target: "winx::input::mirror", seq = n, dx, dy, "mouse coalesced enviado ao remoto");
+        } else {
+            warn!("falha ao enviar mouse agregado no stream");
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_local_input(
     ev: InputEvent,
@@ -618,6 +709,7 @@ async fn handle_local_input(
     mirror_keys_sent: Arc<AtomicU64>,
     mirror_keys_hooked: Arc<AtomicU64>,
     mirror_keys_send_errors: Arc<AtomicU64>,
+    mouse_send: Arc<MouseSendState>,
 ) {
     if keyboard_mirror.load(Ordering::SeqCst) {
         if let InputEvent::Key { code, pressed, .. } = &ev {
@@ -694,34 +786,44 @@ async fn handle_local_input(
         }
         FocusTarget::Remote(_peer) => {
             input.set_pass_through(false);
-            if ev.is_noop_mouse_move() {
-                return;
-            }
-            if let InputEvent::MouseMove { dx, .. } = &ev {
-                let current = remote_dx_accum.load(Ordering::SeqCst);
-                let (new_acc, go_back) = accumulate_return_left(*dx, current);
-                remote_dx_accum.store(new_acc, Ordering::SeqCst);
-                if go_back {
-                    try_switch_back_to_local(
-                        Arc::clone(&focus),
-                        Arc::clone(&layout),
-                        Arc::clone(&input),
-                        bus.clone(),
-                        Arc::clone(&active),
-                    )
-                    .await;
-                    return;
+            match &ev {
+                InputEvent::MouseMove { dx, dy, .. } => {
+                    if ev.is_noop_mouse_move() || ev.is_noise_mouse_move(MOUSE_SEND_MIN_MANHATTAN) {
+                        return;
+                    }
+                    let current = remote_dx_accum.load(Ordering::SeqCst);
+                    let (new_acc, go_back) = accumulate_return_left(*dx, current);
+                    remote_dx_accum.store(new_acc, Ordering::SeqCst);
+                    if go_back {
+                        try_switch_back_to_local(
+                            Arc::clone(&focus),
+                            Arc::clone(&layout),
+                            Arc::clone(&input),
+                            bus.clone(),
+                            Arc::clone(&active),
+                        )
+                        .await;
+                        return;
+                    }
+                    {
+                        let mut c = mouse_send.coalesce.lock().await;
+                        c.push(*dx, *dy);
+                    }
+                    mouse_send.flush_notify.notify_one();
                 }
-            }
-            // Enviar input para o remoto
-            if let Some(tx) = input_tx.lock().await.as_ref() {
-                let n = seq.fetch_add(1, Ordering::SeqCst);
-                if let Ok(bytes) = encode_input_payload(n, &ev) {
-                    tracing::debug!(?ev, seq=n, "input enviado ao remoto peer");
-                    if tx.send(bytes).await.is_err() {
-                        warn!("falha ao enviar input no stream");
+                InputEvent::MouseButton { .. } | InputEvent::MouseScroll { .. } => {
+                    flush_mouse_to_peer(&mouse_send, &input_tx, seq).await;
+                    if let Some(tx) = input_tx.lock().await.as_ref() {
+                        let n = seq.fetch_add(1, Ordering::SeqCst);
+                        if let Ok(bytes) = encode_input_payload(n, &ev) {
+                            debug!(?ev, seq = n, "input enviado ao remoto peer");
+                            if tx.send(bytes).await.is_err() {
+                                warn!("falha ao enviar input no stream");
+                            }
+                        }
                     }
                 }
+                _ => {}
             }
         }
     }
@@ -785,7 +887,13 @@ async fn try_edge_switch(
 
     // 1. Transição FÍSICA de cursor PRIMEIRO (Hide → Warp → Clip)
     // Se falhar, não mudar foco
-    if let Err(err) = input.transition_to_remote(safe_x, safe_y).await {
+    let clip_rect = (
+        primary.x,
+        primary.y,
+        primary.width,
+        primary.height,
+    );
+    if let Err(err) = input.transition_to_remote(safe_x, safe_y, clip_rect).await {
         error!(?err, "falha na transição para remoto — mantendo foco local");
         let _ = input.set_cursor_clipped(None).await;
         return;
@@ -871,6 +979,7 @@ async fn switch_focus(
 
     match &to {
         FocusTarget::Local => {
+            input.set_raw_mouse_capture(false);
             input.set_pass_through(true);
             let _ = input.set_cursor_clipped(None).await;
             let _ = input.set_cursor_visible(true).await;
@@ -878,6 +987,7 @@ async fn switch_focus(
         }
         FocusTarget::Remote(_) => {
             input.set_pass_through(false);
+            input.set_raw_mouse_capture(true);
         }
     }
 

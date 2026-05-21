@@ -196,6 +196,7 @@ export interface InputDebugStatsDto {
   remote_frames_received: number;
   remote_inject_ok: number;
   remote_inject_fail: number;
+  mouse_frames_sent: number;
   input_enabled: boolean;
   has_input_tx: boolean;
 }

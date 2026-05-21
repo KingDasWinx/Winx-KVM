@@ -61,6 +61,17 @@ impl InputEvent {
     pub fn is_noop_mouse_move(&self) -> bool {
         matches!(self, Self::MouseMove { dx: 0, dy: 0, .. })
     }
+
+    /// Movimento abaixo do limiar Manhattan (`|dx|+|dy| < min_manhattan`).
+    #[must_use]
+    pub fn is_noise_mouse_move(&self, min_manhattan: i32) -> bool {
+        match self {
+            Self::MouseMove { dx, dy, .. } => {
+                dx.abs().saturating_add(dy.abs()) < min_manhattan
+            }
+            _ => false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -94,5 +105,23 @@ mod tests {
             screen_y: 200,
         };
         assert!(!e.is_noop_mouse_move());
+    }
+
+    #[test]
+    fn mouse_move_below_threshold_is_noise() {
+        let e = InputEvent::MouseMove {
+            dx: 0,
+            dy: 1,
+            screen_x: 0,
+            screen_y: 0,
+        };
+        assert!(e.is_noise_mouse_move(2));
+        let e = InputEvent::MouseMove {
+            dx: 2,
+            dy: 2,
+            screen_x: 0,
+            screen_y: 0,
+        };
+        assert!(!e.is_noise_mouse_move(2));
     }
 }

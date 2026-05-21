@@ -26,6 +26,11 @@ pub trait InputBackend: Send + Sync + 'static {
     /// Define se o hook deve repassar eventos ao Windows (`true`) ou engolir (`false`).
     fn set_pass_through(&self, pass_through: bool);
 
+    /// Captura delta via Raw Input (foco remoto no sender); default no-op.
+    fn set_raw_mouse_capture(&self, enabled: bool) {
+        let _ = enabled;
+    }
+
     /// Move o cursor para coordenadas de tela absolutas.
     async fn warp_cursor(&self, x: i32, y: i32) -> anyhow::Result<()>;
 
@@ -37,15 +42,17 @@ pub trait InputBackend: Send + Sync + 'static {
 
     /// Transição segura para estado remoto (HideSystem + Warp + Clip).
     /// Sequência: Hide (não-crítico) → Warp (crítico) → Clip (crítico)
-    async fn transition_to_remote(&self, center_x: i32, center_y: i32) -> anyhow::Result<()> {
-        // 1. Ocultar cursor globalmente — falha é não-crítica (só cosmética)
+    async fn transition_to_remote(
+        &self,
+        center_x: i32,
+        center_y: i32,
+        clip_rect: (i32, i32, u32, u32),
+    ) -> anyhow::Result<()> {
         if let Err(e) = self.hide_cursor_system().await {
             tracing::warn!(?e, "falha ao ocultar cursor (não-crítico, continuando)");
         }
-        // 2. Warp com assinatura — crítico: sem warp, cursor fica preso na borda
         self.warp_cursor_signed(center_x, center_y).await?;
-        // 3. Clip a um retângulo 4x4 — crítico: sem clip, cursor pode escapar
-        self.set_cursor_clipped(Some((center_x - 2, center_y - 2, 4, 4))).await?;
+        self.set_cursor_clipped(Some(clip_rect)).await?;
         self.reset_mouse_delta_baseline();
         Ok(())
     }
