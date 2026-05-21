@@ -354,15 +354,18 @@ impl QuicTransportAdapter {
 }
 
 /// Emparelha um stream QUIC bidirecional com canais mpsc (length-prefix por chunk).
+///
+/// `StreamSender` alimenta o QUIC `SendStream`; `StreamReceiver` recebe apenas dados
+/// lidos do QUIC `RecvStream` (nunca eco local do mesmo `send`).
 fn bridge_bi_streams(
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
 ) -> (StreamSender, StreamReceiver) {
-    let (tx, rx_out) = mpsc::channel::<Vec<u8>>(64);
-    let (tx_in, mut rx_in) = mpsc::channel::<Vec<u8>>(64);
+    let (app_tx, mut to_quic_rx) = mpsc::channel::<Vec<u8>>(64);
+    let (from_quic_tx, app_rx) = mpsc::channel::<Vec<u8>>(64);
 
     tokio::spawn(async move {
-        while let Some(chunk) = rx_in.recv().await {
+        while let Some(chunk) = to_quic_rx.recv().await {
             let len = u32::try_from(chunk.len()).unwrap_or(u32::MAX).to_be_bytes();
             if send.write_all(&len).await.is_err() {
                 break;
@@ -387,13 +390,13 @@ fn bridge_bi_streams(
             if recv.read_exact(&mut buf).await.is_err() {
                 break;
             }
-            if tx_in.send(buf).await.is_err() {
+            if from_quic_tx.send(buf).await.is_err() {
                 break;
             }
         }
     });
 
-    (tx, rx_out)
+    (app_tx, app_rx)
 }
 
 #[async_trait]
