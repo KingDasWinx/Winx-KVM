@@ -452,12 +452,6 @@ impl InputControlService {
                                     "primeiro frame Input remoto recebido"
                                 );
                             }
-                            debug!(
-                                target: "winx::input::remote",
-                                seq = p.seq,
-                                ?ev,
-                                "frame Input remoto"
-                            );
                             match inject_input.inject(ev).await {
                                 Ok(()) => {
                                     remote_ok.fetch_add(1, Ordering::SeqCst);
@@ -687,7 +681,6 @@ async fn flush_mouse_to_peer(
     if let Ok(bytes) = encode_input_payload(n, &ev) {
         if tx.send(bytes).await.is_ok() {
             mouse_send.frames_sent.fetch_add(1, Ordering::SeqCst);
-            debug!(target: "winx::input::mirror", seq = n, dx, dy, "mouse coalesced enviado ao remoto");
         } else {
             warn!("falha ao enviar mouse agregado no stream");
         }

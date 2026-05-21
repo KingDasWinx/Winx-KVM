@@ -38,8 +38,8 @@ use windows::Win32::UI::Input::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, ClipCursor, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
     GetMessageW, GetSystemMetrics, PeekMessageW, RegisterClassW, SetCursorPos, SetForegroundWindow,
-    SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, UnregisterClassW, WindowFromPoint,
-    CS_HREDRAW, CS_VREDRAW, HHOOK,
+    SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, UnregisterClassW, WaitMessage,
+    WindowFromPoint, CS_HREDRAW, CS_VREDRAW, HHOOK,
     KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, PM_REMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_INPUT,
     WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_MOUSEMOVE, WM_QUIT, WM_HOTKEY,
     LLMHF_INJECTED, LLKHF_INJECTED, SM_CXSCREEN, SM_CYSCREEN, WINDOW_EX_STYLE, WINDOW_STYLE,
@@ -802,6 +802,10 @@ fn run_hook_loop(_hook_tx: &Sender<HookMsg>) -> anyhow::Result<()> {
             warn!("RegisterHotKey Scroll Lock falhou — apenas hook inline ativo");
         }
 
+        // Loop de mensagens para hooks LL (WH_KEYBOARD_LL, WH_MOUSE_LL).
+        // Padrão correto: PeekMessageW (não-bloqueante) + WaitMessage (devolve controle ao OS
+        // imediatamente, permitindo que callbacks de hook sejam entregues sem timeout).
+        // GetMessageW bloqueante NÃO é usado — hooks LL requerem pump ativo.
         let mut msg = MSG::default();
         'message_loop: loop {
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
@@ -838,37 +842,8 @@ fn run_hook_loop(_hook_tx: &Sender<HookMsg>) -> anyhow::Result<()> {
                 }
             }
 
-            if GetMessageW(&mut msg, None, 0, 0).0 <= 0 {
-                break;
-            }
-            if msg.message == WM_INPUT && USE_RAW_MOUSE_DELTA.load(Ordering::SeqCst) {
-                if let Some(tx) = HOOK_TX.get() {
-                    dispatch_raw_mouse_input(tx, msg.lParam);
-                }
-                continue;
-            }
-            if msg.message == WM_HOTKEY {
-                if let Some(tx) = HOOK_TX.get() {
-                    match msg.wParam.0 as u32 {
-                        1 => {
-                            let _ = tx.try_send(HookMsg::HotkeyPanic);
-                            info!("hotkey via RegisterHotKey disparou: Ctrl+Alt+Home");
-                        }
-                        2 => {
-                            let _ = tx.try_send(HookMsg::HotkeyForceReset);
-                            info!("hotkey via RegisterHotKey disparou: Ctrl+Alt+End");
-                        }
-                        3 => {
-                            let _ = tx.try_send(HookMsg::HotkeyLock);
-                            info!("hotkey via RegisterHotKey disparou: Scroll Lock");
-                        }
-                        _ => {}
-                    }
-                }
-            } else {
-                let _ = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
+            // Aguarda próxima mensagem sem bloquear indefinidamente a thread do hook.
+            let _ = WaitMessage();
         }
 
         if hotkey_panic_ok {
