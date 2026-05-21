@@ -392,6 +392,10 @@ impl InputControlService {
                 match winx_protocol::decode(&bytes) {
                     Ok(frame) => {
                         if let winx_protocol::Payload::Input(p) = frame.payload {
+                            let ev = input_event_from_dto(&p.event);
+                            if ev.is_noop_mouse_move() {
+                                continue;
+                            }
                             remote_frames.fetch_add(1, Ordering::SeqCst);
                             if FIRST_INJECT.swap(false, Ordering::SeqCst) {
                                 info!(
@@ -400,7 +404,6 @@ impl InputControlService {
                                     "primeiro frame Input remoto recebido"
                                 );
                             }
-                            let ev = input_event_from_dto(&p.event);
                             debug!(
                                 target: "winx::input::remote",
                                 seq = p.seq,
@@ -665,13 +668,12 @@ async fn handle_local_input(
         FocusTarget::Local => {
             input.set_pass_through(true);
             if let InputEvent::MouseMove {
-                dx,
-                dy,
                 screen_x,
                 screen_y: _,
+                ..
             } = ev
             {
-                if dx == 0 && dy == 0 {
+                if ev.is_noop_mouse_move() {
                     return;
                 }
                 let layout_guard = layout.lock().await;
@@ -692,6 +694,9 @@ async fn handle_local_input(
         }
         FocusTarget::Remote(_peer) => {
             input.set_pass_through(false);
+            if ev.is_noop_mouse_move() {
+                return;
+            }
             if let InputEvent::MouseMove { dx, .. } = &ev {
                 let current = remote_dx_accum.load(Ordering::SeqCst);
                 let (new_acc, go_back) = accumulate_return_left(*dx, current);

@@ -55,6 +55,12 @@ impl InputEvent {
             _ => (0, 0),
         }
     }
+
+    /// `WM_MOUSEMOVE` sem deslocamento (baseline pós-warp, posição repetida).
+    #[must_use]
+    pub fn is_noop_mouse_move(&self) -> bool {
+        matches!(self, Self::MouseMove { dx: 0, dy: 0, .. })
+    }
 }
 
 #[cfg(test)]
@@ -70,5 +76,23 @@ mod tests {
             screen_y: 200,
         };
         assert_eq!(e.delta(), (-3, 10));
+    }
+
+    #[test]
+    fn noop_mouse_move_detected() {
+        let e = InputEvent::MouseMove {
+            dx: 0,
+            dy: 0,
+            screen_x: 100,
+            screen_y: 200,
+        };
+        assert!(e.is_noop_mouse_move());
+        let e = InputEvent::MouseMove {
+            dx: 1,
+            dy: 0,
+            screen_x: 100,
+            screen_y: 200,
+        };
+        assert!(!e.is_noop_mouse_move());
     }
 }
