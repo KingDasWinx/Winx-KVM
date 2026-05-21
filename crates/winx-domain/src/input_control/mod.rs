@@ -26,6 +26,6 @@ pub use focus_policy::{
     apply_focus_target, force_local, input_should_be_swallowed, toggle_lock_mode, FocusTransition,
 };
 pub use input_event::{InputEvent, KeyModifiers, MouseButton, PortableKeyCode};
-pub use layout::MonitorLayout;
+pub use layout::{BorderSide, EdgeConfig, MonitorLayout};
 pub use monitor::{MonitorId, MonitorRect};
 pub use mouse::{MOUSE_COALESCE_FLUSH_MS, MOUSE_SEND_MIN_MANHATTAN};

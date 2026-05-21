@@ -45,6 +45,12 @@ pub enum InputEvent {
         pressed: bool,
         modifiers: KeyModifiers,
     },
+    /// Teleporte absoluto do cursor para (x, y) em coordenadas de tela do receiver.
+    /// Enviado como primeiro frame ao entrar em foco remoto para preservar posição Y.
+    MouseWarpAbsolute {
+        x: i32,
+        y: i32,
+    },
 }
 
 impl InputEvent {

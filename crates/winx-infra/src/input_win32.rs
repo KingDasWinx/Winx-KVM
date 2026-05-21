@@ -607,6 +607,31 @@ fn inject_event(event: InputEvent) -> anyhow::Result<()> {
                 "inject tecla ok"
             );
         }
+        InputEvent::MouseWarpAbsolute { x, y } => {
+            // SAFETY: coordenadas de tela do receiver; normalização idêntica ao warp_cursor_signed.
+            unsafe {
+                let screen_width = GetSystemMetrics(SM_CXSCREEN);
+                let screen_height = GetSystemMetrics(SM_CYSCREEN);
+                if screen_width > 0 && screen_height > 0 {
+                    let norm_x = ((x as i64) * 65535 / (screen_width as i64)) as i32;
+                    let norm_y = ((y as i64) * 65535 / (screen_height as i64)) as i32;
+                    let input_packet = INPUT {
+                        r#type: INPUT_MOUSE,
+                        Anonymous: INPUT_0 {
+                            mi: MOUSEINPUT {
+                                dx: norm_x,
+                                dy: norm_y,
+                                mouseData: 0,
+                                dwFlags: MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE,
+                                time: 0,
+                                dwExtraInfo: KVM_SIGNATURE,
+                            },
+                        },
+                    };
+                    send_inputs(&[input_packet])?;
+                }
+            }
+        }
         _ => {}
     }
     Ok(())

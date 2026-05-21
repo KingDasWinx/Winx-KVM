@@ -1,16 +1,17 @@
 //! Detecção de cruzamento de borda no layout virtual (sem I/O).
 
-use super::layout::MonitorLayout;
+use super::layout::{BorderSide, MonitorLayout};
 
-/// Tolerância em pixels antes da borda direita local (`screen_x >= edge - tol`).
+/// Tolerância em pixels antes da borda de saída (`coord >= edge - tol`).
 pub const EDGE_TOLERANCE_PX: i32 = 2;
 
-/// Movimento acumulado para a esquerda no foco remoto para voltar ao local.
+/// Movimento acumulado no eixo de retorno para voltar ao local.
 pub const RETURN_LEFT_THRESHOLD_PX: i32 = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EdgeDetectInput {
     pub screen_x: i32,
+    pub screen_y: i32,
     pub lock_mode: bool,
 }
 
@@ -19,8 +20,13 @@ pub fn should_switch_to_remote(input: EdgeDetectInput, layout: &MonitorLayout) -
     if input.lock_mode {
         return false;
     }
-    let edge = layout.local_right_edge_x();
-    input.screen_x >= edge.saturating_sub(EDGE_TOLERANCE_PX)
+    let edge = layout.local_exit_edge_coord();
+    match layout.edge.local_exit {
+        BorderSide::Right  => input.screen_x >= edge.saturating_sub(EDGE_TOLERANCE_PX),
+        BorderSide::Left   => input.screen_x <= edge.saturating_add(EDGE_TOLERANCE_PX),
+        BorderSide::Bottom => input.screen_y >= edge.saturating_sub(EDGE_TOLERANCE_PX),
+        BorderSide::Top    => input.screen_y <= edge.saturating_add(EDGE_TOLERANCE_PX),
+    }
 }
 
 #[must_use]
@@ -63,6 +69,7 @@ mod tests {
         assert!(!should_switch_to_remote(
             EdgeDetectInput {
                 screen_x: 2000,
+                screen_y: 540,
                 lock_mode: true,
             },
             &layout,
@@ -75,6 +82,7 @@ mod tests {
         assert!(should_switch_to_remote(
             EdgeDetectInput {
                 screen_x: 1919,
+                screen_y: 540,
                 lock_mode: false,
             },
             &layout,
@@ -87,6 +95,7 @@ mod tests {
         assert!(!should_switch_to_remote(
             EdgeDetectInput {
                 screen_x: 1000,
+                screen_y: 540,
                 lock_mode: false,
             },
             &layout,

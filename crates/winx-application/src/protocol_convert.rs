@@ -26,6 +26,7 @@ pub fn input_event_to_dto(event: &InputEvent) -> InputEventDto {
             alt: modifiers.alt,
             meta: modifiers.meta,
         },
+        InputEvent::MouseWarpAbsolute { x, y } => InputEventDto::MouseWarpAbsolute { x: *x, y: *y },
         _ => InputEventDto::MouseMove { dx: 0, dy: 0 },
     }
 }
@@ -63,6 +64,7 @@ pub fn input_event_from_dto(dto: &InputEventDto) -> InputEvent {
                 meta: *meta,
             },
         },
+        InputEventDto::MouseWarpAbsolute { x, y } => InputEvent::MouseWarpAbsolute { x: *x, y: *y },
         _ => InputEvent::MouseMove {
             dx: 0,
             dy: 0,

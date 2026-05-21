@@ -761,7 +761,7 @@ async fn handle_local_input(
             input.set_pass_through(true);
             if let InputEvent::MouseMove {
                 screen_x,
-                screen_y: _,
+                screen_y,
                 ..
             } = ev
             {
@@ -773,12 +773,13 @@ async fn handle_local_input(
                     if should_switch_to_remote(
                         EdgeDetectInput {
                             screen_x,
+                            screen_y,
                             lock_mode: state.lock_mode,
                         },
                         layout_data,
                     ) {
                         drop(layout_guard);
-                        try_edge_switch(screen_x, focus, layout, input, bus, active, input_tx)
+                        try_edge_switch(screen_x, screen_y, focus, layout, input, bus, active, input_tx)
                             .await;
                     }
                 }
@@ -831,6 +832,7 @@ async fn handle_local_input(
 
 async fn try_edge_switch(
     screen_x: i32,
+    screen_y: i32,
     focus: Arc<Mutex<FocusState>>,
     layout: Arc<Mutex<Option<MonitorLayout>>>,
     input: Arc<dyn InputBackend>,
@@ -845,6 +847,7 @@ async fn try_edge_switch(
     if !should_switch_to_remote(
         EdgeDetectInput {
             screen_x,
+            screen_y,
             lock_mode: focus.lock().await.lock_mode,
         },
         layout_data,
@@ -860,7 +863,7 @@ async fn try_edge_switch(
         return;
     }
 
-    let edge_x = layout_data.local_right_edge_x();
+    let edge_x = layout_data.local_exit_edge_coord();
     let primary = layout_data.local_monitors.first().copied().unwrap_or_else(|| {
         use winx_domain::input_control::MonitorRect;
         MonitorRect {
@@ -872,27 +875,28 @@ async fn try_edge_switch(
         }
     });
 
+    // Ponto de entrada no monitor remoto (Y proporcional preservado)
+    let remote_entry = layout_data.map_crossing_point(screen_x, screen_y);
+
     drop(layout_guard);
 
     info!(
         %screen_x,
+        %screen_y,
         edge = edge_x,
+        remote_entry_x = remote_entry.0,
+        remote_entry_y = remote_entry.1,
         %peer,
-        "borda direita atingida — trocando foco para remoto"
+        "borda atingida — trocando foco para remoto"
     );
 
     let from = current;
+    // Cursor local fica preso no centro do monitor local enquanto controla o remoto
     let safe_x = primary.x + i32::try_from(primary.width).unwrap_or(1920) / 2;
     let safe_y = primary.y + i32::try_from(primary.height).unwrap_or(1080) / 2;
 
     // 1. Transição FÍSICA de cursor PRIMEIRO (Hide → Warp → Clip)
-    // Se falhar, não mudar foco
-    let clip_rect = (
-        primary.x,
-        primary.y,
-        primary.width,
-        primary.height,
-    );
+    let clip_rect = (primary.x, primary.y, primary.width, primary.height);
     if let Err(err) = input.transition_to_remote(safe_x, safe_y, clip_rect).await {
         error!(?err, "falha na transição para remoto — mantendo foco local");
         let _ = input.set_cursor_clipped(None).await;
@@ -910,7 +914,16 @@ async fn try_edge_switch(
     )
     .await;
 
-    let _ = input_tx;
+    // 3. Enviar warp absoluto como primeiro frame para posicionar cursor no receiver
+    if let Some(tx) = input_tx.lock().await.as_ref() {
+        let warp_ev = InputEvent::MouseWarpAbsolute { x: remote_entry.0, y: remote_entry.1 };
+        let n = 0u64; // seq não importa para warp inicial; será sobrescrito pelo flush normal
+        if let Ok(bytes) = encode_input_payload(n, &warp_ev) {
+            if tx.send(bytes).await.is_err() {
+                warn!("falha ao enviar warp absoluto inicial ao remoto");
+            }
+        }
+    }
 }
 
 async fn try_switch_back_to_local(
@@ -1086,6 +1099,7 @@ mod tests {
 
         try_edge_switch(
             1920,
+            540,
             Arc::clone(&svc.focus),
             Arc::clone(&svc.layout),
             Arc::new(MockInput),
@@ -1123,6 +1137,7 @@ mod tests {
 
         try_edge_switch(
             1920,
+            540,
             Arc::clone(&focus),
             Arc::clone(&layout),
             Arc::new(MockInput),

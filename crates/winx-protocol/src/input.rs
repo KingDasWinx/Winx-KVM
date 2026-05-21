@@ -26,6 +26,11 @@ pub enum InputEventDto {
         alt: bool,
         meta: bool,
     },
+    /// Teleporte absoluto do cursor para as coordenadas de tela do receiver.
+    MouseWarpAbsolute {
+        x: i32,
+        y: i32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
