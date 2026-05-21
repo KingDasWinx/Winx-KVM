@@ -11,14 +11,15 @@
     clippy::unnecessary_cast
 )]
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread::{self, JoinHandle};
 
 use async_trait::async_trait;
 use crossbeam_channel::{Receiver, Sender};
 use tracing::{debug, error, info, warn};
-use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM, GetLastError};
+use windows::core::PCWSTR;
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM, GetLastError, HINSTANCE};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
@@ -31,15 +32,17 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
 };
 use windows::Win32::UI::Input::{
-    GetRawInputData, RegisterRawInputDevices, RAWINPUT, RAWINPUTHEADER, RAWMOUSE, RIDEV_INPUTSINK,
-    RID_INPUT, RIM_TYPEMOUSE, MOUSE_MOVE_RELATIVE,
+    GetRawInputData, RegisterRawInputDevices, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER, RAWMOUSE,
+    RIDEV_INPUTSINK, RIDEV_REMOVE, RID_INPUT, RIM_TYPEMOUSE, MOUSE_MOVE_RELATIVE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, ClipCursor, DispatchMessageW, GetMessageW, GetSystemMetrics,
-    PeekMessageW, SetCursorPos, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
-    HHOOK, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, PM_REMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL,
-    WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_MOUSEMOVE, WM_QUIT, WM_HOTKEY,
-    LLMHF_INJECTED, LLKHF_INJECTED, SM_CXSCREEN, SM_CYSCREEN,
+    CallNextHookEx, ClipCursor, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+    GetMessageW, GetSystemMetrics, PeekMessageW, RegisterClassW, SetCursorPos, SetWindowsHookExW,
+    TranslateMessage, UnhookWindowsHookEx, UnregisterClassW, CS_HREDRAW, CS_VREDRAW, HHOOK,
+    KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, PM_REMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_INPUT,
+    WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_MOUSEMOVE, WM_QUIT, WM_HOTKEY,
+    LLMHF_INJECTED, LLKHF_INJECTED, SM_CXSCREEN, SM_CYSCREEN, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WNDCLASSW,
 };
 use winx_application::ports::{CaptureHandle, InputBackend};
 use winx_domain::input_control::{
@@ -76,6 +79,109 @@ static CURSOR_HIDDEN: AtomicBool = AtomicBool::new(false);
 /// Foco remoto no sender: deltas vêm de Raw Input, não de `pt` no clip.
 static USE_RAW_MOUSE_DELTA: AtomicBool = AtomicBool::new(false);
 static RAW_MOUSE_REGISTERED: AtomicBool = AtomicBool::new(false);
+static RAW_INPUT_HWND: AtomicIsize = AtomicIsize::new(0);
+static RAW_INPUT_CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
+const RAW_INPUT_CLASS_NAME: &str = "WinxKvmRawInputHost";
+
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+fn hwnd_to_isize(hwnd: HWND) -> isize {
+    hwnd.0 as isize
+}
+
+fn isize_to_hwnd(raw: isize) -> HWND {
+    HWND(raw as *mut _)
+}
+
+fn module_instance() -> windows::core::Result<HINSTANCE> {
+    // SAFETY: módulo do processo atual.
+    unsafe { GetModuleHandleW(None).map(|m| HINSTANCE(m.0)) }
+}
+
+/// Janela message-only na thread do hook — destino de `WM_INPUT` com `RIDEV_INPUTSINK`.
+fn ensure_raw_input_host_window() -> anyhow::Result<HWND> {
+    let existing = RAW_INPUT_HWND.load(Ordering::SeqCst);
+    if existing != 0 {
+        return Ok(isize_to_hwnd(existing));
+    }
+
+    if !RAW_INPUT_CLASS_REGISTERED.load(Ordering::SeqCst) {
+        let name = wide(RAW_INPUT_CLASS_NAME);
+        let wc = WNDCLASSW {
+            lpfnWndProc: Some(raw_input_host_wnd_proc),
+            hInstance: module_instance().unwrap_or_default(),
+            lpszClassName: PCWSTR(name.as_ptr()),
+            style: CS_HREDRAW | CS_VREDRAW,
+            ..Default::default()
+        };
+        // SAFETY: classe única no processo.
+        let atom = unsafe { RegisterClassW(&wc) };
+        if atom == 0 {
+            let err = unsafe { GetLastError() };
+            anyhow::bail!("RegisterClassW RawInputHost falhou: {err:?}");
+        }
+        RAW_INPUT_CLASS_REGISTERED.store(true, Ordering::SeqCst);
+    }
+
+    let class = wide(RAW_INPUT_CLASS_NAME);
+    let ex_style = WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
+    let style = WINDOW_STYLE(WS_POPUP.0);
+
+    // SAFETY: classe registrada nesta thread.
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(ex_style.0),
+            PCWSTR(class.as_ptr()),
+            PCWSTR::null(),
+            style,
+            0,
+            0,
+            1,
+            1,
+            None,
+            None,
+            module_instance()?,
+            None,
+        )?
+    };
+
+    RAW_INPUT_HWND.store(hwnd_to_isize(hwnd), Ordering::SeqCst);
+    info!(?hwnd, "janela Raw Input host criada na thread do hook");
+    Ok(hwnd)
+}
+
+unsafe extern "system" fn raw_input_host_wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    let _ = hwnd;
+    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+fn destroy_raw_input_host_window() {
+    let raw = RAW_INPUT_HWND.swap(0, Ordering::SeqCst);
+    if raw == 0 {
+        return;
+    }
+    let hwnd = isize_to_hwnd(raw);
+    // SAFETY: HWND criado por este módulo na thread do hook.
+    unsafe {
+        let _ = DestroyWindow(hwnd);
+    }
+    if RAW_INPUT_CLASS_REGISTERED.swap(false, Ordering::SeqCst) {
+        let name = wide(RAW_INPUT_CLASS_NAME);
+        // SAFETY: classe registrada neste processo.
+        if unsafe { UnregisterClassW(PCWSTR(name.as_ptr()), module_instance().unwrap_or_default()) }
+            .is_err()
+        {
+            warn!("UnregisterClassW RawInputHost falhou");
+        }
+    }
+}
 
 /// Restauração incondicional e síncrona dos recursos de hardware.
 /// Garante que o usuário recupere o controle físico mesmo se a tarefa Tokio travar.
@@ -253,7 +359,14 @@ impl InputBackend for Win32InputBackend {
     fn set_raw_mouse_capture(&self, enabled: bool) {
         USE_RAW_MOUSE_DELTA.store(enabled, Ordering::SeqCst);
         if enabled {
-            register_raw_mouse_device();
+            let hwnd = isize_to_hwnd(RAW_INPUT_HWND.load(Ordering::SeqCst));
+            if hwnd.0.is_null() {
+                warn!("Raw Input host HWND ainda não criado — fallback hook pt");
+                return;
+            }
+            register_raw_mouse_device(hwnd);
+        } else {
+            unregister_raw_mouse_device();
         }
     }
 
@@ -491,26 +604,51 @@ fn inject_event(event: InputEvent) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn register_raw_mouse_device() {
+fn register_raw_mouse_device(hwnd: HWND) -> bool {
     if RAW_MOUSE_REGISTERED.swap(true, Ordering::SeqCst) {
-        return;
+        return true;
     }
-    let device = windows::Win32::UI::Input::RAWINPUTDEVICE {
+    let device = RAWINPUTDEVICE {
         usUsagePage: 0x01,
         usUsage: 0x02,
         dwFlags: RIDEV_INPUTSINK,
-        hwndTarget: windows::Win32::Foundation::HWND::default(),
+        hwndTarget: hwnd,
     };
-    // SAFETY: array válido.
-    let ok = unsafe {
-        RegisterRawInputDevices(
-            &[device],
-            std::mem::size_of::<windows::Win32::UI::Input::RAWINPUTDEVICE>() as u32,
-        )
-    };
-    if let Err(err) = ok {
-        warn!(?err, "RegisterRawInputDevices falhou — fallback para hook pt");
+    let cb_size = std::mem::size_of::<RAWINPUTDEVICE>() as u32;
+    // SAFETY: array válido; `cbSize` é tamanho da estrutura (API Win32).
+    let result = unsafe { RegisterRawInputDevices(&[device], cb_size) };
+    if let Err(err) = result {
+        let last = unsafe { GetLastError() };
+        warn!(
+            ?err,
+            ?last,
+            ?hwnd,
+            cb_size,
+            dw_flags = RIDEV_INPUTSINK.0,
+            "RegisterRawInputDevices falhou — fallback para hook pt"
+        );
         RAW_MOUSE_REGISTERED.store(false, Ordering::SeqCst);
+        false
+    } else {
+        info!(?hwnd, "Raw Input mouse registrado (INPUTSINK)");
+        true
+    }
+}
+
+fn unregister_raw_mouse_device() {
+    if !RAW_MOUSE_REGISTERED.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    let device = RAWINPUTDEVICE {
+        usUsagePage: 0x01,
+        usUsage: 0x02,
+        dwFlags: RIDEV_REMOVE,
+        hwndTarget: HWND::default(),
+    };
+    let cb_size = std::mem::size_of::<RAWINPUTDEVICE>() as u32;
+    // SAFETY: MSDN — `RIDEV_REMOVE` com usage page/usage correspondentes.
+    if let Err(err) = unsafe { RegisterRawInputDevices(&[device], cb_size) } {
+        warn!(?err, "unregister RegisterRawInputDevices falhou");
     }
 }
 
@@ -594,6 +732,12 @@ fn hook_thread_main(hook_tx: Sender<HookMsg>) {
 }
 
 fn run_hook_loop(_hook_tx: &Sender<HookMsg>) -> anyhow::Result<()> {
+    let raw_hwnd = ensure_raw_input_host_window()?;
+    RAW_INPUT_HWND.store(hwnd_to_isize(raw_hwnd), Ordering::SeqCst);
+    if register_raw_mouse_device(raw_hwnd) {
+        info!("Raw Input pré-registrado na thread do hook");
+    }
+
     // SAFETY: módulo válido.
     unsafe {
         let instance = GetModuleHandleW(None)?;
@@ -702,6 +846,9 @@ fn run_hook_loop(_hook_tx: &Sender<HookMsg>) -> anyhow::Result<()> {
         UnhookWindowsHookEx(kb_hook)?;
         let _ = ClipCursor(None);
     }
+
+    unregister_raw_mouse_device();
+    destroy_raw_input_host_window();
     Ok(())
 }
 
