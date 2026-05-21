@@ -17,7 +17,7 @@ use std::thread::{self, JoinHandle};
 
 use async_trait::async_trait;
 use crossbeam_channel::{Receiver, Sender};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM, GetLastError};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -35,7 +35,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PeekMessageW, SetCursorPos, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
     HHOOK, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, PM_REMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL,
     WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_MOUSEMOVE, WM_QUIT, WM_HOTKEY,
-    LLMHF_INJECTED, SM_CXSCREEN, SM_CYSCREEN,
+    LLMHF_INJECTED, LLKHF_INJECTED, SM_CXSCREEN, SM_CYSCREEN,
 };
 use winx_application::ports::{CaptureHandle, InputBackend};
 use winx_domain::input_control::{HotkeyAction, InputEvent, KeyModifiers, MouseButton};
@@ -45,6 +45,18 @@ use crate::input_vk_map::{portable_to_vk, vk_to_portable};
 
 /// Assinatura única para eventos injetados internamente pelo KVM
 pub const KVM_SIGNATURE: usize = 0xDEAD_C0DE;
+
+/// `KBDLLHOOKSTRUCT.flags` — evento gerado por `SendInput` / injeção remota.
+#[must_use]
+pub const fn kb_hook_flags_is_injected(flags: u32) -> bool {
+    (flags & LLKHF_INJECTED.0 as u32) != 0
+}
+
+/// `lParam` do hook de teclado — bit 30 indica que a tecla já estava pressionada (autorepeat).
+#[must_use]
+pub const fn kb_hook_lparam_is_autorepeat(lparam: isize) -> bool {
+    (lparam as u32 >> 30) & 1 != 0
+}
 
 static PASS_THROUGH: AtomicBool = AtomicBool::new(true);
 static HOOK_TX: OnceLock<Sender<HookMsg>> = OnceLock::new();
@@ -426,14 +438,21 @@ fn inject_event(event: InputEvent) -> anyhow::Result<()> {
                         wVk: if scan_full == 0 { VIRTUAL_KEY(vk as u16) } else { VIRTUAL_KEY(0) },
                         wScan: scan_byte,
                         dwFlags: flags,
+                        dwExtraInfo: KVM_SIGNATURE,
                         ..Default::default()
                     },
                 },
             };
             if scan_full == 0 {
-                warn!(?vk, "vk sem scancode mapeado — fallback para wVk");
+                warn!(target: "winx::input::remote", ?vk, "vk sem scancode mapeado — fallback para wVk");
             }
             send_inputs(&[input])?;
+            debug!(
+                target: "winx::input::remote",
+                ?vk,
+                pressed,
+                "inject tecla ok"
+            );
         }
         _ => {}
     }
@@ -642,6 +661,13 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
         let down = matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN);
         let pressed = msg != WM_KEYUP as u32 && msg != WM_SYSKEYUP as u32;
 
+        if kb_hook_flags_is_injected(info.flags.0 as u32) {
+            return unsafe { CallNextHookEx(HHOOK::default(), code, wparam, lparam) };
+        }
+        if down && kb_hook_lparam_is_autorepeat(lparam.0) {
+            return unsafe { CallNextHookEx(HHOOK::default(), code, wparam, lparam) };
+        }
+
         // Rastrear modificadores
         match vk {
             v if v == VK_LCONTROL.0 as u32 || v == VK_RCONTROL.0 as u32 || v == VK_CONTROL.0 as u32 => {
@@ -698,7 +724,20 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
 
 #[cfg(test)]
 mod delta_tests {
-    use super::mouse_delta;
+    use super::{kb_hook_flags_is_injected, kb_hook_lparam_is_autorepeat, mouse_delta};
+    use windows::Win32::UI::WindowsAndMessaging::LLKHF_INJECTED;
+
+    #[test]
+    fn kb_autorepeat_lparam_detected() {
+        assert!(kb_hook_lparam_is_autorepeat(1isize << 30));
+        assert!(!kb_hook_lparam_is_autorepeat(0));
+    }
+
+    #[test]
+    fn kb_injected_flag_detected() {
+        assert!(kb_hook_flags_is_injected(LLKHF_INJECTED.0 as u32));
+        assert!(!kb_hook_flags_is_injected(0));
+    }
 
     #[test]
     fn subtract_overflow_case_does_not_panic() {

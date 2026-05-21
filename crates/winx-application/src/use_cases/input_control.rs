@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tokio::sync::Mutex;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use winx_domain::{
     input_control::{
         accumulate_return_left, apply_focus_target, events::{FocusSwitched, HotkeyTriggered, InputBlocked},
@@ -29,6 +29,21 @@ pub struct KeyboardMirrorStatus {
     pub active: bool,
     pub seconds_left: u32,
     pub keys_sent: u64,
+    pub keys_hooked: u64,
+    pub keys_send_errors: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InputDebugStats {
+    pub mirror_active: bool,
+    pub keys_sent: u64,
+    pub keys_hooked: u64,
+    pub keys_send_errors: u64,
+    pub remote_frames_received: u64,
+    pub remote_inject_ok: u64,
+    pub remote_inject_fail: u64,
+    pub input_enabled: bool,
+    pub has_input_tx: bool,
 }
 
 pub struct InputControlService {
@@ -45,6 +60,11 @@ pub struct InputControlService {
     remote_dx_accum: Arc<AtomicI32>,
     keyboard_mirror: Arc<AtomicBool>,
     mirror_keys_sent: Arc<AtomicU64>,
+    mirror_keys_hooked: Arc<AtomicU64>,
+    mirror_keys_send_errors: Arc<AtomicU64>,
+    remote_frames_received: Arc<AtomicU64>,
+    remote_inject_ok: Arc<AtomicU64>,
+    remote_inject_fail: Arc<AtomicU64>,
     mirror_deadline: Arc<Mutex<Option<Instant>>>,
 }
 
@@ -69,7 +89,26 @@ impl InputControlService {
             remote_dx_accum: Arc::new(AtomicI32::new(0)),
             keyboard_mirror: Arc::new(AtomicBool::new(false)),
             mirror_keys_sent: Arc::new(AtomicU64::new(0)),
+            mirror_keys_hooked: Arc::new(AtomicU64::new(0)),
+            mirror_keys_send_errors: Arc::new(AtomicU64::new(0)),
+            remote_frames_received: Arc::new(AtomicU64::new(0)),
+            remote_inject_ok: Arc::new(AtomicU64::new(0)),
+            remote_inject_fail: Arc::new(AtomicU64::new(0)),
             mirror_deadline: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub async fn get_input_debug_stats(&self) -> InputDebugStats {
+        InputDebugStats {
+            mirror_active: self.keyboard_mirror.load(Ordering::SeqCst),
+            keys_sent: self.mirror_keys_sent.load(Ordering::SeqCst),
+            keys_hooked: self.mirror_keys_hooked.load(Ordering::SeqCst),
+            keys_send_errors: self.mirror_keys_send_errors.load(Ordering::SeqCst),
+            remote_frames_received: self.remote_frames_received.load(Ordering::SeqCst),
+            remote_inject_ok: self.remote_inject_ok.load(Ordering::SeqCst),
+            remote_inject_fail: self.remote_inject_fail.load(Ordering::SeqCst),
+            input_enabled: *self.enabled.lock().await,
+            has_input_tx: self.input_tx.lock().await.is_some(),
         }
     }
 
@@ -99,6 +138,8 @@ impl InputControlService {
 
         let duration = Duration::from_secs(u64::from(duration_secs.max(1)));
         self.mirror_keys_sent.store(0, Ordering::SeqCst);
+        self.mirror_keys_hooked.store(0, Ordering::SeqCst);
+        self.mirror_keys_send_errors.store(0, Ordering::SeqCst);
         *self.mirror_deadline.lock().await = Some(Instant::now() + duration);
         self.keyboard_mirror.store(true, Ordering::SeqCst);
 
@@ -134,6 +175,8 @@ impl InputControlService {
             active,
             seconds_left: u32::try_from(seconds_left).unwrap_or(0),
             keys_sent,
+            keys_hooked: self.mirror_keys_hooked.load(Ordering::SeqCst),
+            keys_send_errors: self.mirror_keys_send_errors.load(Ordering::SeqCst),
         }
     }
 
@@ -186,7 +229,21 @@ impl InputControlService {
             ));
         }
 
-        let (tx, _rx) = input_streams::acquire_input_streams(&self.transport, peer_id).await?;
+        if self.input_tx.lock().await.is_none() {
+            info!(%peer_id, "lab ping: habilitando input (stream único)");
+            self.enable_for_peer(peer_id).await?;
+        } else {
+            info!(%peer_id, stream_reused = true, "lab ping input");
+        }
+
+        let tx = self.input_tx.lock().await.clone();
+        let Some(tx) = tx else {
+            return Err(DomainError::new(
+                DomainErrorCode::TransportConnectionFailed,
+                "stream Input não disponível",
+            ));
+        };
+
         let ev = InputEvent::Key {
             code: winx_domain::input_control::PortableKeyCode(0),
             pressed: false,
@@ -246,6 +303,8 @@ impl InputControlService {
                 let service_remote_dx = Arc::clone(&self.remote_dx_accum);
         let service_mirror = Arc::clone(&self.keyboard_mirror);
         let service_mirror_keys = Arc::clone(&self.mirror_keys_sent);
+        let service_mirror_hooked = Arc::clone(&self.mirror_keys_hooked);
+        let service_mirror_send_errors = Arc::clone(&self.mirror_keys_send_errors);
 
         // Hooks Win32 disparam em std::thread — não usar `tokio::spawn` direto no callback.
         let runtime = tokio::runtime::Handle::current();
@@ -264,6 +323,8 @@ impl InputControlService {
                 let remote_dx = service_remote_dx.clone();
                 let mirror = service_mirror.clone();
                 let mirror_keys = service_mirror_keys.clone();
+                let mirror_hooked = service_mirror_hooked.clone();
+                let mirror_send_errors = service_mirror_send_errors.clone();
                 let seq = Arc::clone(&service_seq);
                 runtime.spawn(async move {
                     if !*enabled.lock().await && !mirror.load(Ordering::SeqCst) {
@@ -282,6 +343,8 @@ impl InputControlService {
                         remote_dx,
                         mirror,
                         mirror_keys,
+                        mirror_hooked,
+                        mirror_send_errors,
                     )
                     .await;
                 });
@@ -321,18 +384,42 @@ impl InputControlService {
         self.remote_dx_accum.store(0, Ordering::SeqCst);
 
         let inject_input = Arc::clone(&self.input);
+        let remote_frames = Arc::clone(&self.remote_frames_received);
+        let remote_ok = Arc::clone(&self.remote_inject_ok);
+        let remote_fail = Arc::clone(&self.remote_inject_fail);
         tokio::spawn(async move {
             while let Some(bytes) = rx.recv().await {
                 match winx_protocol::decode(&bytes) {
                     Ok(frame) => {
                         if let winx_protocol::Payload::Input(p) = frame.payload {
+                            remote_frames.fetch_add(1, Ordering::SeqCst);
                             if FIRST_INJECT.swap(false, Ordering::SeqCst) {
-                                info!("primeiro evento de input remoto recebido");
+                                info!(
+                                    target: "winx::input::remote",
+                                    seq = p.seq,
+                                    "primeiro frame Input remoto recebido"
+                                );
                             }
                             let ev = input_event_from_dto(&p.event);
-                            tracing::debug!(?ev, "input remoto injetado");
-                            if inject_input.inject(ev).await.is_err() {
-                                warn!("falha ao injetar input remoto");
+                            debug!(
+                                target: "winx::input::remote",
+                                seq = p.seq,
+                                ?ev,
+                                "frame Input remoto"
+                            );
+                            match inject_input.inject(ev).await {
+                                Ok(()) => {
+                                    remote_ok.fetch_add(1, Ordering::SeqCst);
+                                }
+                                Err(err) => {
+                                    remote_fail.fetch_add(1, Ordering::SeqCst);
+                                    warn!(
+                                        target: "winx::input::remote",
+                                        seq = p.seq,
+                                        ?err,
+                                        "falha ao injetar input remoto"
+                                    );
+                                }
                             }
                         }
                     }
@@ -526,14 +613,42 @@ async fn handle_local_input(
     remote_dx_accum: Arc<AtomicI32>,
     keyboard_mirror: Arc<AtomicBool>,
     mirror_keys_sent: Arc<AtomicU64>,
+    mirror_keys_hooked: Arc<AtomicU64>,
+    mirror_keys_send_errors: Arc<AtomicU64>,
 ) {
     if keyboard_mirror.load(Ordering::SeqCst) {
-        if let InputEvent::Key { .. } = &ev {
+        if let InputEvent::Key { code, pressed, .. } = &ev {
+            mirror_keys_hooked.fetch_add(1, Ordering::SeqCst);
             if let Some(tx) = input_tx.lock().await.as_ref() {
                 let n = seq.fetch_add(1, Ordering::SeqCst);
-                if let Ok(bytes) = encode_input_payload(n, &ev) {
-                    if tx.send(bytes).await.is_ok() {
-                        mirror_keys_sent.fetch_add(1, Ordering::SeqCst);
+                match encode_input_payload(n, &ev) {
+                    Ok(bytes) => {
+                        let bytes_len = bytes.len();
+                        match tx.send(bytes).await {
+                        Ok(()) => {
+                            mirror_keys_sent.fetch_add(1, Ordering::SeqCst);
+                            debug!(
+                                target: "winx::input::mirror",
+                                seq = n,
+                                ?code,
+                                pressed,
+                                bytes_len,
+                                "tecla espelhada enviada"
+                            );
+                        }
+                        Err(_) => {
+                            mirror_keys_send_errors.fetch_add(1, Ordering::SeqCst);
+                            warn!(
+                                target: "winx::input::mirror",
+                                seq = n,
+                                "falha ao enviar tecla no stream Input"
+                            );
+                        }
+                        }
+                    },
+                    Err(err) => {
+                        mirror_keys_send_errors.fetch_add(1, Ordering::SeqCst);
+                        warn!(target: "winx::input::mirror", ?err, "falha ao codificar tecla");
                     }
                 }
             }

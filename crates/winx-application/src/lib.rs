@@ -17,7 +17,7 @@ pub mod use_cases;
 pub use bus::EventBus;
 pub use use_cases::{
     connection_lab::{LabProbeResults, ProbeResult},
-    input_control::KeyboardMirrorStatus,
+    input_control::{InputDebugStats, KeyboardMirrorStatus},
     ClipboardService, ConnectionLabService, DiscoveryService, EnsureDevice, InputControlService,
     PairingService, TransportService, UpdateDeviceProfile,
 };

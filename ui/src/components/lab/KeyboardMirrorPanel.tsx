@@ -14,11 +14,13 @@ import { notifyDomainError } from '../../lib/parseDomainError';
 interface KeyboardMirrorPanelProps {
   peerId: string | null;
   peerConnected: boolean;
+  onMirrorActiveChange?: (active: boolean) => void;
 }
 
 export function KeyboardMirrorPanel({
   peerId,
   peerConnected,
+  onMirrorActiveChange,
 }: KeyboardMirrorPanelProps) {
   const { t } = useTranslation('lab');
   const { t: tCommon } = useTranslation('common');
@@ -26,6 +28,10 @@ export function KeyboardMirrorPanel({
   const [starting, setStarting] = useState(false);
   const [clickSending, setClickSending] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    onMirrorActiveChange?.(status?.active ?? false);
+  }, [status?.active, onMirrorActiveChange]);
 
   useEffect(() => {
     return () => {
@@ -37,13 +43,7 @@ export function KeyboardMirrorPanel({
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = setInterval(() => {
       getKeyboardMirrorStatus()
-        .then((s) => {
-          setStatus(s);
-          if (!s.active && pollRef.current) {
-            clearInterval(pollRef.current);
-            pollRef.current = null;
-          }
-        })
+        .then(setStatus)
         .catch((err: unknown) => console.error('get_keyboard_mirror_status', err));
     }, 200);
   }
@@ -133,10 +133,20 @@ export function KeyboardMirrorPanel({
           </Button>
         </Group>
 
-        {(mirrorActive || (status?.keys_sent ?? 0) > 0) && (
-          <Text size="sm" c={status && status.keys_sent > 0 ? 'teal' : 'dimmed'}>
-            {t('keyboard.keys_sent', { count: status?.keys_sent ?? 0 })}
-          </Text>
+        {(mirrorActive || (status?.keys_sent ?? 0) > 0) && status && (
+          <Stack gap={4}>
+            <Text size="sm" c={status.keys_sent > 0 ? 'teal' : 'dimmed'}>
+              {t('keyboard.keys_sent', { count: status.keys_sent })}
+            </Text>
+            <Text size="sm" c="dimmed">
+              {t('keyboard.keys_hooked', { count: status.keys_hooked })}
+            </Text>
+            {status.keys_send_errors > 0 && (
+              <Text size="sm" c="red">
+                {t('keyboard.keys_send_errors', { count: status.keys_send_errors })}
+              </Text>
+            )}
+          </Stack>
         )}
       </Stack>
     </Card>

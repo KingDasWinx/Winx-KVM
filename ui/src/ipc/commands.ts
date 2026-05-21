@@ -184,6 +184,24 @@ export interface KeyboardMirrorStatusDto {
   active: boolean;
   seconds_left: number;
   keys_sent: number;
+  keys_hooked: number;
+  keys_send_errors: number;
+}
+
+export interface InputDebugStatsDto {
+  mirror_active: boolean;
+  keys_sent: number;
+  keys_hooked: number;
+  keys_send_errors: number;
+  remote_frames_received: number;
+  remote_inject_ok: number;
+  remote_inject_fail: number;
+  input_enabled: boolean;
+  has_input_tx: boolean;
+}
+
+export async function getInputDebugStats(): Promise<InputDebugStatsDto> {
+  return await invoke<InputDebugStatsDto>('get_input_debug_stats');
 }
 
 export async function startKeyboardMirrorTest(

@@ -422,6 +422,7 @@ pub fn run() {
             commands::run_connectivity_suite,
             commands::start_keyboard_mirror_test,
             commands::get_keyboard_mirror_status,
+            commands::get_input_debug_stats,
             commands::send_test_click,
             commands::get_clipboard_auto_sync,
             commands::set_clipboard_auto_sync,

@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 use tauri::State;
-use winx_application::{KeyboardMirrorStatus, LabProbeResults, ProbeResult};
+use winx_application::{InputDebugStats, KeyboardMirrorStatus, LabProbeResults, ProbeResult};
 use winx_domain::shared::ids::PeerId;
 
 use crate::app_state::{InputControlState, LabState};
@@ -27,6 +27,21 @@ pub struct KeyboardMirrorStatusDto {
     pub active: bool,
     pub seconds_left: u32,
     pub keys_sent: u64,
+    pub keys_hooked: u64,
+    pub keys_send_errors: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InputDebugStatsDto {
+    pub mirror_active: bool,
+    pub keys_sent: u64,
+    pub keys_hooked: u64,
+    pub keys_send_errors: u64,
+    pub remote_frames_received: u64,
+    pub remote_inject_ok: u64,
+    pub remote_inject_fail: u64,
+    pub input_enabled: bool,
+    pub has_input_tx: bool,
 }
 
 impl From<ProbeResult> for ProbeResultDto {
@@ -56,6 +71,24 @@ impl From<KeyboardMirrorStatus> for KeyboardMirrorStatusDto {
             active: s.active,
             seconds_left: s.seconds_left,
             keys_sent: s.keys_sent,
+            keys_hooked: s.keys_hooked,
+            keys_send_errors: s.keys_send_errors,
+        }
+    }
+}
+
+impl From<InputDebugStats> for InputDebugStatsDto {
+    fn from(s: InputDebugStats) -> Self {
+        Self {
+            mirror_active: s.mirror_active,
+            keys_sent: s.keys_sent,
+            keys_hooked: s.keys_hooked,
+            keys_send_errors: s.keys_send_errors,
+            remote_frames_received: s.remote_frames_received,
+            remote_inject_ok: s.remote_inject_ok,
+            remote_inject_fail: s.remote_inject_fail,
+            input_enabled: s.input_enabled,
+            has_input_tx: s.has_input_tx,
         }
     }
 }
@@ -96,6 +129,17 @@ pub async fn get_keyboard_mirror_status(
     Ok(input
         .input_control
         .get_keyboard_mirror_status()
+        .await
+        .into())
+}
+
+#[tauri::command]
+pub async fn get_input_debug_stats(
+    input: State<'_, InputControlState>,
+) -> Result<InputDebugStatsDto, String> {
+    Ok(input
+        .input_control
+        .get_input_debug_stats()
         .await
         .into())
 }

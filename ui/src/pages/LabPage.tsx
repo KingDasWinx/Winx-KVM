@@ -4,6 +4,7 @@ import { IconInfoCircle } from '@tabler/icons-react';
 import { useTranslation } from 'react-i18next';
 
 import { ConnectivitySuitePanel } from '../components/lab/ConnectivitySuitePanel';
+import { InputDebugPanel } from '../components/lab/InputDebugPanel';
 import { KeyboardMirrorPanel } from '../components/lab/KeyboardMirrorPanel';
 import { PeerSelector } from '../components/lab/PeerSelector';
 import { listConnectionStates, type ConnectionStateDto } from '../ipc/commands';
@@ -12,6 +13,7 @@ export function LabPage() {
   const { t } = useTranslation('lab');
   const [peerId, setPeerId] = useState<string | null>(null);
   const [connections, setConnections] = useState<ConnectionStateDto[]>([]);
+  const [mirrorActive, setMirrorActive] = useState(false);
 
   useEffect(() => {
     listConnectionStates()
@@ -44,7 +46,13 @@ export function LabPage() {
 
       <ConnectivitySuitePanel peerId={peerId} peerConnected={peerConnected} />
 
-      <KeyboardMirrorPanel peerId={peerId} peerConnected={peerConnected} />
+      <KeyboardMirrorPanel
+        peerId={peerId}
+        peerConnected={peerConnected}
+        onMirrorActiveChange={setMirrorActive}
+      />
+
+      <InputDebugPanel mirrorActive={mirrorActive} />
     </Stack>
   );
 }

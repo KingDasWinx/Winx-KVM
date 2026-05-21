@@ -2,7 +2,7 @@ use serde_json::json;
 use std::path::PathBuf;
 use tauri::{command, State};
 
-use crate::app_state::{DiscoveryState, FirewallState};
+use crate::app_state::{DiscoveryState, FirewallState, InputControlState};
 
 #[command]
 pub async fn get_firewall_status(state: State<'_, FirewallState>) -> Result<bool, String> {
@@ -30,7 +30,10 @@ pub async fn reconfigure_firewall(state: State<'_, FirewallState>) -> Result<(),
 }
 
 #[command]
-pub async fn export_diagnostics(discovery: State<'_, DiscoveryState>) -> Result<String, String> {
+pub async fn export_diagnostics(
+    discovery: State<'_, DiscoveryState>,
+    input: State<'_, InputControlState>,
+) -> Result<String, String> {
     use winx_infra::network_config;
 
     let config_status = network_config::inspect()
@@ -68,9 +71,12 @@ pub async fn export_diagnostics(discovery: State<'_, DiscoveryState>) -> Result<
         .collect::<Vec<_>>()
         .join("\n");
 
+    let input_stats = input.input_control.get_input_debug_stats().await;
+
     let diagnostics = json!({
         "timestamp": chrono::Utc::now().to_rfc3339(),
         "app_version": env!("CARGO_PKG_VERSION"),
+        "input_debug": input_stats,
         "os": std::env::consts::OS,
         "os_version": winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
             .open_subkey("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion")
