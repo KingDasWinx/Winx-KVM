@@ -838,6 +838,17 @@ async fn handle_local_input(
                         }
                     }
                 }
+                InputEvent::Key { .. } => {
+                    if let Some(tx) = input_tx.lock().await.as_ref() {
+                        let n = seq.fetch_add(1, Ordering::SeqCst);
+                        if let Ok(bytes) = encode_input_payload(n, &ev) {
+                            debug!(?ev, seq = n, "tecla encaminhada ao remoto");
+                            if tx.send(bytes).await.is_err() {
+                                warn!("falha ao enviar tecla no stream");
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }
