@@ -189,13 +189,13 @@ impl MonitorLayout {
                 let remote_h = remote.height as u64;
                 let prop_y = ((local_rel_y * remote_h) / local_h) as i32;
 
+                // Coordenadas relativas à tela do receiver (começa em 0,0)
                 let entry_x = match self.edge.remote_entry {
-                    BorderSide::Left => remote.x + 2,
-                    BorderSide::Right => remote.x + remote.width as i32 - 2,
-                    BorderSide::Top | BorderSide::Bottom => remote.x + remote.width as i32 / 2,
+                    BorderSide::Left => 2,
+                    BorderSide::Right => remote.width as i32 - 2,
+                    BorderSide::Top | BorderSide::Bottom => remote.width as i32 / 2,
                 };
-                let entry_y = (remote.y + prop_y)
-                    .clamp(remote.y, remote.y + remote.height as i32 - 1);
+                let entry_y = prop_y.clamp(0, remote.height as i32 - 1);
                 (entry_x, entry_y)
             }
             BorderSide::Top | BorderSide::Bottom => {
@@ -205,13 +205,13 @@ impl MonitorLayout {
                 let remote_w = remote.width as u64;
                 let prop_x = ((local_rel_x * remote_w) / local_w) as i32;
 
+                // Coordenadas relativas à tela do receiver (começa em 0,0)
                 let entry_y = match self.edge.remote_entry {
-                    BorderSide::Top => remote.y + 2,
-                    BorderSide::Bottom => remote.y + remote.height as i32 - 2,
-                    BorderSide::Left | BorderSide::Right => remote.y + remote.height as i32 / 2,
+                    BorderSide::Top => 2,
+                    BorderSide::Bottom => remote.height as i32 - 2,
+                    BorderSide::Left | BorderSide::Right => remote.height as i32 / 2,
                 };
-                let entry_x = (remote.x + prop_x)
-                    .clamp(remote.x, remote.x + remote.width as i32 - 1);
+                let entry_x = prop_x.clamp(0, remote.width as i32 - 1);
                 (entry_x, entry_y)
             }
         }
@@ -254,8 +254,8 @@ mod tests {
         let layout = layout_1920x1080_remote_same();
         // Cruza pela borda direita em Y=300
         let (x, y) = layout.map_crossing_point(1919, 300);
-        assert_eq!(x, 1920 + 2); // entra 2px da borda esquerda do remoto
-        assert_eq!(y, 300);      // Y preservado (mesma altura)
+        assert_eq!(x, 2);   // entra 2px da borda esquerda da tela do receiver (coord local = 0)
+        assert_eq!(y, 300); // Y preservado (mesma altura)
     }
 
     #[test]
