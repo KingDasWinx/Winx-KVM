@@ -61,11 +61,6 @@ pub const fn kb_hook_flags_is_injected(flags: u32) -> bool {
     (flags & LLKHF_INJECTED.0 as u32) != 0
 }
 
-/// `lParam` do hook de teclado — bit 30 indica que a tecla já estava pressionada (autorepeat).
-#[must_use]
-pub const fn kb_hook_lparam_is_autorepeat(lparam: isize) -> bool {
-    (lparam as u32 >> 30) & 1 != 0
-}
 
 static PASS_THROUGH: AtomicBool = AtomicBool::new(true);
 static HOOK_TX: OnceLock<Sender<HookMsg>> = OnceLock::new();
@@ -980,10 +975,6 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
         if kb_hook_flags_is_injected(info.flags.0 as u32) {
             return unsafe { CallNextHookEx(HHOOK::default(), code, wparam, lparam) };
         }
-        if down && kb_hook_lparam_is_autorepeat(lparam.0) {
-            return unsafe { CallNextHookEx(HHOOK::default(), code, wparam, lparam) };
-        }
-
         // Rastrear modificadores
         match vk {
             v if v == VK_LCONTROL.0 as u32 || v == VK_RCONTROL.0 as u32 || v == VK_CONTROL.0 as u32 => {
@@ -1042,12 +1033,6 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
 mod delta_tests {
     use super::{kb_hook_flags_is_injected, kb_hook_lparam_is_autorepeat, mouse_delta};
     use windows::Win32::UI::WindowsAndMessaging::LLKHF_INJECTED;
-
-    #[test]
-    fn kb_autorepeat_lparam_detected() {
-        assert!(kb_hook_lparam_is_autorepeat(1isize << 30));
-        assert!(!kb_hook_lparam_is_autorepeat(0));
-    }
 
     #[test]
     fn kb_injected_flag_detected() {
