@@ -151,7 +151,9 @@ impl WorkspaceService {
                     device_id: m.device_id.as_uuid(),
                     public_key: *m.public_key.as_bytes(),
                     username: m.username_cache.clone(),
-                    joined_at_rfc3339: "1970-01-01T00:00:00Z".to_string(), // TODO: format m.joined_at properly
+                    // TODO(W3): format OffsetDateTime to RFC3339 (time crate not available in application layer)
+                    // For MVP, use timestamp-based approximation
+                    joined_at_rfc3339: format!("{:?}", m.joined_at),
                 }
             })
             .collect();
@@ -170,13 +172,19 @@ impl WorkspaceService {
             members: members_snapshot,
         };
 
+        // Load local public key
+        let local_device = self.identity_store.load_device().await
+            .map_err(|e| DomainError::new(DomainErrorCode::InternalError, format!("failed to load device: {}", e)))?
+            .ok_or_else(|| DomainError::new(DomainErrorCode::InternalError, "local device not found"))?;
+        let sender_pubkey = *local_device.public_key.as_bytes();
+
         // Create payload
         let payload = WorkspaceInvitePayload {
             invite_id,
             workspace_snapshot: snapshot,
             sender_device_id: self.local_device_id,
             sender_username: self.local_username.clone(),
-            sender_pubkey: [0u8; 32], // TODO: get from identity_store
+            sender_pubkey,
             target_device_id: target_device_uuid,
         };
 
