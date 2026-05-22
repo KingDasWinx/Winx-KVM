@@ -15,6 +15,11 @@ use crate::pairing::events::{
     PairingCancelled, PairingCompleted, PairingFailed, PairingIncoming, PairingRequested,
 };
 use crate::transport::events::{ConnectionEstablished, ConnectionLost, StatsUpdated};
+use crate::workspace::events::{
+    GlobalCursorMoved, InviteAccepted, InviteExpired, InviteRejected, InviteSent, MemberJoined,
+    MemberLeft, WorkspaceCreated, WorkspaceDeleted, WorkspaceMarkedOrphan, WorkspaceSyncApplied,
+    WorkspaceSyncDiscarded, WorkspaceUpdated,
+};
 
 /// União de todos os eventos de domínio.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,4 +54,19 @@ pub enum DomainEvent {
     // --- DataExchange (Sprint 6) ---
     ClipboardChanged(ClipboardChanged),
     ClipboardReceived(ClipboardReceived),
+
+    // --- Workspace (Sprint W1+) ---
+    WorkspaceCreated(WorkspaceCreated),
+    WorkspaceUpdated(WorkspaceUpdated),
+    WorkspaceDeleted(WorkspaceDeleted),
+    WorkspaceMemberJoined(MemberJoined),
+    WorkspaceMemberLeft(MemberLeft),
+    WorkspaceInviteSent(InviteSent),
+    WorkspaceInviteAccepted(InviteAccepted),
+    WorkspaceInviteRejected(InviteRejected),
+    WorkspaceInviteExpired(InviteExpired),
+    WorkspaceGlobalCursorMoved(GlobalCursorMoved),
+    WorkspaceMarkedOrphan(WorkspaceMarkedOrphan),
+    WorkspaceSyncApplied(WorkspaceSyncApplied),
+    WorkspaceSyncDiscarded(WorkspaceSyncDiscarded),
 }

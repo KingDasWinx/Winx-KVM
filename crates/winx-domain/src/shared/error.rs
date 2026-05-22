@@ -49,6 +49,19 @@ pub enum DomainErrorCode {
     FileTransferCancelled,
     FileTransferTooLarge,
 
+    // Workspace
+    WorkspaceNameEmpty,
+    WorkspaceOwnerNotMember,
+    WorkspaceMemberAlreadyExists,
+    WorkspaceMemberNotFound,
+    WorkspaceCannotRemoveOwner,
+    WorkspaceMustHaveOneMember,
+    WorkspaceInviteExpired,
+    WorkspaceInviteAlreadyResolved,
+    WorkspaceCursorOutOfOrder,
+    WorkspaceMirrorImmutable,
+    WorkspaceVersionStale,
+
     // Geral
     InternalError,
 }
@@ -85,6 +98,18 @@ impl DomainErrorCode {
             Self::FileTransferHashMismatch => "file_transfer.hash_mismatch",
             Self::FileTransferCancelled => "file_transfer.cancelled",
             Self::FileTransferTooLarge => "file_transfer.too_large",
+
+            Self::WorkspaceNameEmpty => "workspace.name_empty",
+            Self::WorkspaceOwnerNotMember => "workspace.owner_not_member",
+            Self::WorkspaceMemberAlreadyExists => "workspace.member_already_exists",
+            Self::WorkspaceMemberNotFound => "workspace.member_not_found",
+            Self::WorkspaceCannotRemoveOwner => "workspace.cannot_remove_owner",
+            Self::WorkspaceMustHaveOneMember => "workspace.must_have_one_member",
+            Self::WorkspaceInviteExpired => "workspace.invite_expired",
+            Self::WorkspaceInviteAlreadyResolved => "workspace.invite_already_resolved",
+            Self::WorkspaceCursorOutOfOrder => "workspace.cursor_out_of_order",
+            Self::WorkspaceMirrorImmutable => "workspace.mirror_immutable",
+            Self::WorkspaceVersionStale => "workspace.version_stale",
 
             Self::InternalError => "general.internal_error",
         }

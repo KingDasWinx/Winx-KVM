@@ -18,5 +18,6 @@ pub mod input_control;
 pub mod media;
 pub mod pairing;
 pub mod transport;
+pub mod workspace;
 
 pub use shared::{DomainError, DomainEvent};

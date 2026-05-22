@@ -13,14 +13,16 @@ pub mod monitor;
 pub mod network;
 pub mod pairing;
 pub mod transport;
+pub mod workspace;
 
 pub use clipboard::{ClipboardBackend, ClipboardWatcherHandle};
 pub use discovery::{AnnounceInfo, DiscoveryAdapter, DiscoveryEvent, WINX_KVM_PORT};
-pub use pairing::{
-    pairing_socket_addr, DecodedPairingMessage, PairingTransport, WINX_KVM_PAIRING_PORT,
-};
 pub use identity::{IdentityStore, SecretStore};
 pub use input::{CaptureHandle, InputBackend};
 pub use monitor::MonitorBackend;
 pub use network::NetworkInterfacesProvider;
+pub use pairing::{
+    pairing_socket_addr, DecodedPairingMessage, PairingTransport, WINX_KVM_PAIRING_PORT,
+};
 pub use transport::TransportAdapter;
+pub use workspace::WorkspaceStore;

@@ -9,7 +9,7 @@ use uuid::Uuid;
 ///
 /// Gerado uma única vez por máquina na primeira execução e persistido.
 /// Derivado de `Uuid::new_v4`, sem semântica de ordenação.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct DeviceId(Uuid);
 
