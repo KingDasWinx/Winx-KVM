@@ -249,23 +249,23 @@ export async function listWorkspaces(): Promise<WorkspaceDto[]> {
 }
 
 export async function createWorkspace(name: string, peerIds: string[]): Promise<WorkspaceDto> {
-  return await invoke<WorkspaceDto>('create_workspace', { name, peer_ids: peerIds });
+  return await invoke<WorkspaceDto>('create_workspace', { name, peerIds });
 }
 
 export async function inviteToWorkspace(workspaceId: string, peerId: string): Promise<string> {
-  return await invoke<string>('invite_to_workspace', { workspace_id: workspaceId, peer_id: peerId });
+  return await invoke<string>('invite_to_workspace', { workspaceId, peerId });
 }
 
 export async function acceptInvite(inviteId: string): Promise<WorkspaceDto> {
-  return await invoke<WorkspaceDto>('accept_invite', { invite_id: inviteId });
+  return await invoke<WorkspaceDto>('accept_invite', { inviteId });
 }
 
 export async function rejectInvite(inviteId: string): Promise<void> {
-  return await invoke<void>('reject_invite', { invite_id: inviteId });
+  return await invoke<void>('reject_invite', { inviteId });
 }
 
 export async function connectToWorkspace(workspaceId: string): Promise<void> {
-  return await invoke<void>('connect_to_workspace', { workspace_id: workspaceId });
+  return await invoke<void>('connect_to_workspace', { workspaceId });
 }
 
 export async function disconnectFromWorkspace(): Promise<void> {
@@ -273,9 +273,9 @@ export async function disconnectFromWorkspace(): Promise<void> {
 }
 
 export async function forceDisconnectAndConnect(workspaceId: string): Promise<void> {
-  return await invoke<void>('force_disconnect_and_connect', { workspace_id: workspaceId });
+  return await invoke<void>('force_disconnect_and_connect', { workspaceId });
 }
 
 export async function deleteWorkspace(workspaceId: string): Promise<void> {
-  return await invoke<void>('delete_workspace', { workspace_id: workspaceId });
+  return await invoke<void>('delete_workspace', { workspaceId });
 }
