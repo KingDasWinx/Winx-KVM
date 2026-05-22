@@ -10,6 +10,7 @@ pub mod mouse_coalesce;
 pub mod pairing;
 pub mod transport;
 pub mod update_device_profile;
+pub mod workspace;
 
 pub use clipboard::ClipboardService;
 pub use connection_lab::ConnectionLabService;
@@ -19,3 +20,4 @@ pub use input_control::InputControlService;
 pub use pairing::PairingService;
 pub use transport::TransportService;
 pub use update_device_profile::UpdateDeviceProfile;
+pub use workspace::WorkspaceService;

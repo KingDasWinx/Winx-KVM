@@ -25,6 +25,7 @@ pub mod network_watcher;
 pub mod pairing_udp;
 pub mod secret_store_keyring;
 pub mod transport_quic;
+pub mod workspace_invite_udp;
 pub mod workspace_store_toml;
 
 pub use clipboard_arboard::ArboardClipboardBackend;
@@ -38,6 +39,7 @@ pub use network_interfaces_provider::IfAddrsNetworkProvider;
 pub use pairing_udp::UdpPairingTransport;
 pub use secret_store_keyring::KeyringSecretStore;
 pub use transport_quic::{generate_or_load_quic_cert, QuicTransportAdapter};
+pub use workspace_invite_udp::UdpWorkspaceInviteTransport;
 pub use workspace_store_toml::TomlWorkspaceStore;
 
 // Adapters futuros (sprint a sprint):

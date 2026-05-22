@@ -61,6 +61,9 @@ pub enum DomainErrorCode {
     WorkspaceCursorOutOfOrder,
     WorkspaceMirrorImmutable,
     WorkspaceVersionStale,
+    WorkspaceConflict,
+    WorkspaceNotMember,
+    WorkspacePeerNotDiscovered,
 
     // Geral
     InternalError,
@@ -110,6 +113,9 @@ impl DomainErrorCode {
             Self::WorkspaceCursorOutOfOrder => "workspace.cursor_out_of_order",
             Self::WorkspaceMirrorImmutable => "workspace.mirror_immutable",
             Self::WorkspaceVersionStale => "workspace.version_stale",
+            Self::WorkspaceConflict => "workspace.conflict",
+            Self::WorkspaceNotMember => "workspace.not_member",
+            Self::WorkspacePeerNotDiscovered => "workspace.peer_not_discovered",
 
             Self::InternalError => "general.internal_error",
         }

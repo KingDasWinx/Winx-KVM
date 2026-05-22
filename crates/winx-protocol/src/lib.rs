@@ -15,6 +15,7 @@ pub mod clipboard;
 pub mod diagnostics;
 pub mod input;
 pub mod pairing;
+pub mod workspace;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -30,7 +31,8 @@ pub use pairing::{
 
 /// Versão atual do wire format. Incremente quando mudar `Payload` de forma
 /// incompatível.
-pub const PROTOCOL_VERSION: u16 = 4;
+/// W2: bumped from 4 to 5 to add WorkspaceInviteMessage support.
+pub const PROTOCOL_VERSION: u16 = 5;
 
 /// Magic bytes para início de stream (identifica tipo de stream).
 /// Formato: [MAGIC 4 bytes (b"WXSK")][kind u8] = 5 bytes
