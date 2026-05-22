@@ -5,6 +5,9 @@ import { useTranslation } from 'react-i18next';
 import { DeviceCard } from '../components/DeviceCard';
 import { PairingModal } from '../components/PairingModal';
 import { PeersPanel } from '../components/PeersPanel';
+import WorkspacesPanel from '../components/workspace/WorkspacesPanel';
+import IncomingInviteModal from '../components/workspace/IncomingInviteModal';
+import ConflictModal from '../components/workspace/ConflictModal';
 import { getAppInfo, type AppInfo, type DiscoveredPeer } from '../ipc/commands';
 
 export function HomePage() {
@@ -26,12 +29,18 @@ export function HomePage() {
 
       <DeviceCard />
 
+      <WorkspacesPanel />
+
       <PeersPanel onPairRequest={setPairingTarget} />
 
       <PairingModal
         target={pairingTarget}
         onClose={() => setPairingTarget(null)}
       />
+
+      <IncomingInviteModal />
+
+      <ConflictModal />
 
       {info ? (
         <Stack gap="xs" mt="md">

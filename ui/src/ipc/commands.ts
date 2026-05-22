@@ -222,3 +222,60 @@ export async function getKeyboardMirrorStatus(): Promise<KeyboardMirrorStatusDto
 export async function sendTestClick(peerId: string): Promise<void> {
   return await invoke<void>('send_test_click', { peerId });
 }
+
+// --- Workspace commands ---
+
+export interface WorkspaceDto {
+  id: string;
+  name: string;
+  owner_device_id: string;
+  is_mirror: boolean;
+  is_orphan: boolean;
+  member_count: number;
+  version: number;
+}
+
+export interface PendingInviteDto {
+  invite_id: string;
+  workspace_id: string;
+  workspace_name: string;
+  sender_device_id: string;
+  sender_username: string;
+  sender_fingerprint_hex: string;
+}
+
+export async function listWorkspaces(): Promise<WorkspaceDto[]> {
+  return await invoke<WorkspaceDto[]>('list_workspaces');
+}
+
+export async function createWorkspace(name: string, peerIds: string[]): Promise<WorkspaceDto> {
+  return await invoke<WorkspaceDto>('create_workspace', { name, peer_ids: peerIds });
+}
+
+export async function inviteToWorkspace(workspaceId: string, peerId: string): Promise<string> {
+  return await invoke<string>('invite_to_workspace', { workspace_id: workspaceId, peer_id: peerId });
+}
+
+export async function acceptInvite(inviteId: string): Promise<WorkspaceDto> {
+  return await invoke<WorkspaceDto>('accept_invite', { invite_id: inviteId });
+}
+
+export async function rejectInvite(inviteId: string): Promise<void> {
+  return await invoke<void>('reject_invite', { invite_id: inviteId });
+}
+
+export async function connectToWorkspace(workspaceId: string): Promise<void> {
+  return await invoke<void>('connect_to_workspace', { workspace_id: workspaceId });
+}
+
+export async function disconnectFromWorkspace(): Promise<void> {
+  return await invoke<void>('disconnect_from_workspace');
+}
+
+export async function forceDisconnectAndConnect(workspaceId: string): Promise<void> {
+  return await invoke<void>('force_disconnect_and_connect', { workspace_id: workspaceId });
+}
+
+export async function deleteWorkspace(workspaceId: string): Promise<void> {
+  return await invoke<void>('delete_workspace', { workspace_id: workspaceId });
+}

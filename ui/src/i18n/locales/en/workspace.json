@@ -1,0 +1,53 @@
+{
+  "title": "Workspaces",
+  "empty": "You don't have any workspaces yet.",
+  "newButton": "New Workspace",
+  "card": {
+    "ownedBadge": "Owner",
+    "mirrorBadge": "Invited by {{username}}",
+    "memberCount_one": "{{count}} member",
+    "memberCount_other": "{{count}} members",
+    "connectButton": "Connect",
+    "disconnectButton": "Disconnect",
+    "deleteButton": "Delete"
+  },
+  "createModal": {
+    "title": "Create workspace",
+    "nameLabel": "Workspace name",
+    "namePlaceholder": "e.g., Office, Living Room",
+    "peersLabel": "Invite peers",
+    "peersHint": "Select discovered peers to invite as members",
+    "noPeersDiscovered": "No peers discovered on the LAN yet.",
+    "createButton": "Create",
+    "cancelButton": "Cancel",
+    "errors": {
+      "nameEmpty": "Workspace name cannot be empty",
+      "noTargetSelected": "Select at least one peer"
+    }
+  },
+  "incomingInvite": {
+    "title": "Workspace invitation",
+    "subtitle": "{{username}} invited you to join \"{{workspaceName}}\"",
+    "fingerprintLabel": "Sender fingerprint:",
+    "fingerprintHint": "If you trust this person, accept to join. Acceptance creates a permanent trust relationship with this device.",
+    "acceptButton": "Accept and join",
+    "rejectButton": "Decline",
+    "expiresIn": "Expires in {{seconds}}s"
+  },
+  "conflictModal": {
+    "title": "You're already connected",
+    "body": "You're connected to {{activeName}}. To use {{targetName}}, you need to disconnect first.",
+    "disconnectAndConnectButton": "Yes, disconnect and switch",
+    "cancelButton": "No, keep current",
+    "createNewSeparator": "Or create a new shared workspace",
+    "createNewButton": "Create workspace with both",
+    "createNewHint": "This will create a new workspace with both PCs as members"
+  },
+  "errors": {
+    "conflict": "Already connected to another workspace",
+    "inviteNotFound": "This invitation is no longer valid",
+    "inviteExpired": "This invitation has expired",
+    "peerNotDiscovered": "Peer is no longer on the network",
+    "ownerCannotLeave": "The owner cannot leave the workspace"
+  }
+}

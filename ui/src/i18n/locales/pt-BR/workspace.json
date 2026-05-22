@@ -1,0 +1,53 @@
+{
+  "title": "Workspaces",
+  "empty": "Você não tem nenhum workspace ainda.",
+  "newButton": "Novo Workspace",
+  "card": {
+    "ownedBadge": "Proprietário",
+    "mirrorBadge": "Convidado por {{username}}",
+    "memberCount_one": "{{count}} membro",
+    "memberCount_other": "{{count}} membros",
+    "connectButton": "Conectar",
+    "disconnectButton": "Desconectar",
+    "deleteButton": "Deletar"
+  },
+  "createModal": {
+    "title": "Criar workspace",
+    "nameLabel": "Nome do workspace",
+    "namePlaceholder": "ex: Escritório, Sala",
+    "peersLabel": "Convidar peers",
+    "peersHint": "Selecione os peers descobertos para convidar como membros",
+    "noPeersDiscovered": "Nenhum peer descoberto na rede local ainda.",
+    "createButton": "Criar",
+    "cancelButton": "Cancelar",
+    "errors": {
+      "nameEmpty": "O nome do workspace não pode estar vazio",
+      "noTargetSelected": "Selecione pelo menos um peer"
+    }
+  },
+  "incomingInvite": {
+    "title": "Convite de workspace",
+    "subtitle": "{{username}} convidou você a entrar em \"{{workspaceName}}\"",
+    "fingerprintLabel": "Impressão digital do remetente:",
+    "fingerprintHint": "Se você confia nesta pessoa, aceite o convite. A aceitação cria uma relação de confiança permanente com este dispositivo.",
+    "acceptButton": "Aceitar e entrar",
+    "rejectButton": "Recusar",
+    "expiresIn": "Expira em {{seconds}}s"
+  },
+  "conflictModal": {
+    "title": "Você já está conectado",
+    "body": "Você está conectado a {{activeName}}. Para usar {{targetName}}, você precisa desconectar primeiro.",
+    "disconnectAndConnectButton": "Sim, desconectar e trocar",
+    "cancelButton": "Não, manter atual",
+    "createNewSeparator": "Ou criar um novo workspace compartilhado",
+    "createNewButton": "Criar workspace com ambos",
+    "createNewHint": "Isto criará um novo workspace com ambos os PCs como membros"
+  },
+  "errors": {
+    "conflict": "Já conectado a outro workspace",
+    "inviteNotFound": "Este convite não é mais válido",
+    "inviteExpired": "Este convite expirou",
+    "peerNotDiscovered": "Peer não está mais na rede",
+    "ownerCannotLeave": "O proprietário não pode deixar o workspace"
+  }
+}

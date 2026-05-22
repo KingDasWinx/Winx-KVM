@@ -29,6 +29,15 @@ export type WinxEvent =
   // Sprint 6 — Clipboard
   | { kind: 'clipboard-changed'; clipboard_hash?: string; clipboard_byte_len?: number }
   | { kind: 'clipboard-received'; peer_id?: string; clipboard_hash?: string }
+  // Sprint W2 — Workspace
+  | { kind: 'workspace-invite-incoming'; invite_id: string; workspace_id: string; workspace_name: string; peer_id: string; peer_username: string; fingerprint: string }
+  | { kind: 'workspace-invite-accepted'; invite_id: string }
+  | { kind: 'workspace-invite-rejected'; invite_id: string }
+  | { kind: 'workspace-invite-expired'; invite_id: string }
+  | { kind: 'workspaces-updated' }
+  | { kind: 'workspace-connected'; workspace_id: string }
+  | { kind: 'workspace-disconnected'; workspace_id: string }
+  | { kind: 'workspace-connection-conflict'; workspace_id: string; other_workspace_id: string }
   | { kind: 'unknown' };
 
 export function onWinxEvent(handler: (event: WinxEvent) => void): Promise<UnlistenFn> {

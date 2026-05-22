@@ -76,38 +76,35 @@ impl WorkspaceInviteTransport for UdpWorkspaceInviteTransport {
     async fn listen(&self) -> Result<mpsc::Receiver<DecodedWorkspaceInviteMessage>> {
         let (tx, rx) = mpsc::channel(32);
 
-        let socket = UdpSocket::bind(format!("0.0.0.0:{}", WORKSPACE_INVITE_PORT))
-            .await?;
+        let socket = UdpSocket::bind(format!("0.0.0.0:{}", WORKSPACE_INVITE_PORT)).await?;
 
         tokio::spawn(async move {
             let mut buf = vec![0u8; 4096];
             loop {
                 match socket.recv_from(&mut buf).await {
-                    Ok((n, from)) => {
-                        match Self::decode_datagram(&buf[..n]) {
-                            Ok(message) => {
-                                let sender_pubkey = match &message {
-                                    WorkspaceInviteMessage::Invite(p) => p.sender_pubkey,
-                                    WorkspaceInviteMessage::Response(p) => p.responder_pubkey,
-                                    WorkspaceInviteMessage::Cancel(_) => {
-                                        warn!(%from, "received Cancel without pubkey");
-                                        continue;
-                                    }
-                                };
-                                let decoded = DecodedWorkspaceInviteMessage {
-                                    from,
-                                    sender_pubkey,
-                                    message,
-                                };
-                                if tx.send(decoded).await.is_err() {
-                                    break;
+                    Ok((n, from)) => match Self::decode_datagram(&buf[..n]) {
+                        Ok(message) => {
+                            let sender_pubkey = match &message {
+                                WorkspaceInviteMessage::Invite(p) => p.sender_pubkey,
+                                WorkspaceInviteMessage::Response(p) => p.responder_pubkey,
+                                WorkspaceInviteMessage::Cancel(_) => {
+                                    warn!(%from, "received Cancel without pubkey");
+                                    continue;
                                 }
-                            }
-                            Err(e) => {
-                                warn!(%from, ?e, "failed to decode workspace invite");
+                            };
+                            let decoded = DecodedWorkspaceInviteMessage {
+                                from,
+                                sender_pubkey,
+                                message,
+                            };
+                            if tx.send(decoded).await.is_err() {
+                                break;
                             }
                         }
-                    }
+                        Err(e) => {
+                            warn!(%from, ?e, "failed to decode workspace invite");
+                        }
+                    },
                     Err(e) => {
                         warn!(?e, "recv_from error");
                         break;

@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 
 use winx_application::{
     ports::IdentityStore, ClipboardService, ConnectionLabService, DiscoveryService, EnsureDevice,
-    EventBus, InputControlService, PairingService, TransportService,
+    EventBus, InputControlService, PairingService, TransportService, WorkspaceService,
 };
 
 /// Estado compartilhado entre todos os commands (event bus global).
@@ -74,4 +74,9 @@ pub struct LabState {
 /// Estado de configuração de firewall.
 pub struct FirewallState {
     pub is_configured: Arc<Mutex<bool>>,
+}
+
+/// Estado do bounded context Workspace.
+pub struct WorkspaceState {
+    pub service: Arc<WorkspaceService>,
 }

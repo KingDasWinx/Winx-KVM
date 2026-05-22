@@ -22,21 +22,24 @@ use tauri::{
 use tokio::sync::Mutex;
 use tracing::{error, info};
 use winx_application::{
-    ports::{IdentityStore, MonitorBackend, SecretStore, WINX_KVM_PORT},
+    ports::{
+        IdentityStore, MonitorBackend, SecretStore, WorkspaceStore, WINX_KVM_PORT,
+        WORKSPACE_INVITE_PORT,
+    },
     ClipboardService, ConnectionLabService, DiscoveryService, EnsureDevice, InputControlService,
-    PairingService, TransportService,
+    PairingService, TransportService, WorkspaceService,
 };
 use winx_domain::{discovery::DiscoveryRegistry, shared::ids::PeerId};
 use winx_infra::{
     generate_or_load_quic_cert, network_config, network_watcher::NetworkWatcher,
     ArboardClipboardBackend, KeyringSecretStore, MdnsDiscoveryAdapter, QuicTransportAdapter,
-    TomlConfigStore, TomlIdentityStore, UdpPairingTransport, Win32InputBackend,
-    Win32MonitorBackend,
+    TomlConfigStore, TomlIdentityStore, TomlWorkspaceStore, UdpPairingTransport,
+    UdpWorkspaceInviteTransport, Win32InputBackend, Win32MonitorBackend,
 };
 
 use app_state::{
     AppState, ClipboardState, DiscoveryState, IdentityState, InputControlState, LabState,
-    PairingState, TransportState,
+    PairingState, TransportState, WorkspaceState,
 };
 
 /// Toda inicialização async (identity, QUIC, etc.) acontece aqui, dentro do runtime Tokio,
@@ -50,6 +53,7 @@ struct InitializedServices {
     input_control: Arc<InputControlService>,
     connection_lab: Arc<ConnectionLabService>,
     clipboard: Arc<ClipboardService>,
+    workspace: Arc<WorkspaceService>,
     config_store: Arc<TomlConfigStore>,
     device: winx_domain::identity::Device,
 }
@@ -165,6 +169,23 @@ fn init_services(
         app_config.clipboard.auto_sync,
     ));
 
+    let workspace_store: Arc<dyn WorkspaceStore> =
+        Arc::new(TomlWorkspaceStore::new(data_dir.clone()));
+    let workspace_transport = Arc::new(
+        rt.block_on(UdpWorkspaceInviteTransport::bind(WORKSPACE_INVITE_PORT))
+            .map_err(|e| std::io::Error::other(e.to_string()))?,
+    );
+    let discovery_query = Arc::new(winx_infra::MemoryDiscoveryQuery::new());
+    let workspace = Arc::new(WorkspaceService::new(
+        workspace_store,
+        workspace_transport,
+        Arc::clone(&identity_store) as _,
+        discovery_query,
+        device.id.as_uuid(),
+        device.username.clone(),
+        bus.clone(),
+    ));
+
     Ok(InitializedServices {
         ensure_device,
         identity_store: Arc::clone(&identity_store) as Arc<dyn IdentityStore>,
@@ -174,6 +195,7 @@ fn init_services(
         input_control,
         connection_lab,
         clipboard,
+        workspace,
         config_store,
         device,
     })
@@ -299,6 +321,18 @@ pub fn run() {
         pairing_net.run_network_listener().await;
     });
 
+    let workspace_listener = Arc::clone(&services.workspace);
+    rt.spawn(async move {
+        if let Err(err) = workspace_listener.run_invite_listener().await {
+            error!(?err, "falha ao iniciar workspace invite listener");
+        }
+    });
+
+    let workspace_expiration = Arc::clone(&services.workspace);
+    rt.spawn(async move {
+        workspace_expiration.run_expiration_loop().await;
+    });
+
     // Spawnar network watcher task se disponível
     if let Some(net_rx) = net_events_rx {
         let discovery_bg = Arc::clone(&services.discovery);
@@ -347,6 +381,9 @@ pub fn run() {
             });
             app.manage(ClipboardState {
                 clipboard: services.clipboard,
+            });
+            app.manage(WorkspaceState {
+                service: services.workspace,
             });
             app.manage(services.config_store);
             app.manage(app_state::FirewallState {
@@ -428,6 +465,15 @@ pub fn run() {
             commands::get_clipboard_auto_sync,
             commands::set_clipboard_auto_sync,
             commands::enable_clipboard_sync,
+            commands::list_workspaces,
+            commands::create_workspace,
+            commands::invite_to_workspace,
+            commands::accept_invite,
+            commands::reject_invite,
+            commands::connect_to_workspace,
+            commands::disconnect_from_workspace,
+            commands::force_disconnect_and_connect,
+            commands::delete_workspace,
             commands::get_firewall_status,
             commands::reconfigure_firewall,
             commands::export_diagnostics,

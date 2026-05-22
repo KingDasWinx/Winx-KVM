@@ -49,6 +49,14 @@ struct FrontendEvent {
     clipboard_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     clipboard_byte_len: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    invite_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    other_workspace_id: Option<String>,
 }
 
 impl FrontendEvent {
@@ -72,6 +80,10 @@ impl FrontendEvent {
             input_blocked: None,
             clipboard_hash: None,
             clipboard_byte_len: None,
+            workspace_id: None,
+            workspace_name: None,
+            invite_id: None,
+            other_workspace_id: None,
         }
     }
 }
@@ -203,6 +215,52 @@ impl From<&DomainEvent> for FrontendEvent {
                 peer_id: Some(e.from_peer.to_string()),
                 clipboard_hash: Some(content_hash_hex(&e.hash)),
                 ..FrontendEvent::empty("clipboard-received")
+            },
+            // Workspace events
+            DomainEvent::WorkspaceInviteIncoming(e) => FrontendEvent {
+                kind: "workspace-invite-incoming",
+                invite_id: Some(e.invite_id.to_string()),
+                workspace_id: Some(e.workspace_id.to_string()),
+                workspace_name: Some(e.workspace_name.clone()),
+                peer_id: Some(e.sender_device_id.to_string()),
+                peer_username: Some(e.sender_username.clone()),
+                fingerprint: Some(e.sender_fingerprint_hex.clone()),
+                ..FrontendEvent::empty("workspace-invite-incoming")
+            },
+            DomainEvent::WorkspaceConnected(e) => FrontendEvent {
+                kind: "workspace-connected",
+                workspace_id: Some(e.workspace_id.to_string()),
+                ..FrontendEvent::empty("workspace-connected")
+            },
+            DomainEvent::WorkspaceDisconnected(e) => FrontendEvent {
+                kind: "workspace-disconnected",
+                workspace_id: Some(e.workspace_id.to_string()),
+                ..FrontendEvent::empty("workspace-disconnected")
+            },
+            DomainEvent::WorkspaceConnectionConflict(e) => FrontendEvent {
+                kind: "workspace-connection-conflict",
+                workspace_id: Some(e.target_id.to_string()),
+                other_workspace_id: Some(e.active_id.to_string()),
+                ..FrontendEvent::empty("workspace-connection-conflict")
+            },
+            DomainEvent::WorkspaceCreated(_) | DomainEvent::WorkspaceDeleted(_) => FrontendEvent {
+                kind: "workspaces-updated",
+                ..FrontendEvent::empty("workspaces-updated")
+            },
+            DomainEvent::WorkspaceInviteAccepted(e) => FrontendEvent {
+                kind: "workspace-invite-accepted",
+                invite_id: Some(e.invite_id.to_string()),
+                ..FrontendEvent::empty("workspace-invite-accepted")
+            },
+            DomainEvent::WorkspaceInviteRejected(e) => FrontendEvent {
+                kind: "workspace-invite-rejected",
+                invite_id: Some(e.invite_id.to_string()),
+                ..FrontendEvent::empty("workspace-invite-rejected")
+            },
+            DomainEvent::WorkspaceInviteExpired(e) => FrontendEvent {
+                kind: "workspace-invite-expired",
+                invite_id: Some(e.invite_id.to_string()),
+                ..FrontendEvent::empty("workspace-invite-expired")
             },
             _ => FrontendEvent::empty("unknown"),
         }

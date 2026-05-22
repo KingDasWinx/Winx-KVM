@@ -15,6 +15,7 @@ mod lab;
 mod pairing;
 mod settings;
 mod transport;
+mod workspace;
 
 pub use app::*;
 pub use clipboard::*;
@@ -26,3 +27,4 @@ pub use lab::*;
 pub use pairing::*;
 pub use settings::*;
 pub use transport::*;
+pub use workspace::*;

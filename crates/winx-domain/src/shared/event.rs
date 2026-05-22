@@ -16,8 +16,9 @@ use crate::pairing::events::{
 };
 use crate::transport::events::{ConnectionEstablished, ConnectionLost, StatsUpdated};
 use crate::workspace::events::{
-    GlobalCursorMoved, InviteAccepted, InviteExpired, InviteRejected, InviteSent, MemberJoined,
-    MemberLeft, WorkspaceCreated, WorkspaceDeleted, WorkspaceMarkedOrphan, WorkspaceSyncApplied,
+    GlobalCursorMoved, InviteAccepted, InviteExpired, InviteIncoming, InviteRejected, InviteSent,
+    MemberJoined, MemberLeft, WorkspaceConnected, WorkspaceConnectionConflict, WorkspaceCreated,
+    WorkspaceDeleted, WorkspaceDisconnected, WorkspaceMarkedOrphan, WorkspaceSyncApplied,
     WorkspaceSyncDiscarded, WorkspaceUpdated,
 };
 
@@ -62,9 +63,13 @@ pub enum DomainEvent {
     WorkspaceMemberJoined(MemberJoined),
     WorkspaceMemberLeft(MemberLeft),
     WorkspaceInviteSent(InviteSent),
+    WorkspaceInviteIncoming(InviteIncoming),
     WorkspaceInviteAccepted(InviteAccepted),
     WorkspaceInviteRejected(InviteRejected),
     WorkspaceInviteExpired(InviteExpired),
+    WorkspaceConnected(WorkspaceConnected),
+    WorkspaceDisconnected(WorkspaceDisconnected),
+    WorkspaceConnectionConflict(WorkspaceConnectionConflict),
     WorkspaceGlobalCursorMoved(GlobalCursorMoved),
     WorkspaceMarkedOrphan(WorkspaceMarkedOrphan),
     WorkspaceSyncApplied(WorkspaceSyncApplied),

@@ -7,6 +7,7 @@
 
 pub mod clipboard;
 pub mod discovery;
+pub mod discovery_query;
 pub mod identity;
 pub mod input;
 pub mod monitor;
@@ -18,6 +19,7 @@ pub mod workspace_transport;
 
 pub use clipboard::{ClipboardBackend, ClipboardWatcherHandle};
 pub use discovery::{AnnounceInfo, DiscoveryAdapter, DiscoveryEvent, WINX_KVM_PORT};
+pub use discovery_query::DiscoveryQuery;
 pub use identity::{IdentityStore, SecretStore};
 pub use input::{CaptureHandle, InputBackend};
 pub use monitor::MonitorBackend;

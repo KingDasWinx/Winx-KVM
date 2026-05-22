@@ -57,6 +57,17 @@ pub struct InviteSent {
     pub target_device_id: DeviceId,
 }
 
+/// Invite foi recebido (do lado do receptor).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InviteIncoming {
+    pub invite_id: crate::workspace::InviteId,
+    pub workspace_id: WorkspaceId,
+    pub workspace_name: String,
+    pub sender_device_id: DeviceId,
+    pub sender_username: String,
+    pub sender_fingerprint_hex: String,
+}
+
 /// Invite foi aceito.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InviteAccepted {
@@ -105,4 +116,23 @@ pub struct WorkspaceSyncDiscarded {
     pub workspace_id: WorkspaceId,
     pub local_version: u64,
     pub incoming_version: u64,
+}
+
+/// Device se conectou a um workspace.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceConnected {
+    pub workspace_id: WorkspaceId,
+}
+
+/// Device se desconectou de um workspace.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceDisconnected {
+    pub workspace_id: WorkspaceId,
+}
+
+/// Tentativa de conexão com conflito (já conectado em outro workspace).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceConnectionConflict {
+    pub active_id: WorkspaceId,
+    pub target_id: WorkspaceId,
 }
