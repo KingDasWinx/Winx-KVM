@@ -67,11 +67,7 @@ pub async fn submit_pin(
 ) -> Result<(), String> {
     let sid = parse_session_id(&session_id)?;
     let _ = (peer_public_key_hex, peer_username);
-    state
-        .pairing
-        .submit_pin(sid, &pin)
-        .await
-        .map_err(map_err)
+    state.pairing.submit_pin(sid, &pin).await.map_err(map_err)
 }
 
 #[tauri::command]

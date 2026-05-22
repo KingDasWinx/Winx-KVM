@@ -7,10 +7,11 @@ use tokio::sync::{Mutex, Notify};
 use tracing::{debug, error, info, warn};
 use winx_domain::{
     input_control::{
-        apply_focus_target, events::{FocusSwitched, HotkeyTriggered, InputBlocked},
+        apply_focus_target,
+        events::{FocusSwitched, HotkeyTriggered, InputBlocked},
         should_return_to_local, should_switch_to_remote, toggle_lock_mode, EdgeDetectInput,
-        FocusState, FocusTarget, HotkeyAction, InputEvent, MonitorLayout,
-        MOUSE_COALESCE_FLUSH_MS, MOUSE_SEND_MIN_MANHATTAN,
+        FocusState, FocusTarget, HotkeyAction, InputEvent, MonitorLayout, MOUSE_COALESCE_FLUSH_MS,
+        MOUSE_SEND_MIN_MANHATTAN,
     },
     shared::{ids::PeerId, DomainErrorCode},
     DomainError, DomainEvent,
@@ -181,11 +182,7 @@ impl InputControlService {
         let seconds_left = if active {
             let guard = self.mirror_deadline.lock().await;
             guard
-                .map(|deadline| {
-                    deadline
-                        .saturating_duration_since(Instant::now())
-                        .as_secs()
-                })
+                .map(|deadline| deadline.saturating_duration_since(Instant::now()).as_secs())
                 .unwrap_or(0)
         } else {
             0
@@ -323,7 +320,7 @@ impl InputControlService {
         let service_active = Arc::clone(&self.active_peer);
         let service_self_input = Arc::clone(&self.input);
         let service_enabled = Arc::clone(&self.enabled);
-                let service_remote_dx = Arc::clone(&self.remote_cursor_x_est);
+        let service_remote_dx = Arc::clone(&self.remote_cursor_x_est);
         let service_mirror = Arc::clone(&self.keyboard_mirror);
         let service_mirror_keys = Arc::clone(&self.mirror_keys_sent);
         let service_mirror_hooked = Arc::clone(&self.mirror_keys_hooked);
@@ -405,24 +402,20 @@ impl InputControlService {
         let input_tx_hk = Arc::clone(&self.input_tx);
 
         self.input
-            .start_capture(
-                Box::new(on_event),
-                {
-                    let runtime = runtime.clone();
-                    Box::new(move |action| {
-                        let focus = focus_hk.clone();
-                        let layout = layout_hk.clone();
-                        let input = input_hk.clone();
-                        let bus = bus_hk.clone();
-                        let active = active_hk.clone();
-                        let input_tx = input_tx_hk.clone();
-                        runtime.spawn(async move {
-                            handle_hotkey(action, focus, layout, input, bus, active, input_tx)
-                                .await;
-                        });
-                    })
-                },
-            )
+            .start_capture(Box::new(on_event), {
+                let runtime = runtime.clone();
+                Box::new(move |action| {
+                    let focus = focus_hk.clone();
+                    let layout = layout_hk.clone();
+                    let input = input_hk.clone();
+                    let bus = bus_hk.clone();
+                    let active = active_hk.clone();
+                    let input_tx = input_tx_hk.clone();
+                    runtime.spawn(async move {
+                        handle_hotkey(action, focus, layout, input, bus, active, input_tx).await;
+                    });
+                })
+            })
             .await
             .map_err(|e| internal_err(&e.to_string()))?;
 
@@ -599,9 +592,10 @@ async fn panic_local(
     .await;
     if let Some(layout) = layout_warp.lock().await.as_ref() {
         let x = layout.local_right_edge_x().saturating_sub(8);
-        let y = layout.local_monitors.first().map_or(540, |m| {
-            m.y + i32::try_from(m.height).unwrap_or(1080) / 2
-        });
+        let y = layout
+            .local_monitors
+            .first()
+            .map_or(540, |m| m.y + i32::try_from(m.height).unwrap_or(1080) / 2);
         if input_warp.warp_cursor(x, y).await.is_err() {
             warn!("falha ao reposicionar cursor no panic local");
         }
@@ -632,9 +626,10 @@ async fn force_local_reset(
 
     if let Some(layout) = layout.lock().await.as_ref() {
         let x = layout.local_right_edge_x().saturating_sub(8);
-        let y = layout.local_monitors.first().map_or(540, |m| {
-            m.y + i32::try_from(m.height).unwrap_or(1080) / 2
-        });
+        let y = layout
+            .local_monitors
+            .first()
+            .map_or(540, |m| m.y + i32::try_from(m.height).unwrap_or(1080) / 2);
         let _ = input.warp_cursor(x, y).await;
     }
 
@@ -714,27 +709,27 @@ async fn handle_local_input(
                     Ok(bytes) => {
                         let bytes_len = bytes.len();
                         match tx.send(bytes).await {
-                        Ok(()) => {
-                            mirror_keys_sent.fetch_add(1, Ordering::SeqCst);
-                            debug!(
-                                target: "winx::input::mirror",
-                                seq = n,
-                                ?code,
-                                pressed,
-                                bytes_len,
-                                "tecla espelhada enviada"
-                            );
+                            Ok(()) => {
+                                mirror_keys_sent.fetch_add(1, Ordering::SeqCst);
+                                debug!(
+                                    target: "winx::input::mirror",
+                                    seq = n,
+                                    ?code,
+                                    pressed,
+                                    bytes_len,
+                                    "tecla espelhada enviada"
+                                );
+                            }
+                            Err(_) => {
+                                mirror_keys_send_errors.fetch_add(1, Ordering::SeqCst);
+                                warn!(
+                                    target: "winx::input::mirror",
+                                    seq = n,
+                                    "falha ao enviar tecla no stream Input"
+                                );
+                            }
                         }
-                        Err(_) => {
-                            mirror_keys_send_errors.fetch_add(1, Ordering::SeqCst);
-                            warn!(
-                                target: "winx::input::mirror",
-                                seq = n,
-                                "falha ao enviar tecla no stream Input"
-                            );
-                        }
-                        }
-                    },
+                    }
                     Err(err) => {
                         mirror_keys_send_errors.fetch_add(1, Ordering::SeqCst);
                         warn!(target: "winx::input::mirror", ?err, "falha ao codificar tecla");
@@ -754,9 +749,7 @@ async fn handle_local_input(
         FocusTarget::Local => {
             input.set_pass_through(true);
             if let InputEvent::MouseMove {
-                screen_x,
-                screen_y,
-                ..
+                screen_x, screen_y, ..
             } = ev
             {
                 if ev.is_noop_mouse_move() {
@@ -773,8 +766,18 @@ async fn handle_local_input(
                         layout_data,
                     ) {
                         drop(layout_guard);
-                        try_edge_switch(screen_x, screen_y, focus, layout, input, bus, active, input_tx, Arc::clone(&remote_cursor_x_est))
-                            .await;
+                        try_edge_switch(
+                            screen_x,
+                            screen_y,
+                            focus,
+                            layout,
+                            input,
+                            bus,
+                            active,
+                            input_tx,
+                            Arc::clone(&remote_cursor_x_est),
+                        )
+                        .await;
                     }
                 }
             }
@@ -883,16 +886,20 @@ async fn try_edge_switch(
     }
 
     let edge_x = layout_data.local_exit_edge_coord();
-    let primary = layout_data.local_monitors.first().copied().unwrap_or_else(|| {
-        use winx_domain::input_control::MonitorRect;
-        MonitorRect {
-            id: winx_domain::input_control::MonitorId(0),
-            x: 0,
-            y: 0,
-            width: 1920,
-            height: 1080,
-        }
-    });
+    let primary = layout_data
+        .local_monitors
+        .first()
+        .copied()
+        .unwrap_or_else(|| {
+            use winx_domain::input_control::MonitorRect;
+            MonitorRect {
+                id: winx_domain::input_control::MonitorId(0),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            }
+        });
 
     // Ponto de entrada no monitor remoto (Y proporcional preservado)
     let remote_entry = layout_data.map_crossing_point(screen_x, screen_y);
@@ -938,7 +945,10 @@ async fn try_edge_switch(
 
     // 3. Enviar warp absoluto como primeiro frame para posicionar cursor no receiver
     if let Some(tx) = input_tx.lock().await.as_ref() {
-        let warp_ev = InputEvent::MouseWarpAbsolute { x: remote_entry.0, y: remote_entry.1 };
+        let warp_ev = InputEvent::MouseWarpAbsolute {
+            x: remote_entry.0,
+            y: remote_entry.1,
+        };
         let n = 0u64; // seq não importa para warp inicial; será sobrescrito pelo flush normal
         if let Ok(bytes) = encode_input_payload(n, &warp_ev) {
             if tx.send(bytes).await.is_err() {
@@ -966,37 +976,36 @@ async fn try_switch_back_to_local(
     };
 
     let edge_x = layout_data.local_right_edge_x();
-    let primary = layout_data.local_monitors.first().copied().unwrap_or_else(|| {
-        use winx_domain::input_control::MonitorRect;
-        MonitorRect {
-            id: winx_domain::input_control::MonitorId(0),
-            x: 0,
-            y: 0,
-            width: 1920,
-            height: 1080,
-        }
-    });
+    let primary = layout_data
+        .local_monitors
+        .first()
+        .copied()
+        .unwrap_or_else(|| {
+            use winx_domain::input_control::MonitorRect;
+            MonitorRect {
+                id: winx_domain::input_control::MonitorId(0),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            }
+        });
     let primary_center_x = primary.x + i32::try_from(primary.width).unwrap_or(1920) / 2;
     let primary_center_y = primary.y + i32::try_from(primary.height).unwrap_or(1080) / 2;
 
     drop(layout_guard);
 
-    if let Err(err) = input.transition_to_local(edge_x, primary_center_x, primary_center_y).await {
+    if let Err(err) = input
+        .transition_to_local(edge_x, primary_center_x, primary_center_y)
+        .await
+    {
         warn!(?err, "falha ao retornar para local via borda esquerda");
         return;
     }
 
     info!("voltando para foco local via borda esquerda acumulada");
 
-    switch_focus(
-        FocusTarget::Local,
-        current,
-        focus,
-        layout,
-        input,
-        bus,
-    )
-    .await;
+    switch_focus(FocusTarget::Local, current, focus, layout, input, bus).await;
 }
 
 async fn switch_focus(

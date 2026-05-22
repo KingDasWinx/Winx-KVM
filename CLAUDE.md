@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-**Planejamento.** Nenhum código ainda — apenas docs. Antes de codificar, leia [README.md](README.md) (visão, arquitetura, decisões) e [docs/PLANNING.md](docs/PLANNING.md) (backlog do MVP, sprints, riscos). **Usuário se comunica em português brasileiro** (mantenha docs e respostas em pt-BR), mas a **UI do app é em inglês como padrão**, com pt-BR como tradução completa (i18n via `react-i18next` desde o sprint 1).
+**Implementação ativa.** Sprints 1–9 do MVP (v0.1) concluídos exceto F9.3 (smoke test em VM limpa).
+Sprint W1–W4 da feature **Workspaces** documentado em [Workspace-TODO.md](Workspace-TODO.md), aguardando início.
+Leia [README.md](README.md) (visão, arquitetura, decisões) e [docs/PLANNING.md](docs/PLANNING.md) (backlog).
+
+**Usuário se comunica em português brasileiro** (mantenha docs e respostas em pt-BR), mas a **UI do app é em inglês como padrão**, com pt-BR como tradução completa (i18n via `react-i18next`).
 
 ## Stack travada
 
@@ -44,6 +48,10 @@ ui/                      React + Vite (build vai para ../crates/winx-kvm/dist)
 
 **Streams QUIC tipados**: `Control` (handshake, focus, heartbeat) | `Input` (mouse/keyboard) | `Audio` (Opus datagrams) | `Data` (clipboard, files, 1 stream por transfer).
 
+**Estado Tauri**: `AppState` global só carrega o `EventBus`. Cada bounded context tem sua struct própria (`IdentityState`, `DiscoveryState`, `PairingState`, etc.) registrada via `app.manage()` no `setup()`. Isso mantém acoplamento zero — commands de um context não veem os ports de outro.
+
+**Commands são thin**: handlers em `winx-kvm/src/commands/` apenas chamam o use case correspondente e mapeiam o resultado para DTO. Erros viajam como `DomainErrorCode` (string estável) pra ser traduzido no frontend via i18n.
+
 ## Comandos de desenvolvimento
 
 Quando o workspace estiver scaffold (sprint 1 ainda não rodou):
@@ -81,7 +89,8 @@ Shell padrão do usuário é **PowerShell** no Windows. Em scripts, use sintaxe 
 - **Trust persistente**: após pareamento, peer fica em `peers.toml` com public key Ed25519. Não exigir PIN de novo. Revogação manual via UI ("Esquecer dispositivo").
 - **Foco mutado por um único Mutex**: toda mudança de `FocusState` passa por `tokio::sync::Mutex` em `input_control` para evitar race entre captura local e injeção remota.
 - **Hotkeys reservadas**: `Ctrl+Alt+Home` (pânico, força foco local) e `Scroll Lock` (lock no PC atual). Configuráveis em `config.toml` mas defaults invioláveis na UI.
-- **i18n obrigatório**: nenhuma string de UI hard-coded. Sempre `const { t } = useTranslation('namespace'); t('key')`. Adicione a chave em `ui/src/i18n/locales/en/<namespace>.json` (fonte da verdade) e em `pt-BR/<namespace>.json`. CI deve falhar se houver chave faltando em alguma locale (lint custom).
+- **i18n obrigatório**: nenhuma string de UI hard-coded. Sempre `const { t } = useTranslation('namespace'); t('key')`. Namespaces atuais: `common`, `settings`, `lab` (Workspace-TODO.md adicionará `workspace`). Adicione a chave em `ui/src/i18n/locales/en/<namespace>.json` (fonte da verdade) e em `pt-BR/<namespace>.json`. CI deve falhar se houver chave faltando em alguma locale (lint custom).
+- **Lab page** (`ui/src/pages/LabPage.tsx` + `crates/winx-kvm/src/commands/lab.rs`): playground de diagnóstico (connectivity suite, keyboard mirror, input debug). Use ele pra testar mudanças no transport/input antes de exercitar pelo fluxo real.
 - **Commits**: Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`).
 - **Branches**: trunk-based; `main` sempre verde; `feature/<nome>` curta (< 1 semana).
 

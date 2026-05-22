@@ -30,7 +30,8 @@ use winx_domain::{discovery::DiscoveryRegistry, shared::ids::PeerId};
 use winx_infra::{
     generate_or_load_quic_cert, network_config, network_watcher::NetworkWatcher,
     ArboardClipboardBackend, KeyringSecretStore, MdnsDiscoveryAdapter, QuicTransportAdapter,
-    TomlConfigStore, TomlIdentityStore, UdpPairingTransport, Win32InputBackend, Win32MonitorBackend,
+    TomlConfigStore, TomlIdentityStore, UdpPairingTransport, Win32InputBackend,
+    Win32MonitorBackend,
 };
 
 use app_state::{

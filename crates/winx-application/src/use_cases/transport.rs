@@ -4,7 +4,10 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 use winx_domain::{
     discovery::DiscoveryRegistry,
-    shared::{ids::{PeerId, SessionId}, DomainErrorCode},
+    shared::{
+        ids::{PeerId, SessionId},
+        DomainErrorCode,
+    },
     transport::{
         events::{ConnectionEstablished, ConnectionLost, StatsUpdated},
         Connection, ConnectionStats, StreamKind,
@@ -65,7 +68,15 @@ impl TransportService {
 
         tokio::spawn(async move {
             while let Some(conn) = incoming.recv().await {
-                if let Err(err) = handle_incoming(conn, &connections, &identity_store, &bus, &adapter, &inbound_streams).await
+                if let Err(err) = handle_incoming(
+                    conn,
+                    &connections,
+                    &identity_store,
+                    &bus,
+                    &adapter,
+                    &inbound_streams,
+                )
+                .await
                 {
                     warn!(?err, "falha ao aceitar conexão entrante");
                 }
@@ -202,10 +213,7 @@ impl TransportService {
         peer_id: PeerId,
         kind: StreamKind,
     ) -> Option<(StreamSender, StreamReceiver)> {
-        self.inbound_streams
-            .lock()
-            .await
-            .remove(&(peer_id, kind))
+        self.inbound_streams.lock().await.remove(&(peer_id, kind))
     }
 
     /// `true` se este device iniciou o handshake QUIC (`connect_peer`).
@@ -259,7 +267,10 @@ impl TransportService {
             .map_err(|e| internal_err(&e.to_string()))
     }
 
-    pub async fn probe_control_heartbeat_for_peer(&self, peer_id: PeerId) -> Result<u32, DomainError> {
+    pub async fn probe_control_heartbeat_for_peer(
+        &self,
+        peer_id: PeerId,
+    ) -> Result<u32, DomainError> {
         let conn_id = {
             let conns = self.connections.lock().await;
             let conn = conns.get(&peer_id).ok_or_else(|| {
@@ -278,11 +289,7 @@ impl TransportService {
     }
 
     pub async fn connection_id_for_peer(&self, peer_id: PeerId) -> Option<SessionId> {
-        self.connections
-            .lock()
-            .await
-            .get(&peer_id)
-            .map(|c| c.id)
+        self.connections.lock().await.get(&peer_id).map(|c| c.id)
     }
 
     pub async fn list_connections(&self) -> Vec<(PeerId, winx_domain::transport::ConnectionState)> {
@@ -306,7 +313,12 @@ impl TransportService {
             .lock()
             .await
             .iter()
-            .filter(|(_, c)| !matches!(c.state, winx_domain::transport::ConnectionState::Disconnected))
+            .filter(|(_, c)| {
+                !matches!(
+                    c.state,
+                    winx_domain::transport::ConnectionState::Disconnected
+                )
+            })
             .map(|(id, c)| (*id, c.state.clone(), c.stats))
             .collect()
     }
@@ -512,9 +524,7 @@ async fn handle_incoming(
         ) {
             let duplicate_id = incoming.conn_id;
             drop(conns);
-            adapter
-                .close(duplicate_id, "duplicate connection")
-                .await?;
+            adapter.close(duplicate_id, "duplicate connection").await?;
             info!(%peer_id, "conexão entrante duplicada rejeitada");
             return Ok(());
         }
@@ -558,9 +568,7 @@ impl TransportService {
         peer_id: PeerId,
     ) -> Option<(winx_domain::shared::ids::SessionId, bool)> {
         let conns = self.connections.lock().await;
-        conns
-            .get(&peer_id)
-            .map(|c| (c.id, c.is_outbound))
+        conns.get(&peer_id).map(|c| (c.id, c.is_outbound))
     }
 
     fn test_connections(&self) -> Arc<Mutex<HashMap<PeerId, Connection>>> {
@@ -749,12 +757,8 @@ mod tests {
         let registry = Arc::new(Mutex::new(DiscoveryRegistry::new()));
         seed_discovered(&registry, peer_id).await;
 
-        let service = TransportService::new(
-            Arc::clone(&adapter),
-            Arc::clone(&identity),
-            registry,
-            bus,
-        );
+        let service =
+            TransportService::new(Arc::clone(&adapter), Arc::clone(&identity), registry, bus);
         service.connect_peer(peer_id).await.unwrap();
 
         let (outbound_id, is_outbound) = service.test_conn_snapshot(peer_id).await.unwrap();

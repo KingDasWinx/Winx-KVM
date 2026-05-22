@@ -102,7 +102,10 @@ pub fn encode_pairing_datagram(
     let mut out = Vec::with_capacity(10 + body.len() + sig_len);
     out.extend_from_slice(&PAIRING_MAGIC);
     out.extend_from_slice(&PAIRING_PROTOCOL_VERSION.to_le_bytes());
-    out.extend_from_slice(&(u32::try_from(body.len()).map_err(|_| PairingProtocolError::InvalidBodyLength)?).to_le_bytes());
+    out.extend_from_slice(
+        &(u32::try_from(body.len()).map_err(|_| PairingProtocolError::InvalidBodyLength)?)
+            .to_le_bytes(),
+    );
     out.extend_from_slice(&body);
     if let Some(sig) = signature {
         out.extend_from_slice(sig);
@@ -111,7 +114,9 @@ pub fn encode_pairing_datagram(
 }
 
 /// Retorna `(mensagem, assinatura opcional)`.
-pub fn decode_pairing_datagram(bytes: &[u8]) -> Result<(PairingMessage, Option<[u8; 64]>), PairingProtocolError> {
+pub fn decode_pairing_datagram(
+    bytes: &[u8],
+) -> Result<(PairingMessage, Option<[u8; 64]>), PairingProtocolError> {
     if bytes.len() < 10 {
         return Err(PairingProtocolError::TooShort);
     }
@@ -193,8 +198,14 @@ mod tests {
     #[test]
     fn pin_commitment_is_deterministic() {
         let sid = Uuid::new_v4();
-        assert_eq!(pin_commitment(&sid, "042819"), pin_commitment(&sid, "042819"));
-        assert_ne!(pin_commitment(&sid, "042819"), pin_commitment(&sid, "042820"));
+        assert_eq!(
+            pin_commitment(&sid, "042819"),
+            pin_commitment(&sid, "042819")
+        );
+        assert_ne!(
+            pin_commitment(&sid, "042819"),
+            pin_commitment(&sid, "042820")
+        );
     }
 
     #[test]

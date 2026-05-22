@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    net::SocketAddr,
-    sync::Arc,
-};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
@@ -12,9 +8,7 @@ use winx_domain::{
     discovery::DiscoveryRegistry,
     identity::{PublicKey, TrustedPeer},
     pairing::{
-        events::{
-            PairingCancelled, PairingCompleted, PairingFailed, PairingIncoming,
-        },
+        events::{PairingCancelled, PairingCompleted, PairingFailed, PairingIncoming},
         PairingRole, PairingSession,
     },
     shared::{
@@ -292,14 +286,10 @@ impl PairingService {
             }
         }
 
-        let initiator_fingerprint =
-            PublicKey::new(req.initiator_pubkey).fingerprint().to_string();
-        if let Some(discovered) = self
-            .discovery_registry
-            .lock()
-            .await
-            .get(initiator_peer_id)
-        {
+        let initiator_fingerprint = PublicKey::new(req.initiator_pubkey)
+            .fingerprint()
+            .to_string();
+        if let Some(discovered) = self.discovery_registry.lock().await.get(initiator_peer_id) {
             if discovered.fingerprint != initiator_fingerprint {
                 warn!(
                     %initiator_peer_id,
@@ -325,10 +315,7 @@ impl PairingService {
             .await
             .insert(session_id, secret);
         self.sessions.lock().await.insert(session_id, session);
-        self.peer_addrs
-            .lock()
-            .await
-            .insert(session_id, from_addr);
+        self.peer_addrs.lock().await.insert(session_id, from_addr);
         self.remote_usernames
             .lock()
             .await
@@ -419,11 +406,7 @@ impl PairingService {
             confirmer_peer_id: self.local_peer_id.as_uuid(),
         });
         self.transport
-            .send_to(
-                pairing_socket_addr(from_addr),
-                &confirm,
-                Some(&signing_key),
-            )
+            .send_to(pairing_socket_addr(from_addr), &confirm, Some(&signing_key))
             .await
             .map_err(|e| DomainError::new(DomainErrorCode::InternalError, e.to_string()))?;
 
@@ -538,12 +521,11 @@ impl PairingService {
             self.ephemeral_secrets.lock().await.remove(&session_id);
             self.peer_addrs.lock().await.remove(&session_id);
             self.remote_usernames.lock().await.remove(&session_id);
-            self.bus
-                .publish(DomainEvent::PairingFailed(PairingFailed {
-                    session_id,
-                    peer_id,
-                    reason: DomainErrorCode::PairingPinExpired,
-                }));
+            self.bus.publish(DomainEvent::PairingFailed(PairingFailed {
+                session_id,
+                peer_id,
+                reason: DomainErrorCode::PairingPinExpired,
+            }));
         }
         Ok(())
     }
@@ -575,10 +557,7 @@ impl PairingService {
             .await
             .map_err(|e| DomainError::new(DomainErrorCode::InternalError, e.to_string()))?
             .ok_or_else(|| {
-                DomainError::new(
-                    DomainErrorCode::InternalError,
-                    "signing key não encontrada",
-                )
+                DomainError::new(DomainErrorCode::InternalError, "signing key não encontrada")
             })?;
         Ok(SigningKey::from_bytes(&bytes))
     }
@@ -628,9 +607,11 @@ fn verify_message_signature(
     pubkey_bytes: &[u8; 32],
     signature_bytes: &[u8; 64],
 ) -> Result<(), DomainError> {
-    let body = winx_protocol::encode_pairing_body(msg).map_err(|e: winx_protocol::PairingProtocolError| {
-        DomainError::new(DomainErrorCode::InternalError, e.to_string())
-    })?;
+    let body = winx_protocol::encode_pairing_body(msg).map_err(
+        |e: winx_protocol::PairingProtocolError| {
+            DomainError::new(DomainErrorCode::InternalError, e.to_string())
+        },
+    )?;
     let vk = VerifyingKey::from_bytes(pubkey_bytes).map_err(|e| {
         DomainError::new(
             DomainErrorCode::InternalError,

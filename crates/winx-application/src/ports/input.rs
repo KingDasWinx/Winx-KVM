@@ -59,7 +59,12 @@ pub trait InputBackend: Send + Sync + 'static {
 
     /// Transição segura para estado local (Release + Restore + Warp + PASS_THROUGH).
     /// Sequência: Clip(None) → Restore → Warp(afastado) → PASS_THROUGH=true
-    async fn transition_to_local(&self, edge_x: i32, primary_center_x: i32, primary_center_y: i32) -> anyhow::Result<()> {
+    async fn transition_to_local(
+        &self,
+        edge_x: i32,
+        primary_center_x: i32,
+        primary_center_y: i32,
+    ) -> anyhow::Result<()> {
         // 1. Liberar confinamento primeiro
         self.set_cursor_clipped(None).await?;
         // 2. Restaurar cursor visual

@@ -19,17 +19,15 @@ use async_trait::async_trait;
 use crossbeam_channel::{Receiver, Sender};
 use tracing::{debug, error, info, warn};
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM, GetLastError, HINSTANCE, POINT};
+use windows::Win32::Foundation::{GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
-    KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_EXTENDEDKEY,
-    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
-    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT, VK_HOME, VK_SCROLL, VK_END,
-    VK_CONTROL, VK_LCONTROL, VK_RCONTROL, VK_MENU, VK_LMENU, VK_RMENU,
-    MapVirtualKeyW, MAPVK_VK_TO_VSC_EX, MOUSEEVENTF_ABSOLUTE,
-    RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
+    MapVirtualKeyW, RegisterHotKey, SendInput, UnregisterHotKey, INPUT, INPUT_0, INPUT_KEYBOARD,
+    INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE,
+    MAPVK_VK_TO_VSC_EX, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOUSEEVENTF_ABSOLUTE,
+    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
+    MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT,
+    VK_CONTROL, VK_END, VK_HOME, VK_LCONTROL, VK_LMENU, VK_MENU, VK_RCONTROL, VK_RMENU, VK_SCROLL,
 };
 use windows::Win32::UI::Input::{
     GetRawInputData, RegisterRawInputDevices, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER, RAWMOUSE,
@@ -39,11 +37,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, ClipCursor, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
     GetMessageW, GetSystemMetrics, PeekMessageW, RegisterClassW, SetCursorPos, SetForegroundWindow,
     SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, UnregisterClassW, WaitMessage,
-    WindowFromPoint, CS_HREDRAW, CS_VREDRAW, HHOOK,
-    KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, PM_REMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_INPUT,
-    WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_MOUSEMOVE, WM_QUIT, WM_HOTKEY,
-    LLMHF_INJECTED, LLKHF_INJECTED, SM_CXSCREEN, SM_CYSCREEN, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WNDCLASSW,
+    WindowFromPoint, CS_HREDRAW, CS_VREDRAW, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED,
+    LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN, WH_KEYBOARD_LL,
+    WH_MOUSE_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_HOTKEY, WM_INPUT, WM_KEYDOWN, WM_KEYUP,
+    WM_MOUSEMOVE, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_POPUP,
 };
 use winx_application::ports::{CaptureHandle, InputBackend};
 use winx_domain::input_control::{
@@ -61,7 +59,6 @@ pub const KVM_SIGNATURE: usize = 0xDEAD_C0DE;
 pub const fn kb_hook_flags_is_injected(flags: u32) -> bool {
     (flags & LLKHF_INJECTED.0 as u32) != 0
 }
-
 
 static PASS_THROUGH: AtomicBool = AtomicBool::new(true);
 static HOOK_TX: OnceLock<Sender<HookMsg>> = OnceLock::new();
@@ -448,39 +445,40 @@ impl InputBackend for Win32InputBackend {
     }
 
     async fn warp_cursor_signed(&self, x: i32, y: i32) -> anyhow::Result<()> {
-        tokio::task::spawn_blocking(move || {
-            unsafe {
-                let screen_width = GetSystemMetrics(SM_CXSCREEN);
-                let screen_height = GetSystemMetrics(SM_CYSCREEN);
+        tokio::task::spawn_blocking(move || unsafe {
+            let screen_width = GetSystemMetrics(SM_CXSCREEN);
+            let screen_height = GetSystemMetrics(SM_CYSCREEN);
 
-                if screen_width == 0 || screen_height == 0 {
-                    anyhow::bail!("Dimensões de monitor inválidas");
-                }
-
-                let norm_x = ((x as i64) * 65535 / (screen_width as i64)) as i32;
-                let norm_y = ((y as i64) * 65535 / (screen_height as i64)) as i32;
-
-                let input_packet = INPUT {
-                    r#type: INPUT_MOUSE,
-                    Anonymous: INPUT_0 {
-                        mi: MOUSEINPUT {
-                            dx: norm_x,
-                            dy: norm_y,
-                            mouseData: 0,
-                            dwFlags: MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE,
-                            time: 0,
-                            dwExtraInfo: KVM_SIGNATURE,
-                        },
-                    },
-                };
-
-                let executed = SendInput(&[input_packet], std::mem::size_of::<INPUT>() as i32);
-                if executed != 1 {
-                    anyhow::bail!("SendInput assinado falhou: {}", executed);
-                }
-                info!(x, y, norm_x, norm_y, "teleporte de cursor assinado executado");
-                Ok(())
+            if screen_width == 0 || screen_height == 0 {
+                anyhow::bail!("Dimensões de monitor inválidas");
             }
+
+            let norm_x = ((x as i64) * 65535 / (screen_width as i64)) as i32;
+            let norm_y = ((y as i64) * 65535 / (screen_height as i64)) as i32;
+
+            let input_packet = INPUT {
+                r#type: INPUT_MOUSE,
+                Anonymous: INPUT_0 {
+                    mi: MOUSEINPUT {
+                        dx: norm_x,
+                        dy: norm_y,
+                        mouseData: 0,
+                        dwFlags: MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE,
+                        time: 0,
+                        dwExtraInfo: KVM_SIGNATURE,
+                    },
+                },
+            };
+
+            let executed = SendInput(&[input_packet], std::mem::size_of::<INPUT>() as i32);
+            if executed != 1 {
+                anyhow::bail!("SendInput assinado falhou: {}", executed);
+            }
+            info!(
+                x,
+                y, norm_x, norm_y, "teleporte de cursor assinado executado"
+            );
+            Ok(())
         })
         .await?
     }
@@ -491,7 +489,11 @@ fn send_inputs(inputs: &[INPUT]) -> anyhow::Result<()> {
     let sent = unsafe { SendInput(inputs, std::mem::size_of::<INPUT>() as i32) };
     if sent != inputs.len() as u32 {
         let err = unsafe { GetLastError() };
-        anyhow::bail!("SendInput enviou {sent}/{} last_err={:#x}", inputs.len(), err.0);
+        anyhow::bail!(
+            "SendInput enviou {sent}/{} last_err={:#x}",
+            inputs.len(),
+            err.0
+        );
     }
     Ok(())
 }
@@ -567,10 +569,14 @@ fn inject_event(event: InputEvent) -> anyhow::Result<()> {
             pressed,
             modifiers: _,
         } => {
-            use windows::Win32::UI::Input::KeyboardAndMouse::{VIRTUAL_KEY, KEYBD_EVENT_FLAGS};
+            use windows::Win32::UI::Input::KeyboardAndMouse::{KEYBD_EVENT_FLAGS, VIRTUAL_KEY};
             let vk = portable_to_vk(code);
             let scan_full = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC_EX) };
-            let mut flags = if scan_full != 0 { KEYEVENTF_SCANCODE } else { KEYBD_EVENT_FLAGS(0) };
+            let mut flags = if scan_full != 0 {
+                KEYEVENTF_SCANCODE
+            } else {
+                KEYBD_EVENT_FLAGS(0)
+            };
             let extended = scan_full & 0xE000 != 0;
             if extended {
                 flags |= KEYEVENTF_EXTENDEDKEY;
@@ -584,7 +590,11 @@ fn inject_event(event: InputEvent) -> anyhow::Result<()> {
                 r#type: INPUT_KEYBOARD,
                 Anonymous: INPUT_0 {
                     ki: KEYBDINPUT {
-                        wVk: if scan_full == 0 { VIRTUAL_KEY(vk as u16) } else { VIRTUAL_KEY(0) },
+                        wVk: if scan_full == 0 {
+                            VIRTUAL_KEY(vk as u16)
+                        } else {
+                            VIRTUAL_KEY(0)
+                        },
                         wScan: scan_byte,
                         dwFlags: flags,
                         dwExtraInfo: KVM_SIGNATURE,
@@ -746,9 +756,7 @@ fn dispatch_raw_mouse_input(hook_tx: &Sender<HookMsg>, lparam: LPARAM) {
 }
 
 fn hook_thread_main(hook_tx: Sender<HookMsg>) {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_hook_loop(&hook_tx)
-    }));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_hook_loop(&hook_tx)));
 
     release_cursor_trap_sync();
     unsafe {
@@ -959,7 +967,10 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
         }
         // Rastrear modificadores
         match vk {
-            v if v == VK_LCONTROL.0 as u32 || v == VK_RCONTROL.0 as u32 || v == VK_CONTROL.0 as u32 => {
+            v if v == VK_LCONTROL.0 as u32
+                || v == VK_RCONTROL.0 as u32
+                || v == VK_CONTROL.0 as u32 =>
+            {
                 CTRL_DOWN.store(down, Ordering::SeqCst);
             }
             v if v == VK_LMENU.0 as u32 || v == VK_RMENU.0 as u32 || v == VK_MENU.0 as u32 => {

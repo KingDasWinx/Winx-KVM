@@ -439,8 +439,9 @@ impl TransportAdapter for QuicTransportAdapter {
                             let conn_id = SessionId::new();
                             let peer_addr = connection.remote_address();
                             let (inbound_tx, inbound_rx) = mpsc::channel(8);
-                            let control_probe =
-                                Arc::new(Mutex::new(None::<tokio::sync::oneshot::Sender<ControlProbeReply>>));
+                            let control_probe = Arc::new(Mutex::new(
+                                None::<tokio::sync::oneshot::Sender<ControlProbeReply>>,
+                            ));
                             let control_probe_notify = Arc::new(Notify::new());
                             connections.lock().await.insert(
                                 conn_id,
@@ -495,8 +496,9 @@ impl TransportAdapter for QuicTransportAdapter {
         let connection = self.endpoint.connect(peer_addr, "winx-kvm.local")?.await?;
         let conn_id = SessionId::new();
         let (inbound_tx, inbound_rx) = mpsc::channel(8);
-        let control_probe =
-            Arc::new(Mutex::new(None::<tokio::sync::oneshot::Sender<ControlProbeReply>>));
+        let control_probe = Arc::new(Mutex::new(
+            None::<tokio::sync::oneshot::Sender<ControlProbeReply>>,
+        ));
         let control_probe_notify = Arc::new(Notify::new());
         self.store_connection(
             conn_id,
@@ -513,11 +515,7 @@ impl TransportAdapter for QuicTransportAdapter {
             Arc::clone(&control_probe),
             Arc::clone(&control_probe_notify),
         );
-        spawn_outbound_control_stream(
-            connection,
-            control_probe,
-            control_probe_notify,
-        );
+        spawn_outbound_control_stream(connection, control_probe, control_probe_notify);
         Ok(ActiveConnection {
             conn_id,
             inbound_streams: inbound_rx,
@@ -608,11 +606,12 @@ impl TransportAdapter for QuicTransportAdapter {
     }
 }
 
-async fn write_frame(send: &mut quinn::SendStream, frame: &winx_protocol::Frame) -> anyhow::Result<()> {
+async fn write_frame(
+    send: &mut quinn::SendStream,
+    frame: &winx_protocol::Frame,
+) -> anyhow::Result<()> {
     let bytes = winx_protocol::encode(frame)?;
-    let len = u32::try_from(bytes.len())
-        .unwrap_or(u32::MAX)
-        .to_be_bytes();
+    let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX).to_be_bytes();
     send.write_all(&len).await?;
     send.write_all(&bytes).await?;
     Ok(())
@@ -765,11 +764,9 @@ fn spawn_inbound_stream_loop(
                 break;
             };
             let mut hdr = [0u8; 5];
-            let read = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                recv.read_exact(&mut hdr),
-            )
-            .await;
+            let read =
+                tokio::time::timeout(std::time::Duration::from_secs(2), recv.read_exact(&mut hdr))
+                    .await;
             let Ok(Ok(())) = read else {
                 warn!("stream entrante sem header válido — descartado");
                 continue;

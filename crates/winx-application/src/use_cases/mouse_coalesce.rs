@@ -22,12 +22,7 @@ impl MouseCoalescer {
 
     #[must_use]
     pub fn take_if_significant(&mut self, min_manhattan: i32) -> Option<(i32, i32)> {
-        if self
-            .pending_dx
-            .abs()
-            .saturating_add(self.pending_dy.abs())
-            < min_manhattan
-        {
+        if self.pending_dx.abs().saturating_add(self.pending_dy.abs()) < min_manhattan {
             return None;
         }
         let v = (self.pending_dx, self.pending_dy);

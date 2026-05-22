@@ -19,10 +19,10 @@ pub fn should_switch_to_remote(input: EdgeDetectInput, layout: &MonitorLayout) -
     }
     let edge = layout.local_exit_edge_coord();
     match layout.edge.local_exit {
-        BorderSide::Right  => input.screen_x >= edge.saturating_sub(EDGE_TOLERANCE_PX),
-        BorderSide::Left   => input.screen_x <= edge.saturating_add(EDGE_TOLERANCE_PX),
+        BorderSide::Right => input.screen_x >= edge.saturating_sub(EDGE_TOLERANCE_PX),
+        BorderSide::Left => input.screen_x <= edge.saturating_add(EDGE_TOLERANCE_PX),
         BorderSide::Bottom => input.screen_y >= edge.saturating_sub(EDGE_TOLERANCE_PX),
-        BorderSide::Top    => input.screen_y <= edge.saturating_add(EDGE_TOLERANCE_PX),
+        BorderSide::Top => input.screen_y <= edge.saturating_add(EDGE_TOLERANCE_PX),
     }
 }
 

@@ -72,9 +72,7 @@ impl InputEvent {
     #[must_use]
     pub fn is_noise_mouse_move(&self, min_manhattan: i32) -> bool {
         match self {
-            Self::MouseMove { dx, dy, .. } => {
-                dx.abs().saturating_add(dy.abs()) < min_manhattan
-            }
+            Self::MouseMove { dx, dy, .. } => dx.abs().saturating_add(dy.abs()) < min_manhattan,
             _ => false,
         }
     }

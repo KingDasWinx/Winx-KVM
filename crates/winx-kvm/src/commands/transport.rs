@@ -2,10 +2,7 @@
 
 use serde::Serialize;
 use tauri::State;
-use winx_domain::{
-    shared::ids::PeerId,
-    transport::ConnectionState,
-};
+use winx_domain::{shared::ids::PeerId, transport::ConnectionState};
 
 use crate::app_state::{InputControlState, TransportState};
 

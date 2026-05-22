@@ -7,9 +7,7 @@ use std::{
 use serde::Serialize;
 use tokio::net::UdpSocket;
 use tracing::info;
-use winx_domain::{
-    shared::ids::PeerId,
-};
+use winx_domain::shared::ids::PeerId;
 use winx_protocol::DiagPing;
 
 use crate::{
@@ -165,7 +163,11 @@ impl ConnectionLabService {
             .ok()
             .map(|s| s.rtt_ms);
 
-        match self.transport.probe_control_heartbeat_for_peer(peer_id).await {
+        match self
+            .transport
+            .probe_control_heartbeat_for_peer(peer_id)
+            .await
+        {
             Ok(rtt) => {
                 let detail = match transport_rtt {
                     Some(trtt) => format!(
@@ -255,13 +257,8 @@ async fn probe_udp_ping(
             if nonce != ping.nonce {
                 anyhow::bail!("nonce do pong não confere");
             }
-            let latency_ms = u32::try_from(
-                started
-                    .elapsed()
-                    .as_millis()
-                    .min(u128::from(u32::MAX)),
-            )
-            .unwrap_or(u32::MAX);
+            let latency_ms = u32::try_from(started.elapsed().as_millis().min(u128::from(u32::MAX)))
+                .unwrap_or(u32::MAX);
             info!(%latency_ms, "probe pairing UDP ok");
             Ok(latency_ms)
         }
@@ -322,11 +319,7 @@ mod tests {
         let transport = Arc::new(TransportService::new(
             Arc::new(NoopTransportAdapter),
             Arc::new(MockIdentity {
-                peers: vec![TrustedPeer::new(
-                    peer_id,
-                    "p",
-                    PublicKey::new([0u8; 32]),
-                )],
+                peers: vec![TrustedPeer::new(peer_id, "p", PublicKey::new([0u8; 32]))],
             }),
             Arc::clone(&registry),
             EventBus::new(),
@@ -339,11 +332,7 @@ mod tests {
         ));
 
         let identity = Arc::new(MockIdentity {
-            peers: vec![TrustedPeer::new(
-                peer_id,
-                "p",
-                PublicKey::new([0u8; 32]),
-            )],
+            peers: vec![TrustedPeer::new(peer_id, "p", PublicKey::new([0u8; 32]))],
         });
         let lab = ConnectionLabService::new(discovery, transport, input, identity);
 
@@ -355,10 +344,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::ports::DiscoveryAdapter for NoopDiscovery {
-        async fn announce(
-            &self,
-            _: &crate::ports::discovery::AnnounceInfo,
-        ) -> anyhow::Result<()> {
+        async fn announce(&self, _: &crate::ports::discovery::AnnounceInfo) -> anyhow::Result<()> {
             Ok(())
         }
 
@@ -401,11 +387,7 @@ mod tests {
             let (_, rx) = tokio::sync::mpsc::channel(1);
             Ok(rx)
         }
-        async fn connect(
-            &self,
-            _: SocketAddr,
-            _: [u8; 32],
-        ) -> anyhow::Result<ActiveConnection> {
+        async fn connect(&self, _: SocketAddr, _: [u8; 32]) -> anyhow::Result<ActiveConnection> {
             let (_, rx) = tokio::sync::mpsc::channel(8);
             Ok(ActiveConnection {
                 conn_id: winx_domain::shared::ids::SessionId::new(),
@@ -479,16 +461,10 @@ mod tests {
         async fn stop_capture(&self, _: crate::ports::CaptureHandle) -> anyhow::Result<()> {
             Ok(())
         }
-        async fn inject(
-            &self,
-            _: winx_domain::input_control::InputEvent,
-        ) -> anyhow::Result<()> {
+        async fn inject(&self, _: winx_domain::input_control::InputEvent) -> anyhow::Result<()> {
             Ok(())
         }
-        async fn set_cursor_clipped(
-            &self,
-            _: Option<(i32, i32, u32, u32)>,
-        ) -> anyhow::Result<()> {
+        async fn set_cursor_clipped(&self, _: Option<(i32, i32, u32, u32)>) -> anyhow::Result<()> {
             Ok(())
         }
         fn set_pass_through(&self, _: bool) {}

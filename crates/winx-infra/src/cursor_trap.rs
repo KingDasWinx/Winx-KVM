@@ -14,11 +14,11 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW, ShowWindow, UnregisterClassW,
-    CS_HREDRAW, CS_VREDRAW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-    SM_YVIRTUALSCREEN, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WNDCLASSW,
-    GetSystemMetrics,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetSystemMetrics, RegisterClassW, ShowWindow,
+    UnregisterClassW, CS_HREDRAW, CS_VREDRAW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WM_DESTROY, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 static TRAP_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -103,11 +103,8 @@ pub fn show_cursor_trap() -> anyhow::Result<()> {
 
     let (x, y, w, h) = virtual_screen_rect();
     let class = wide(TRAP_CLASS_NAME);
-    let ex_style = WS_EX_LAYERED
-        | WS_EX_TRANSPARENT
-        | WS_EX_TOPMOST
-        | WS_EX_NOACTIVATE
-        | WS_EX_TOOLWINDOW;
+    let ex_style =
+        WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
     let style = WINDOW_STYLE(WS_POPUP.0);
 
     // SAFETY: classe registrada; coordenadas de tela válidas.
@@ -158,10 +155,8 @@ pub fn release_cursor_trap_sync() {
     if TRAP_CLASS_REGISTERED.load(Ordering::SeqCst) {
         let name = wide(TRAP_CLASS_NAME);
         // SAFETY: nome da classe registrada neste processo.
-        if unsafe {
-            UnregisterClassW(PCWSTR(name.as_ptr()), module_instance().unwrap_or_default())
-        }
-        .is_err()
+        if unsafe { UnregisterClassW(PCWSTR(name.as_ptr()), module_instance().unwrap_or_default()) }
+            .is_err()
         {
             warn!("UnregisterClassW cursor trap falhou");
         }

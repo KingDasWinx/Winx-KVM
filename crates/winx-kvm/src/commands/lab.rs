@@ -139,11 +139,7 @@ pub async fn get_keyboard_mirror_status(
 pub async fn get_input_debug_stats(
     input: State<'_, InputControlState>,
 ) -> Result<InputDebugStatsDto, String> {
-    Ok(input
-        .input_control
-        .get_input_debug_stats()
-        .await
-        .into())
+    Ok(input.input_control.get_input_debug_stats().await.into())
 }
 
 #[tauri::command]

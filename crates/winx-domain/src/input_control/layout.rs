@@ -115,26 +115,20 @@ impl MonitorLayout {
     #[must_use]
     pub fn local_exit_edge_coord(&self) -> i32 {
         match self.edge.local_exit {
-            BorderSide::Right => self.local_monitors
+            BorderSide::Right => self
+                .local_monitors
                 .iter()
                 .map(MonitorRect::right_edge)
                 .max()
                 .unwrap_or(0),
-            BorderSide::Left => self.local_monitors
-                .iter()
-                .map(|m| m.x)
-                .min()
-                .unwrap_or(0),
-            BorderSide::Bottom => self.local_monitors
+            BorderSide::Left => self.local_monitors.iter().map(|m| m.x).min().unwrap_or(0),
+            BorderSide::Bottom => self
+                .local_monitors
                 .iter()
                 .map(MonitorRect::bottom_edge)
                 .max()
                 .unwrap_or(0),
-            BorderSide::Top => self.local_monitors
-                .iter()
-                .map(|m| m.y)
-                .min()
-                .unwrap_or(0),
+            BorderSide::Top => self.local_monitors.iter().map(|m| m.y).min().unwrap_or(0),
         }
     }
 
@@ -142,22 +136,16 @@ impl MonitorLayout {
     #[must_use]
     pub fn local_return_edge_coord(&self) -> i32 {
         match self.edge.local_exit {
-            BorderSide::Right => self.local_monitors
-                .iter()
-                .map(|m| m.x)
-                .min()
-                .unwrap_or(0),
-            BorderSide::Left => self.local_monitors
+            BorderSide::Right => self.local_monitors.iter().map(|m| m.x).min().unwrap_or(0),
+            BorderSide::Left => self
+                .local_monitors
                 .iter()
                 .map(MonitorRect::right_edge)
                 .max()
                 .unwrap_or(0),
-            BorderSide::Bottom => self.local_monitors
-                .iter()
-                .map(|m| m.y)
-                .min()
-                .unwrap_or(0),
-            BorderSide::Top => self.local_monitors
+            BorderSide::Bottom => self.local_monitors.iter().map(|m| m.y).min().unwrap_or(0),
+            BorderSide::Top => self
+                .local_monitors
                 .iter()
                 .map(MonitorRect::bottom_edge)
                 .max()
@@ -227,7 +215,13 @@ mod tests {
     fn layout_1920x1080_remote_same() -> MonitorLayout {
         let peer = PeerId::from_uuid(Uuid::new_v4());
         MonitorLayout::default_side_by_side(
-            vec![MonitorRect { id: MonitorId(1), x: 0, y: 0, width: 1920, height: 1080 }],
+            vec![MonitorRect {
+                id: MonitorId(1),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            }],
             peer,
         )
     }
@@ -241,7 +235,13 @@ mod tests {
 
     #[test]
     fn remote_size_overrides_virtual_monitor() {
-        let local = vec![MonitorRect { id: MonitorId(1), x: 0, y: 0, width: 1920, height: 1080 }];
+        let local = vec![MonitorRect {
+            id: MonitorId(1),
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        }];
         let peer = PeerId::from_uuid(Uuid::new_v4());
         let layout =
             MonitorLayout::default_side_by_side_with_remote_size(local, peer, Some((3840, 2160)));
@@ -254,7 +254,7 @@ mod tests {
         let layout = layout_1920x1080_remote_same();
         // Cruza pela borda direita em Y=300
         let (x, y) = layout.map_crossing_point(1919, 300);
-        assert_eq!(x, 2);   // entra 2px da borda esquerda da tela do receiver (coord local = 0)
+        assert_eq!(x, 2); // entra 2px da borda esquerda da tela do receiver (coord local = 0)
         assert_eq!(y, 300); // Y preservado (mesma altura)
     }
 
@@ -263,7 +263,13 @@ mod tests {
         let peer = PeerId::from_uuid(Uuid::new_v4());
         // Local 1080p, remoto 4K
         let layout = MonitorLayout::default_side_by_side_with_remote_size(
-            vec![MonitorRect { id: MonitorId(1), x: 0, y: 0, width: 1920, height: 1080 }],
+            vec![MonitorRect {
+                id: MonitorId(1),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            }],
             peer,
             Some((3840, 2160)),
         );

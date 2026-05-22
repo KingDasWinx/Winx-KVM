@@ -331,14 +331,8 @@ mod tests {
         let peer_b = PeerId::from_uuid(Uuid::new_v4());
 
         let registry = Arc::new(Mutex::new(DiscoveryRegistry::new()));
-        registry
-            .lock()
-            .await
-            .appeared(sample_peer(peer_a, "A"));
-        registry
-            .lock()
-            .await
-            .appeared(sample_peer(peer_b, "B"));
+        registry.lock().await.appeared(sample_peer(peer_a, "A"));
+        registry.lock().await.appeared(sample_peer(peer_b, "B"));
 
         let svc = DiscoveryService::new(
             Arc::new(NoopDiscoveryAdapter),
@@ -347,11 +341,7 @@ mod tests {
         );
 
         let store = MockIdentityStore {
-            peers: vec![TrustedPeer::new(
-                peer_a,
-                "A",
-                PublicKey::new([0x11; 32]),
-            )],
+            peers: vec![TrustedPeer::new(peer_a, "A", PublicKey::new([0x11; 32]))],
         };
 
         let list = svc.list_peers_enriched(&store).await.unwrap();
