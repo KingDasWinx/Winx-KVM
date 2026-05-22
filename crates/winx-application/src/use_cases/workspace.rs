@@ -1,3 +1,4 @@
+use ed25519_dalek::SigningKey;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -13,8 +14,12 @@ use winx_protocol::workspace::{
 };
 
 use crate::bus::EventBus;
-use crate::ports::{DiscoveryQuery, IdentityStore, WorkspaceInviteTransport, WorkspaceStore};
+use crate::ports::{
+    DiscoveryQuery, IdentityStore, SecretStore, WorkspaceInviteTransport, WorkspaceStore,
+};
 use tracing::{debug, info, warn};
+use winx_domain::identity::TrustedPeer;
+use winx_domain::shared::ids::PeerId;
 
 struct PendingInviteData {
     session: InviteSession,
@@ -28,6 +33,7 @@ pub struct WorkspaceService {
     store: Arc<dyn WorkspaceStore>,
     transport: Arc<dyn WorkspaceInviteTransport>,
     identity_store: Arc<dyn IdentityStore>,
+    secret_store: Arc<dyn SecretStore>,
     discovery_query: Arc<dyn DiscoveryQuery>,
     pending_invites: Arc<Mutex<HashMap<Uuid, PendingInviteData>>>,
     active_workspace: Arc<RwLock<Option<WorkspaceId>>>,
@@ -41,6 +47,7 @@ impl WorkspaceService {
         store: Arc<dyn WorkspaceStore>,
         transport: Arc<dyn WorkspaceInviteTransport>,
         identity_store: Arc<dyn IdentityStore>,
+        secret_store: Arc<dyn SecretStore>,
         discovery_query: Arc<dyn DiscoveryQuery>,
         local_device_id: Uuid,
         local_username: String,
@@ -50,12 +57,60 @@ impl WorkspaceService {
             store,
             transport,
             identity_store,
+            secret_store,
             discovery_query,
             pending_invites: Arc::new(Mutex::new(HashMap::new())),
             active_workspace: Arc::new(RwLock::new(None)),
             local_device_id,
             local_username,
             bus,
+        }
+    }
+
+    async fn load_signing_key(&self) -> Result<SigningKey, DomainError> {
+        let bytes = self
+            .secret_store
+            .load_signing_key()
+            .await
+            .map_err(|e| DomainError::new(DomainErrorCode::InternalError, e.to_string()))?
+            .ok_or_else(|| {
+                DomainError::new(DomainErrorCode::InternalError, "signing key não encontrada")
+            })?;
+        Ok(SigningKey::from_bytes(&bytes))
+    }
+
+    /// Envia uma resposta de invite (accepted/rejected) ao remetente original.
+    /// Best-effort: erros de rede não propagam.
+    async fn send_invite_response(
+        &self,
+        sender_device_id: DeviceId,
+        invite_id: Uuid,
+        responder_pubkey: [u8; 32],
+        accepted: bool,
+    ) {
+        let signing_key = match self.load_signing_key().await {
+            Ok(k) => k,
+            Err(e) => {
+                warn!(%invite_id, ?e, "failed to load signing key for response");
+                return;
+            }
+        };
+        let payload = WorkspaceInviteResponsePayload {
+            invite_id,
+            responder_device_id: self.local_device_id,
+            responder_pubkey,
+            accepted,
+        };
+        let msg = WorkspaceInviteMessage::Response(payload);
+        match self.discovery_query.resolve_address(sender_device_id).await {
+            Ok(Some(mut addr)) => {
+                addr.set_port(crate::ports::WORKSPACE_INVITE_PORT);
+                if let Err(e) = self.transport.send_to(addr, &msg, &signing_key).await {
+                    warn!(%invite_id, ?e, "failed to send invite response");
+                }
+            }
+            Ok(None) => warn!(%invite_id, "sender not discoverable for response"),
+            Err(e) => warn!(%invite_id, ?e, "failed to resolve sender address"),
         }
     }
 
@@ -68,9 +123,22 @@ impl WorkspaceService {
         name: String,
         initial_member_device_ids: Vec<Uuid>,
     ) -> Result<Workspace, DomainError> {
-        // Create owner member
+        let local_device = self
+            .identity_store
+            .load_device()
+            .await
+            .map_err(|e| {
+                DomainError::new(
+                    DomainErrorCode::InternalError,
+                    format!("failed to load device: {}", e),
+                )
+            })?
+            .ok_or_else(|| {
+                DomainError::new(DomainErrorCode::InternalError, "local device not found")
+            })?;
+
         let owner_device_id = DeviceId::from_uuid(self.local_device_id);
-        let owner_pubkey = PublicKey::new([0u8; 32]); // TODO: get from identity_store
+        let owner_pubkey = local_device.public_key;
         let owner_member =
             WorkspaceMember::new(owner_device_id, owner_pubkey, self.local_username.clone());
 
@@ -146,15 +214,14 @@ impl WorkspaceService {
         let members_snapshot: Vec<MemberSnapshotPayload> = ws
             .members
             .iter()
-            .map(|m| {
-                MemberSnapshotPayload {
-                    device_id: m.device_id.as_uuid(),
-                    public_key: *m.public_key.as_bytes(),
-                    username: m.username_cache.clone(),
-                    // TODO(W3): format OffsetDateTime to RFC3339 (time crate not available in application layer)
-                    // For MVP, use timestamp-based approximation
-                    joined_at_rfc3339: format!("{:?}", m.joined_at),
-                }
+            .map(|m| MemberSnapshotPayload {
+                device_id: m.device_id.as_uuid(),
+                public_key: *m.public_key.as_bytes(),
+                username: m.username_cache.clone(),
+                joined_at_rfc3339: m
+                    .joined_at
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_default(),
             })
             .collect();
 
@@ -173,9 +240,19 @@ impl WorkspaceService {
         };
 
         // Load local public key
-        let local_device = self.identity_store.load_device().await
-            .map_err(|e| DomainError::new(DomainErrorCode::InternalError, format!("failed to load device: {}", e)))?
-            .ok_or_else(|| DomainError::new(DomainErrorCode::InternalError, "local device not found"))?;
+        let local_device = self
+            .identity_store
+            .load_device()
+            .await
+            .map_err(|e| {
+                DomainError::new(
+                    DomainErrorCode::InternalError,
+                    format!("failed to load device: {}", e),
+                )
+            })?
+            .ok_or_else(|| {
+                DomainError::new(DomainErrorCode::InternalError, "local device not found")
+            })?;
         let sender_pubkey = *local_device.public_key.as_bytes();
 
         // Create payload
@@ -188,16 +265,21 @@ impl WorkspaceService {
             target_device_id: target_device_uuid,
         };
 
+        let signing_key = self.load_signing_key().await?;
+
         // Resolve target address and send invite (async, don't block on network failure)
         let svc = Arc::new(self.clone());
         let msg = WorkspaceInviteMessage::Invite(payload);
         tokio::spawn(async move {
             let target_device_id = DeviceId::from_uuid(target_device_uuid);
             match svc.discovery_query.resolve_address(target_device_id).await {
-                Ok(Some(addr)) => match svc.transport.send_to(addr, msg).await {
-                    Ok(()) => info!(%invite_id, %addr, "invite sent"),
-                    Err(e) => warn!(%invite_id, ?e, "failed to send invite"),
-                },
+                Ok(Some(mut addr)) => {
+                    addr.set_port(crate::ports::WORKSPACE_INVITE_PORT);
+                    match svc.transport.send_to(addr, &msg, &signing_key).await {
+                        Ok(()) => info!(%invite_id, %addr, "invite sent"),
+                        Err(e) => warn!(%invite_id, ?e, "failed to send invite"),
+                    }
+                }
                 Ok(None) => {
                     warn!(%invite_id, %target_device_uuid, "target device not discovered (offline?)")
                 }
@@ -242,9 +324,6 @@ impl WorkspaceService {
         let sender_device_id = data.session.sender_device_id;
 
         // TOFU: save sender as trusted peer
-        use winx_domain::identity::TrustedPeer;
-        use winx_domain::shared::ids::PeerId;
-
         let peer = TrustedPeer::new(
             PeerId::from_uuid(sender_device_id.as_uuid()),
             snapshot.owner_username.clone(),
@@ -294,6 +373,21 @@ impl WorkspaceService {
 
         info!(%invite_id, %workspace_id, "invite accepted and mirror created");
 
+        // Send signed response back to the sender (best-effort)
+        let responder_pubkey = {
+            let device = self
+                .identity_store
+                .load_device()
+                .await
+                .map_err(|e| DomainError::new(DomainErrorCode::InternalError, e.to_string()))?
+                .ok_or_else(|| {
+                    DomainError::new(DomainErrorCode::InternalError, "local device not found")
+                })?;
+            *device.public_key.as_bytes()
+        };
+        self.send_invite_response(sender_device_id, invite_id, responder_pubkey, true)
+            .await;
+
         // Publish event
         self.bus.publish(DomainEvent::WorkspaceInviteAccepted(
             winx_domain::workspace::events::InviteAccepted {
@@ -321,8 +415,24 @@ impl WorkspaceService {
         })?;
 
         let workspace_id = data.session.workspace_id;
+        let sender_device_id = data.session.sender_device_id;
 
         info!(%invite_id, %workspace_id, "invite rejected");
+
+        // Send signed response back to the sender (best-effort)
+        let responder_pubkey = {
+            let device = self
+                .identity_store
+                .load_device()
+                .await
+                .map_err(|e| DomainError::new(DomainErrorCode::InternalError, e.to_string()))?
+                .ok_or_else(|| {
+                    DomainError::new(DomainErrorCode::InternalError, "local device not found")
+                })?;
+            *device.public_key.as_bytes()
+        };
+        self.send_invite_response(sender_device_id, invite_id, responder_pubkey, false)
+            .await;
 
         // Publish event
         self.bus.publish(DomainEvent::WorkspaceInviteRejected(
@@ -541,15 +651,364 @@ impl WorkspaceService {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::ports::DecodedWorkspaceInviteMessage;
+    use async_trait::async_trait;
+    use std::collections::HashMap as StdHashMap;
+    use std::net::SocketAddr;
+    use std::sync::Mutex as StdMutex;
+    use tokio::sync::mpsc;
+    use winx_domain::identity::{Device, TrustedPeer};
+    use winx_domain::shared::ids::PeerId;
+    use winx_domain::workspace::OwnershipMode;
+    use winx_protocol::workspace::WorkspaceInviteMessage;
+
+    // ─── Mocks ───────────────────────────────────────────────────────────────
+
+    #[derive(Default)]
+    struct MockWorkspaceStore {
+        saved: StdMutex<Vec<Workspace>>,
+    }
+
+    #[async_trait]
+    impl WorkspaceStore for MockWorkspaceStore {
+        async fn load_all(&self) -> anyhow::Result<Vec<Workspace>> {
+            Ok(self.saved.lock().unwrap().clone())
+        }
+        async fn save(&self, workspace: &Workspace) -> anyhow::Result<()> {
+            let mut saved = self.saved.lock().unwrap();
+            if let Some(existing) = saved.iter_mut().find(|w| w.id == workspace.id) {
+                *existing = workspace.clone();
+            } else {
+                saved.push(workspace.clone());
+            }
+            Ok(())
+        }
+        async fn delete(&self, id: WorkspaceId) -> anyhow::Result<()> {
+            self.saved.lock().unwrap().retain(|w| w.id != id);
+            Ok(())
+        }
+        async fn find_by_id(&self, id: WorkspaceId) -> anyhow::Result<Option<Workspace>> {
+            Ok(self
+                .saved
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|w| w.id == id)
+                .cloned())
+        }
+    }
+
+    #[derive(Default)]
+    struct MockTransport {
+        sent: StdMutex<Vec<(SocketAddr, WorkspaceInviteMessage)>>,
+    }
+
+    #[async_trait]
+    impl WorkspaceInviteTransport for MockTransport {
+        async fn listen(&self) -> anyhow::Result<mpsc::Receiver<DecodedWorkspaceInviteMessage>> {
+            let (_, rx) = mpsc::channel(1);
+            Ok(rx)
+        }
+        async fn send_to(
+            &self,
+            addr: SocketAddr,
+            msg: &WorkspaceInviteMessage,
+            _signing_key: &SigningKey,
+        ) -> anyhow::Result<()> {
+            self.sent.lock().unwrap().push((addr, msg.clone()));
+            Ok(())
+        }
+    }
+
+    struct MockIdentityStore {
+        device: Device,
+        peers: StdMutex<Vec<TrustedPeer>>,
+    }
+
+    impl MockIdentityStore {
+        fn new(device: Device) -> Self {
+            Self {
+                device,
+                peers: StdMutex::new(vec![]),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl IdentityStore for MockIdentityStore {
+        async fn load_device(&self) -> anyhow::Result<Option<Device>> {
+            Ok(Some(self.device.clone()))
+        }
+        async fn save_device(&self, _device: &Device) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn load_peers(&self) -> anyhow::Result<Vec<TrustedPeer>> {
+            Ok(self.peers.lock().unwrap().clone())
+        }
+        async fn save_peer(&self, peer: &TrustedPeer) -> anyhow::Result<()> {
+            self.peers.lock().unwrap().push(peer.clone());
+            Ok(())
+        }
+        async fn remove_peer(&self, _peer_id: PeerId) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct MockSecretStore {
+        key: [u8; 32],
+    }
+
+    #[async_trait]
+    impl SecretStore for MockSecretStore {
+        async fn store_signing_key(&self, _key_bytes: &[u8; 32]) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn load_signing_key(&self) -> anyhow::Result<Option<[u8; 32]>> {
+            Ok(Some(self.key))
+        }
+        async fn delete_signing_key(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct MockDiscoveryQuery {
+        addrs: StdHashMap<DeviceId, SocketAddr>,
+    }
+
+    #[async_trait]
+    impl DiscoveryQuery for MockDiscoveryQuery {
+        async fn resolve_address(&self, device_id: DeviceId) -> anyhow::Result<Option<SocketAddr>> {
+            Ok(self.addrs.get(&device_id).copied())
+        }
+    }
+
+    // ─── Helpers ─────────────────────────────────────────────────────────────
+
+    fn make_service_with_peer_addr(
+        peer_device_id: Option<DeviceId>,
+        peer_addr: Option<SocketAddr>,
+    ) -> (
+        WorkspaceService,
+        Arc<MockWorkspaceStore>,
+        Arc<MockTransport>,
+        Arc<MockIdentityStore>,
+    ) {
+        let local_uuid = Uuid::new_v4();
+        let signing_key = SigningKey::from_bytes(&[42u8; 32]);
+        let pubkey = signing_key.verifying_key().to_bytes();
+
+        let device = Device::new(
+            DeviceId::from_uuid(local_uuid),
+            "Local",
+            PublicKey::new(pubkey),
+        );
+
+        let store = Arc::new(MockWorkspaceStore::default());
+        let transport = Arc::new(MockTransport::default());
+        let identity = Arc::new(MockIdentityStore::new(device));
+        let secret = Arc::new(MockSecretStore { key: [42u8; 32] });
+
+        let mut addrs = StdHashMap::new();
+        if let (Some(did), Some(addr)) = (peer_device_id, peer_addr) {
+            addrs.insert(did, addr);
+        }
+        let discovery = Arc::new(MockDiscoveryQuery { addrs });
+
+        let svc = WorkspaceService::new(
+            Arc::clone(&store) as Arc<dyn WorkspaceStore>,
+            Arc::clone(&transport) as Arc<dyn WorkspaceInviteTransport>,
+            Arc::clone(&identity) as Arc<dyn IdentityStore>,
+            secret as Arc<dyn SecretStore>,
+            discovery as Arc<dyn DiscoveryQuery>,
+            local_uuid,
+            "Local".to_string(),
+            EventBus::new(),
+        );
+        (svc, store, transport, identity)
+    }
+
+    fn make_service() -> (
+        WorkspaceService,
+        Arc<MockWorkspaceStore>,
+        Arc<MockTransport>,
+        Arc<MockIdentityStore>,
+    ) {
+        make_service_with_peer_addr(None, None)
+    }
+
+    // ─── Tests ───────────────────────────────────────────────────────────────
+
     #[tokio::test]
-    async fn test_placeholder() {
-        // TODO: add comprehensive tests for WorkspaceService
-        // - create_workspace with various edge cases
-        // - invite_to_workspace validation
-        // - accept_invite TOFU + mirror creation flow
-        // - reject_invite with event publishing
-        // - connect/disconnect/force_disconnect_and_connect
-        // - conflict detection on simultaneous connection attempts
-        // - expiration loop with timeout events
+    async fn create_workspace_persists_original_with_owner_pubkey() {
+        let (svc, store, _, _) = make_service();
+        let ws = svc
+            .create_workspace("My WS".to_string(), vec![])
+            .await
+            .unwrap();
+
+        assert_eq!(ws.name, "My WS");
+        assert!(matches!(ws.ownership_mode, OwnershipMode::Original));
+        assert_eq!(ws.members.len(), 1);
+        let owner = &ws.members[0];
+        // owner_pubkey must NOT be zeroed (regression test for the bug)
+        assert_ne!(*owner.public_key.as_bytes(), [0u8; 32]);
+
+        let saved = store.load_all().await.unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].id, ws.id);
+    }
+
+    #[tokio::test]
+    async fn invite_to_workspace_sends_signed_payload_via_transport() {
+        let target_uuid = Uuid::new_v4();
+        let target_device_id = DeviceId::from_uuid(target_uuid);
+        let peer_addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+
+        let (svc, _, transport, _) =
+            make_service_with_peer_addr(Some(target_device_id), Some(peer_addr));
+
+        let ws = svc
+            .create_workspace("WS".to_string(), vec![])
+            .await
+            .unwrap();
+        let invite_id = svc.invite_to_workspace(ws.id, target_uuid).await.unwrap();
+
+        // Allow spawned task to send
+        for _ in 0..20 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+            if !transport.sent.lock().unwrap().is_empty() {
+                break;
+            }
+        }
+
+        let sent = transport.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        let (sent_addr, sent_msg) = &sent[0];
+        assert_eq!(sent_addr.port(), crate::ports::WORKSPACE_INVITE_PORT);
+        match sent_msg {
+            WorkspaceInviteMessage::Invite(p) => {
+                assert_eq!(p.invite_id, invite_id);
+                assert_eq!(p.target_device_id, target_uuid);
+            }
+            _ => panic!("expected Invite variant"),
+        }
+    }
+
+    #[tokio::test]
+    async fn accept_invite_does_tofu_and_creates_mirror() {
+        let (svc, store, _, identity) = make_service();
+
+        // Simulate a pending invite delivered from a remote sender
+        let sender_device_id = DeviceId::from_uuid(Uuid::new_v4());
+        let sender_pubkey = [9u8; 32];
+        let invite_id = Uuid::new_v4();
+        let workspace_id = WorkspaceId::new();
+
+        let snapshot = WorkspaceSnapshotPayload {
+            id: workspace_id.as_uuid(),
+            name: "Remote WS".to_string(),
+            owner_device_id: sender_device_id.as_uuid(),
+            owner_username: "Remote".to_string(),
+            version: 1,
+            members: vec![MemberSnapshotPayload {
+                device_id: sender_device_id.as_uuid(),
+                public_key: sender_pubkey,
+                username: "Remote".to_string(),
+                joined_at_rfc3339: "2026-01-01T00:00:00Z".to_string(),
+            }],
+        };
+
+        let session = InviteSession::new(
+            workspace_id,
+            DeviceId::from_uuid(svc.local_device_id),
+            sender_device_id,
+        );
+        svc.pending_invites.lock().await.insert(
+            invite_id,
+            PendingInviteData {
+                session,
+                snapshot: Some(snapshot),
+                sender_pubkey: Some(sender_pubkey),
+            },
+        );
+
+        let mirror = svc.accept_invite(invite_id).await.unwrap();
+
+        // Mirror persisted
+        assert!(mirror.ownership_mode.is_mirror());
+        let saved = store.load_all().await.unwrap();
+        assert_eq!(saved.len(), 1);
+
+        // TOFU: peer added to trusted list
+        let peers = identity.peers.lock().unwrap();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(*peers[0].public_key.as_bytes(), sender_pubkey);
+    }
+
+    #[tokio::test]
+    async fn reject_invite_removes_from_pending_and_emits_event() {
+        let (svc, _, _, _) = make_service();
+
+        let invite_id = Uuid::new_v4();
+        let workspace_id = WorkspaceId::new();
+        let sender_device_id = DeviceId::from_uuid(Uuid::new_v4());
+        let session = InviteSession::new(
+            workspace_id,
+            DeviceId::from_uuid(svc.local_device_id),
+            sender_device_id,
+        );
+        svc.pending_invites.lock().await.insert(
+            invite_id,
+            PendingInviteData {
+                session,
+                snapshot: None,
+                sender_pubkey: None,
+            },
+        );
+
+        svc.reject_invite(invite_id).await.unwrap();
+        assert!(svc.pending_invites.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn connect_to_workspace_returns_conflict_when_other_active() {
+        let (svc, _, _, _) = make_service();
+        let w1 = WorkspaceId::new();
+        let w2 = WorkspaceId::new();
+
+        svc.connect_to_workspace(w1).await.unwrap();
+        let err = svc.connect_to_workspace(w2).await.unwrap_err();
+        assert_eq!(err.code, DomainErrorCode::WorkspaceConflict);
+    }
+
+    #[tokio::test]
+    async fn connect_to_same_workspace_is_idempotent() {
+        let (svc, _, _, _) = make_service();
+        let w = WorkspaceId::new();
+        svc.connect_to_workspace(w).await.unwrap();
+        svc.connect_to_workspace(w).await.unwrap();
+        assert_eq!(svc.active_workspace_id().await, Some(w));
+    }
+
+    #[tokio::test]
+    async fn force_disconnect_and_connect_switches_active() {
+        let (svc, _, _, _) = make_service();
+        let w1 = WorkspaceId::new();
+        let w2 = WorkspaceId::new();
+
+        svc.connect_to_workspace(w1).await.unwrap();
+        svc.force_disconnect_and_connect(w2).await.unwrap();
+        assert_eq!(svc.active_workspace_id().await, Some(w2));
+    }
+
+    #[tokio::test]
+    async fn disconnect_clears_active_workspace() {
+        let (svc, _, _, _) = make_service();
+        let w = WorkspaceId::new();
+        svc.connect_to_workspace(w).await.unwrap();
+        svc.disconnect_from_workspace().await.unwrap();
+        assert_eq!(svc.active_workspace_id().await, None);
     }
 }

@@ -2,8 +2,8 @@
 
 Plano executável da feature **Workspaces** do Winx-KVM. Complementa o [README](README.md) e o [docs/PLANNING.md](docs/PLANNING.md) com o backlog específico do 8º bounded context (`workspace`).
 
-> **Status**: Especificação aprovada. Aguardando início do Sprint W1.
-> **Última atualização**: 2026-05-21
+> **Status**: Sprints W1 e W2 ✅ concluídos. Próximo: W3 (Sync, Mirror, Órfão).
+> **Última atualização**: 2026-05-22
 
 ---
 
@@ -241,16 +241,16 @@ joined_at = 1747800000
 **Esforço**: 15–20h | **Risco**: Baixo
 **Critério de aceite**: testes unitários do domínio passam, persistência em TOML round-trip funciona.
 
-- [ ] **W1.1** Criar `crates/winx-domain/src/workspace/` com módulos `workspace_id.rs`, `member.rs`, `version.rs`, `ownership.rs`, `events.rs`
-- [ ] **W1.2** Aggregate `Workspace` com invariants: name non-empty, version monotonic, owner_device_id ∈ members
-- [ ] **W1.3** Value object `WorkspaceLayout` (espelha `MonitorLayout` existente em `input_control::layout`)
-- [ ] **W1.4** Enum `OwnershipMode { Original, Mirror{...} }` + métodos `is_mirror()`, `mark_orphan()`
-- [ ] **W1.5** `GlobalCursorState::apply_remote(payload)` valida `monotonic_seq` ascendente
-- [ ] **W1.6** State machine `InviteSession` com testes de cada transição (Pending→Delivered→Accepted, expiração 90s)
-- [ ] **W1.7** Domain events: `WorkspaceCreated`, `WorkspaceUpdated`, `WorkspaceDeleted`, `MemberJoined`, `MemberLeft`, `InviteSent`, `InviteAccepted`, `InviteRejected`, `GlobalCursorMoved`
-- [ ] **W1.8** Port `WorkspaceStore` em `winx-application/src/ports/workspace.rs`
-- [ ] **W1.9** Adapter `WorkspaceTomlStore` em `winx-infra/` (reusar padrão de `PeersTomlStore`)
-- [ ] **W1.10** Testes: round-trip TOML, schema compatibility, fixtures com mirror + original
+- [x] **W1.1** Criar `crates/winx-domain/src/workspace/` com módulos `workspace_id.rs`, `member.rs`, `version.rs`, `ownership.rs`, `events.rs`
+- [x] **W1.2** Aggregate `Workspace` com invariants: name non-empty, version monotonic, owner_device_id ∈ members
+- [x] **W1.3** Value object `WorkspaceLayout` (espelha `MonitorLayout` existente em `input_control::layout`)
+- [x] **W1.4** Enum `OwnershipMode { Original, Mirror{...} }` + métodos `is_mirror()`, `mark_orphan()`
+- [x] **W1.5** `GlobalCursorState::apply_remote(payload)` valida `monotonic_seq` ascendente
+- [x] **W1.6** State machine `InviteSession` com testes de cada transição (Pending→Delivered→Accepted, expiração 90s)
+- [x] **W1.7** Domain events: `WorkspaceCreated`, `WorkspaceUpdated`, `WorkspaceDeleted`, `MemberJoined`, `MemberLeft`, `InviteSent`, `InviteAccepted`, `InviteRejected`, `GlobalCursorMoved`
+- [x] **W1.8** Port `WorkspaceStore` em `winx-application/src/ports/workspace.rs`
+- [x] **W1.9** Adapter `WorkspaceTomlStore` em `winx-infra/` (reusar padrão de `PeersTomlStore`)
+- [x] **W1.10** Testes: round-trip TOML, schema compatibility, fixtures com mirror + original
 
 ---
 
@@ -259,22 +259,22 @@ joined_at = 1747800000
 **Esforço**: 20–25h | **Risco**: Médio
 **Critério de aceite**: invite chega no centro da tela do peer, aceitar grava mirror + trust automático, modal de conflito aparece quando tenta conectar com já-conectado.
 
-- [ ] **W2.1** Adicionar payloads em `winx-protocol/src/workspace.rs` (`WorkspaceInvitePayload`, `WorkspaceInviteResponse`, `MemberSnapshot`, `WorkspaceSnapshot`) + bump `PROTOCOL_VERSION`
-- [ ] **W2.2** Port `WorkspaceTransport::send_invite` + `send_invite_response` + `subscribe()`
-- [ ] **W2.3** Adapter `QuicWorkspaceTransport` em winx-infra reusando o `QuicTransport`
-- [ ] **W2.4** Use case `invite_to_workspace`: cria `InviteSession`, envia payload via transport
-- [ ] **W2.5** Use case `accept_invite`: TOFU via `IdentityStore::trust_peer` se necessário + grava Mirror no store + envia response
-- [ ] **W2.6** Use case `reject_invite` + handler de expiração 90s
-- [ ] **W2.7** `active_workspace: RwLock<Option<WorkspaceId>>` em `app_state.rs`
-- [ ] **W2.8** Detecção de conflito: `connect_to_workspace` retorna `Err(WorkspaceConflict)` se já conectado
-- [ ] **W2.9** Tauri commands: `list_workspaces`, `create_workspace`, `delete_workspace`, `invite_to_workspace`, `accept_invite`, `reject_invite`, `connect_to_workspace`, `disconnect_from_workspace`, `force_disconnect_and_connect`
-- [ ] **W2.10** Eventos Tauri: `workspaces-updated`, `workspace-invite-received`, `workspace-connection-conflict`
-- [ ] **W2.11** UI `IncomingInviteModal` (centro da tela, sem PIN, Aceitar/Recusar; mostra fingerprint do sender)
-- [ ] **W2.12** UI `ConflictModal` com botão grande "Criar workspace" pré-populando `initial_members = [active, target]`
-- [ ] **W2.13** UI `CreateWorkspaceModal` (wizard: nome + checkboxes de peers descobertos)
-- [ ] **W2.14** UI `WorkspaceCard` básico (sem badge mirror ainda) integrado na `HomePage`
-- [ ] **W2.15** Namespace i18n `workspace.json` em `en/` + `pt-BR/`
-- [ ] **W2.16** Testes integração: invite end-to-end com 2 instâncias localhost
+- [x] **W2.1** Adicionar payloads em `winx-protocol/src/workspace.rs` (`WorkspaceInvitePayload`, `WorkspaceInviteResponse`, `MemberSnapshot`, `WorkspaceSnapshot`) + bump `PROTOCOL_VERSION`
+- [x] **W2.2** Port `WorkspaceTransport::send_invite` + `send_invite_response` + `subscribe()`
+- [x] **W2.3** Adapter UDP autenticado por Ed25519 em winx-infra _(decisão: UDP+signature, igual `pairing`. QUIC com `Ed25519PeerVerifier` exige peer já pareado, incompatível com TOFU implícito)_
+- [x] **W2.4** Use case `invite_to_workspace`: cria `InviteSession`, envia payload via transport
+- [x] **W2.5** Use case `accept_invite`: TOFU via `IdentityStore::trust_peer` se necessário + grava Mirror no store + envia response
+- [x] **W2.6** Use case `reject_invite` + handler de expiração 90s
+- [x] **W2.7** `active_workspace: RwLock<Option<WorkspaceId>>` em `app_state.rs`
+- [x] **W2.8** Detecção de conflito: `connect_to_workspace` retorna `Err(WorkspaceConflict)` se já conectado
+- [x] **W2.9** Tauri commands: `list_workspaces`, `create_workspace`, `delete_workspace`, `invite_to_workspace`, `accept_invite`, `reject_invite`, `connect_to_workspace`, `disconnect_from_workspace`, `force_disconnect_and_connect`
+- [x] **W2.10** Eventos Tauri: `workspaces-updated`, `workspace-invite-received`, `workspace-connection-conflict`
+- [x] **W2.11** UI `IncomingInviteModal` (centro da tela, sem PIN, Aceitar/Recusar; mostra fingerprint do sender)
+- [x] **W2.12** UI `ConflictModal` com botão grande "Criar workspace" pré-populando `initial_members = [active, target]`
+- [x] **W2.13** UI `CreateWorkspaceModal` (wizard: nome + checkboxes de peers descobertos)
+- [x] **W2.14** UI `WorkspaceCard` básico (sem badge mirror ainda) integrado na `HomePage`
+- [x] **W2.15** Namespace i18n `workspace.json` em `en/` + `pt-BR/`
+- [x] **W2.16** Testes integração: invite end-to-end com 2 instâncias localhost _(mocks unitários de transport+store; smoke real com 2 binários é parte do W4.13)_
 
 ---
 

@@ -4075,6 +4075,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempfile"
+version = "3.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+dependencies = [
+ "fastrand",
+ "getrandom 0.4.2",
+ "once_cell",
+ "rustix",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "tendril"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5569,6 +5582,7 @@ dependencies = [
  "rand 0.8.6",
  "serde",
  "thiserror 1.0.69",
+ "time",
  "tokio",
  "tracing",
  "uuid",
@@ -5606,12 +5620,14 @@ dependencies = [
  "keyring",
  "mdns-sd",
  "quinn",
+ "rand 0.8.6",
  "rcgen",
  "rustls",
  "rustls-pemfile",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 1.0.69",
  "time",
  "tokio",

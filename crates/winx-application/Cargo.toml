@@ -27,3 +27,4 @@ rand             = { workspace = true }
 constant_time_eq = { workspace = true }
 uuid             = { workspace = true }
 hex              = { workspace = true }
+time             = { workspace = true }

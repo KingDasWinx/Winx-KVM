@@ -180,6 +180,7 @@ fn init_services(
         workspace_store,
         workspace_transport,
         Arc::clone(&identity_store) as _,
+        Arc::clone(&secret_store),
         discovery_query,
         device.id.as_uuid(),
         device.username.clone(),
