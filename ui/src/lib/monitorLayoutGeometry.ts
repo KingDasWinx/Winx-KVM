@@ -1,4 +1,4 @@
-import type { MonitorLayoutDto, MonitorRectDto } from '../ipc/commands';
+import type { MonitorLayoutDto, MonitorRectDto, SessionDesktopLayoutDto } from '../ipc/commands';
 
 export const REMOTE_MONITOR_ID = 65535;
 const ADJACENCY_GAP_PX = 80;
@@ -192,4 +192,124 @@ export function computeCanvasScale(
 
 export function formatResolution(m: MonitorRectDto): string {
   return `${m.width}×${m.height}`;
+}
+
+export function buildDefaultSessionLayout(
+  localDeviceId: string,
+  localMonitors: MonitorRectDto[],
+  remoteDeviceId: string,
+  remoteMonitors: MonitorRectDto[] = [],
+): SessionDesktopLayoutDto {
+  const per_device: Record<string, MonitorRectDto[]> = {};
+  const locals =
+    localMonitors.length > 0
+      ? localMonitors
+      : [{ id: 1, x: 0, y: 0, width: 1920, height: 1080 }];
+  per_device[localDeviceId] = locals.map((m) => ({ ...m }));
+
+  if (remoteMonitors.length > 0) {
+    const localBounds = localUnionBounds(locals);
+    const remoteBounds = localUnionBounds(remoteMonitors);
+    const offsetX = localBounds.maxR - remoteBounds.minX;
+    const offsetY = localBounds.minY - remoteBounds.minY;
+    per_device[remoteDeviceId] = remoteMonitors.map((m) => ({
+      ...m,
+      x: m.x + offsetX,
+      y: m.y + offsetY,
+    }));
+  }
+
+  return { per_device };
+}
+
+export function sessionAllMonitors(
+  session: SessionDesktopLayoutDto,
+): Array<{ deviceId: string; monitor: MonitorRectDto }> {
+  const items: Array<{ deviceId: string; monitor: MonitorRectDto }> = [];
+  for (const [deviceId, monitors] of Object.entries(session.per_device)) {
+    for (const monitor of monitors) {
+      items.push({ deviceId, monitor });
+    }
+  }
+  return items;
+}
+
+export function computeWorldFrameFromSession(session: SessionDesktopLayoutDto): {
+  worldW: number;
+  worldH: number;
+  shift: { x: number; y: number };
+} {
+  const all = sessionAllMonitors(session).map((e) => e.monitor);
+  if (all.length === 0) {
+    const fallback = 4800 * 0.12;
+    return { worldW: fallback, worldH: fallback * 0.75, shift: { x: 0, y: 0 } };
+  }
+  const minX = Math.min(...all.map((m) => m.x));
+  const minY = Math.min(...all.map((m) => m.y));
+  const maxR = Math.max(...all.map((m) => m.x + m.width));
+  const maxB = Math.max(...all.map((m) => m.y + m.height));
+  const WORLD_PAD = 2400;
+  const DISPLAY_SCALE = 0.12;
+  const virtualW = maxR - minX + WORLD_PAD * 2;
+  const virtualH = maxB - minY + WORLD_PAD * 2;
+  return {
+    worldW: virtualW * DISPLAY_SCALE,
+    worldH: virtualH * DISPLAY_SCALE,
+    shift: { x: WORLD_PAD - minX, y: WORLD_PAD - minY },
+  };
+}
+
+/** Deriva layout de runtime local para badge de borda no editor canônico. */
+export function deriveRuntimeForLocalDevice(
+  session: SessionDesktopLayoutDto,
+  localDeviceId: string,
+  remotePeerId: string,
+): MonitorLayoutDto {
+  const local_monitors = session.per_device[localDeviceId] ?? [];
+  const remote_abs = session.per_device[remotePeerId] ?? [];
+  if (local_monitors.length === 0) {
+    return buildDefaultLayout(local_monitors, remotePeerId, remote_abs);
+  }
+  if (remote_abs.length === 0) {
+    return buildDefaultLayout(local_monitors, remotePeerId, []);
+  }
+  const minX = Math.min(...remote_abs.map((m) => m.x));
+  const minY = Math.min(...remote_abs.map((m) => m.y));
+  const maxR = Math.max(...remote_abs.map((m) => m.x + m.width));
+  const maxB = Math.max(...remote_abs.map((m) => m.y + m.height));
+  const remote_monitors = remote_abs.map((m) => ({
+    ...m,
+    x: m.x - minX,
+    y: m.y - minY,
+  }));
+  const layout: MonitorLayoutDto = {
+    local_monitors,
+    remote_peer: remotePeerId,
+    remote_virtual: {
+      id: REMOTE_MONITOR_ID,
+      x: minX,
+      y: minY,
+      width: maxR - minX,
+      height: maxB - minY,
+    },
+    remote_monitors,
+    edge: { local_exit: 'Right', remote_entry: 'Left', exit_local_monitor_id: local_monitors[0]?.id ?? 1 },
+  };
+  return inferEdgesFromGeometry(layout);
+}
+
+export function moveDeviceMonitors(
+  session: SessionDesktopLayoutDto,
+  deviceId: string,
+  dx: number,
+  dy: number,
+): SessionDesktopLayoutDto {
+  const monitors = session.per_device[deviceId];
+  if (!monitors?.length) return session;
+  return {
+    per_device: {
+      ...session.per_device,
+      [deviceId]: monitors.map((m) => ({ ...m, x: m.x + dx, y: m.y + dy })),
+    },
+  };
 }

@@ -112,3 +112,41 @@ pub fn rect_to_dto(r: &MonitorRect) -> MonitorRectDto {
         height: r.height,
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionDesktopLayoutDto {
+    pub per_device: std::collections::BTreeMap<String, Vec<MonitorRectDto>>,
+}
+
+pub fn session_to_dto(layout: &winx_domain::input_control::SessionDesktopLayout) -> SessionDesktopLayoutDto {
+    SessionDesktopLayoutDto {
+        per_device: layout
+            .per_device
+            .iter()
+            .map(|(id, rects)| (id.to_string(), rects.iter().map(rect_to_dto).collect()))
+            .collect(),
+    }
+}
+
+pub fn dto_to_session(dto: SessionDesktopLayoutDto) -> winx_domain::input_control::SessionDesktopLayout {
+    use winx_domain::shared::ids::DeviceId;
+    let mut layout = winx_domain::input_control::SessionDesktopLayout::empty();
+    for (device_id, monitors) in dto.per_device {
+        if let Ok(uuid) = uuid::Uuid::parse_str(&device_id) {
+            layout.set_device_monitors(
+                DeviceId::from_uuid(uuid),
+                monitors
+                    .into_iter()
+                    .map(|r| MonitorRect {
+                        id: MonitorId(r.id),
+                        x: r.x,
+                        y: r.y,
+                        width: r.width,
+                        height: r.height,
+                    })
+                    .collect(),
+            );
+        }
+    }
+    layout
+}

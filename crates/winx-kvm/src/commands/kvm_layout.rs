@@ -7,7 +7,10 @@ use winx_domain::shared::ids::PeerId;
 use crate::app_state::{InputControlState, WorkspaceState};
 use winx_domain::shared::ids::DeviceId;
 
-use super::monitor_layout_dto::{dto_to_layout, layout_to_dto, MonitorLayoutDto, MonitorRectDto};
+use super::monitor_layout_dto::{
+    dto_to_layout, dto_to_session, layout_to_dto, session_to_dto, MonitorLayoutDto,
+    MonitorRectDto, SessionDesktopLayoutDto,
+};
 
 fn parse_peer_id(s: &str) -> Result<PeerId, String> {
     uuid::Uuid::parse_str(s)
@@ -89,6 +92,53 @@ pub async fn get_peer_monitors(
         .iter()
         .map(super::monitor_layout_dto::rect_to_dto)
         .collect())
+}
+
+#[tauri::command]
+pub async fn get_kvm_session_layout(
+    state: State<'_, InputControlState>,
+    peer_id: String,
+) -> Result<Option<SessionDesktopLayoutDto>, String> {
+    let pid = parse_peer_id(&peer_id)?;
+    let layout = state
+        .input_control
+        .get_kvm_session_layout(pid)
+        .await
+        .map_err(map_err)?;
+    Ok(layout.as_ref().map(session_to_dto))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateKvmSessionLayoutInput {
+    pub peer_id: String,
+    pub layout: SessionDesktopLayoutDto,
+}
+
+#[tauri::command]
+pub async fn update_kvm_session_layout(
+    state: State<'_, InputControlState>,
+    input: UpdateKvmSessionLayoutInput,
+) -> Result<(), String> {
+    let pid = parse_peer_id(&input.peer_id)?;
+    let session = dto_to_session(input.layout);
+
+    state
+        .input_control
+        .ensure_layout_sync_for_peer(pid)
+        .await
+        .map_err(map_err)?;
+
+    state
+        .input_control
+        .save_kvm_session_layout(pid, session)
+        .await
+        .map_err(map_err)?;
+
+    if state.input_control.is_active_for_peer(pid).await {
+        let _ = state.input_control.enable_for_peer(pid).await;
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]

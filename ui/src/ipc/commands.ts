@@ -340,6 +340,10 @@ export interface MonitorLayoutDto {
   edge: EdgeConfigDto;
 }
 
+export interface SessionDesktopLayoutDto {
+  per_device: Record<string, MonitorRectDto[]>;
+}
+
 export interface WorkspaceLayoutDto {
   per_device: Record<string, MonitorLayoutDto>;
 }
@@ -370,6 +374,12 @@ export async function getKvmLayout(peerId: string): Promise<MonitorLayoutDto | n
   return invoke('get_kvm_layout', { peerId });
 }
 
+export async function getKvmSessionLayout(
+  peerId: string,
+): Promise<SessionDesktopLayoutDto | null> {
+  return invoke('get_kvm_session_layout', { peerId });
+}
+
 export async function getPeerMonitors(
   peerId: string,
   workspaceId?: string,
@@ -382,6 +392,18 @@ export async function updateKvmLayout(input: {
   layout: MonitorLayoutDto;
 }): Promise<void> {
   return invoke('update_kvm_layout', {
+    input: {
+      peer_id: input.peerId,
+      layout: input.layout,
+    },
+  });
+}
+
+export async function updateKvmSessionLayout(input: {
+  peerId: string;
+  layout: SessionDesktopLayoutDto;
+}): Promise<void> {
+  return invoke('update_kvm_session_layout', {
     input: {
       peer_id: input.peerId,
       layout: input.layout,

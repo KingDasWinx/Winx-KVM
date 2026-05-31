@@ -3,11 +3,19 @@ import { ActionIcon, Box, Button, Group, Modal, Stack, Text, Tooltip } from '@ma
 import { useTranslation } from 'react-i18next';
 
 import {
+  computeWorldFrameFromSession,
+  deriveRuntimeForLocalDevice,
   formatResolution,
+  moveDeviceMonitors,
   placedRemoteMonitors,
+  sessionAllMonitors,
   withInferredEdges,
 } from '../../lib/monitorLayoutGeometry';
-import type { MonitorLayoutDto, MonitorRectDto } from '../../ipc/commands';
+import type {
+  MonitorLayoutDto,
+  MonitorRectDto,
+  SessionDesktopLayoutDto,
+} from '../../ipc/commands';
 import classes from './monitorLayout.module.css';
 
 /** Padding em pixels virtuais (desktop) ao redor do conteúdo — mundo fixo ao abrir. */
@@ -20,9 +28,16 @@ const ZOOM_MAX = 4;
 interface Props {
   opened: boolean;
   onClose: () => void;
-  layout: MonitorLayoutDto | null;
-  onLayoutChange: (layout: MonitorLayoutDto) => void;
-  onSave: (layout: MonitorLayoutDto) => void | Promise<void>;
+  /** Modo legado (workspace): perspectiva local. */
+  layout?: MonitorLayoutDto | null;
+  onLayoutChange?: (layout: MonitorLayoutDto) => void;
+  onSave?: (layout: MonitorLayoutDto) => void | Promise<void>;
+  /** Modo canônico (single KVM): mesmo layout em todos os PCs. */
+  sessionLayout?: SessionDesktopLayoutDto | null;
+  localDeviceId?: string;
+  remoteDeviceId?: string;
+  onSessionLayoutChange?: (layout: SessionDesktopLayoutDto) => void;
+  onSaveSession?: (layout: SessionDesktopLayoutDto) => void | Promise<void>;
   saving?: boolean;
   loading?: boolean;
   remoteLabel?: string;
@@ -101,17 +116,52 @@ function contentScreenBounds(
   };
 }
 
+function contentScreenBoundsSession(
+  session: SessionDesktopLayoutDto,
+  shift: WorldShift,
+): { minX: number; minY: number; maxX: number; maxY: number } {
+  const all = sessionAllMonitors(session).map((e) => e.monitor);
+  const xs = all.map((m) => (m.x + shift.x) * DISPLAY_SCALE);
+  const ys = all.map((m) => (m.y + shift.y) * DISPLAY_SCALE);
+  const rs = all.map((m) => (m.x + shift.x + m.width) * DISPLAY_SCALE);
+  const bs = all.map((m) => (m.y + shift.y + m.height) * DISPLAY_SCALE);
+  return {
+    minX: Math.min(...xs),
+    minY: Math.min(...ys),
+    maxX: Math.max(...rs),
+    maxY: Math.max(...bs),
+  };
+}
+
+function deviceMinBounds(monitors: MonitorRectDto[]): { minX: number; minY: number } {
+  const first = monitors[0];
+  if (!first) return { minX: 0, minY: 0 };
+  return {
+    minX: Math.min(...monitors.map((m) => m.x)),
+    minY: Math.min(...monitors.map((m) => m.y)),
+  };
+}
+
 export default function MonitorLayoutModal({
   opened,
   onClose,
-  layout,
+  layout = null,
   onLayoutChange,
   onSave,
+  sessionLayout = null,
+  localDeviceId,
+  remoteDeviceId,
+  onSessionLayoutChange,
+  onSaveSession,
   saving = false,
   loading = false,
   remoteLabel,
 }: Props) {
   const { t } = useTranslation('workspace');
+  const isSessionMode =
+    sessionLayout != null && localDeviceId != null && remoteDeviceId != null;
+  const hasContent = isSessionMode ? !!sessionLayout : !!layout;
+
   const viewportRef = useRef<HTMLDivElement>(null);
   const [worldFrame, setWorldFrame] = useState<{
     worldW: number;
@@ -121,6 +171,7 @@ export default function MonitorLayoutModal({
   const [view, setView] = useState<ViewTransform>({ panX: 0, panY: 0, zoom: 0.15 });
   const [worldShift, setWorldShift] = useState<WorldShift>({ x: 0, y: 0 });
   const [draggingRemote, setDraggingRemote] = useState(false);
+  const [draggingDevice, setDraggingDevice] = useState<string | null>(null);
   const [panning, setPanning] = useState(false);
   const dragOffset = useRef({ x: 0, y: 0 });
   const panStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
@@ -133,11 +184,26 @@ export default function MonitorLayoutModal({
     [layout],
   );
 
+  const runtimeForBadge = useMemo(() => {
+    if (!isSessionMode || !sessionLayout || !localDeviceId || !remoteDeviceId) {
+      return layout;
+    }
+    return deriveRuntimeForLocalDevice(sessionLayout, localDeviceId, remoteDeviceId);
+  }, [isSessionMode, sessionLayout, localDeviceId, remoteDeviceId, layout]);
+
   const fitToContent = useCallback(() => {
-    if (!layout || !viewportRef.current) return;
-    const shift = worldFrame?.shift ?? computeWorldShift(layout);
+    if (!hasContent || !viewportRef.current) return;
+    const shift = worldFrame?.shift ?? (isSessionMode && sessionLayout
+      ? computeWorldFrameFromSession(sessionLayout).shift
+      : layout
+        ? computeWorldShift(layout)
+        : { x: 0, y: 0 });
     setWorldShift(shift);
-    const bounds = contentScreenBounds(layout, shift);
+    const bounds = isSessionMode && sessionLayout
+      ? contentScreenBoundsSession(sessionLayout, shift)
+      : layout
+        ? contentScreenBounds(layout, shift)
+        : { minX: 0, minY: 0, maxX: 1, maxY: 1 };
     const contentW = bounds.maxX - bounds.minX;
     const contentH = bounds.maxY - bounds.minY;
     const pad = 64;
@@ -151,20 +217,26 @@ export default function MonitorLayoutModal({
       panX: vw / 2 - cx * zoom,
       panY: vh / 2 - cy * zoom,
     });
-  }, [layout, worldFrame]);
+  }, [hasContent, isSessionMode, sessionLayout, layout, worldFrame]);
 
   useEffect(() => {
     if (!opened) {
       setWorldFrame(null);
       return;
     }
-    if (layout && !loading && !worldFrame) {
-      const frame = computeWorldFrame(layout);
-      setWorldFrame(frame);
-      setWorldShift(frame.shift);
-      requestAnimationFrame(() => fitToContent());
+    if (hasContent && !loading && !worldFrame) {
+      const frame = isSessionMode && sessionLayout
+        ? computeWorldFrameFromSession(sessionLayout)
+        : layout
+          ? computeWorldFrame(layout)
+          : null;
+      if (frame) {
+        setWorldFrame(frame);
+        setWorldShift(frame.shift);
+        requestAnimationFrame(() => fitToContent());
+      }
     }
-  }, [opened, layout, loading, worldFrame, fitToContent]);
+  }, [opened, hasContent, isSessionMode, sessionLayout, layout, loading, worldFrame, fitToContent]);
 
   const screenToWorld = useCallback(
     (clientX: number, clientY: number): { x: number; y: number } => {
@@ -181,14 +253,18 @@ export default function MonitorLayoutModal({
   );
 
   const handleSave = () => {
-    if (!layout) return;
+    if (isSessionMode && sessionLayout && onSaveSession) {
+      void Promise.resolve(onSaveSession(sessionLayout));
+      return;
+    }
+    if (!layout || !onSave || !onLayoutChange) return;
     const normalized = withInferredEdges(layout);
     onLayoutChange(normalized);
     void Promise.resolve(onSave(normalized));
   };
 
   const onRemotePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!layout) return;
+    if (!layout || !onLayoutChange) return;
     event.stopPropagation();
     const world = screenToWorld(event.clientX, event.clientY);
     dragOffset.current = {
@@ -199,9 +275,23 @@ export default function MonitorLayoutModal({
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
+  const onDevicePointerDown = (
+    deviceId: string,
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    if (!sessionLayout || !onSessionLayoutChange) return;
+    event.stopPropagation();
+    const monitors = sessionLayout.per_device[deviceId] ?? [];
+    const { minX, minY } = deviceMinBounds(monitors);
+    const world = screenToWorld(event.clientX, event.clientY);
+    dragOffset.current = { x: world.x - minX, y: world.y - minY };
+    setDraggingDevice(deviceId);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
   const onViewportPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 && event.button !== 1) return;
-    if (draggingRemote) return;
+    if (draggingRemote || draggingDevice) return;
     panStart.current = {
       x: event.clientX,
       y: event.clientY,
@@ -214,7 +304,23 @@ export default function MonitorLayoutModal({
 
   const onViewportPointerMove = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
-      if (draggingRemote && layout) {
+      if (draggingDevice && sessionLayout && onSessionLayoutChange) {
+        const monitors = sessionLayout.per_device[draggingDevice] ?? [];
+        const world = screenToWorld(event.clientX, event.clientY);
+        const newMinX = snap(world.x - dragOffset.current.x);
+        const newMinY = snap(world.y - dragOffset.current.y);
+        const { minX, minY } = deviceMinBounds(monitors);
+        onSessionLayoutChange(
+          moveDeviceMonitors(
+            sessionLayout,
+            draggingDevice,
+            newMinX - minX,
+            newMinY - minY,
+          ),
+        );
+        return;
+      }
+      if (draggingRemote && layout && onLayoutChange) {
         const world = screenToWorld(event.clientX, event.clientY);
         onLayoutChange({
           ...layout,
@@ -235,14 +341,24 @@ export default function MonitorLayoutModal({
         panY: panStart.current.panY + dy,
       }));
     },
-    [draggingRemote, layout, onLayoutChange, panning, screenToWorld],
+    [
+      draggingDevice,
+      draggingRemote,
+      sessionLayout,
+      onSessionLayoutChange,
+      layout,
+      onLayoutChange,
+      panning,
+      screenToWorld,
+    ],
   );
 
   const onViewportPointerUp = () => {
-    if (draggingRemote && layout) {
+    if (draggingRemote && layout && onLayoutChange) {
       onLayoutChange(withInferredEdges(layout));
     }
     setDraggingRemote(false);
+    setDraggingDevice(null);
     setPanning(false);
   };
 
@@ -281,11 +397,19 @@ export default function MonitorLayoutModal({
     });
   };
 
-  const exitId = layout?.edge.exit_local_monitor_id;
-  const edgeLabel = layout
-    ? `${layout.edge.local_exit} → ${layout.edge.remote_entry}`
+  const exitId = runtimeForBadge?.edge.exit_local_monitor_id;
+  const edgeLabel = runtimeForBadge
+    ? `${runtimeForBadge.edge.local_exit} → ${runtimeForBadge.edge.remote_entry}`
     : '';
   const zoomPct = Math.round(view.zoom * 100);
+
+  const remotePending = isSessionMode
+    ? !(sessionLayout?.per_device[remoteDeviceId ?? '']?.length)
+    : !layout?.remote_monitors?.length;
+
+  const sessionEntries = isSessionMode && sessionLayout
+    ? sessionAllMonitors(sessionLayout)
+    : [];
 
   return (
     <Modal
@@ -307,10 +431,10 @@ export default function MonitorLayoutModal({
         {loading && (
           <Text size="sm" c="dimmed">{t('layoutEditor.loading')}</Text>
         )}
-        {!loading && !layout && (
+        {!loading && !hasContent && (
           <Text size="sm" c="dimmed">{t('layoutEditor.noRemoteMember')}</Text>
         )}
-        {!loading && layout && (
+        {!loading && hasContent && (
           <>
             <Group justify="space-between" align="center">
               <Group gap="md">
@@ -341,7 +465,7 @@ export default function MonitorLayoutModal({
 
             <Text size="xs" c="dimmed">{t('layoutEditor.panZoomHint')}</Text>
 
-            {!layout.remote_monitors?.length && (
+            {remotePending && (
               <Text size="sm" c="yellow">{t('layoutEditor.syncPending')}</Text>
             )}
 
@@ -364,7 +488,37 @@ export default function MonitorLayoutModal({
                   className={classes.monitorCanvas}
                   style={{ width: canvasW, height: canvasH }}
                 >
-                  {layout.local_monitors.map((monitor, idx) => {
+                  {isSessionMode && sessionEntries.map(({ deviceId, monitor }, idx) => {
+                    const box = toScreen(monitor, worldShift);
+                    const isLocal = deviceId === localDeviceId;
+                    const isExit = isLocal && monitor.id === exitId;
+                    const isDragging = draggingDevice === deviceId;
+                    const monitorClass = isLocal ? classes.localMonitor : classes.remoteMonitor;
+                    const label = isLocal
+                      ? `${t('layoutEditor.localLabel')} ${idx + 1}`
+                      : `${remoteLabel ?? t('layoutEditor.remoteLabel')} ${idx + 1}`;
+                    return (
+                      <Box
+                        key={`${deviceId}-${monitor.id}`}
+                        className={`${monitorClass} ${isDragging ? classes.remoteMonitorDragging : ''} ${isExit ? classes.localMonitorExit : ''}`}
+                        style={{
+                          left: box.left,
+                          top: box.top,
+                          width: box.width,
+                          height: box.height,
+                        }}
+                        onPointerDown={(e) => onDevicePointerDown(deviceId, e)}
+                      >
+                        <span>{label}</span>
+                        <span className={classes.resBadge}>{formatResolution(monitor)}</span>
+                        {isExit && (
+                          <span className={classes.resBadge}>{t('layoutEditor.crossingEdge')}</span>
+                        )}
+                      </Box>
+                    );
+                  })}
+
+                  {!isSessionMode && layout && layout.local_monitors.map((monitor, idx) => {
                     const box = toScreen(monitor, worldShift);
                     const isExit = monitor.id === exitId;
                     return (
@@ -387,7 +541,7 @@ export default function MonitorLayoutModal({
                     );
                   })}
 
-                  {placedRemote.map((monitor, idx) => {
+                  {!isSessionMode && placedRemote.map((monitor, idx) => {
                     const box = toScreen(monitor, worldShift);
                     return (
                       <Box
@@ -431,7 +585,7 @@ export default function MonitorLayoutModal({
           <Button variant="subtle" color="gray" onClick={onClose}>
             {t('layoutEditor.cancelButton')}
           </Button>
-          <Button onClick={handleSave} loading={saving} color="teal" disabled={!layout}>
+          <Button onClick={handleSave} loading={saving} color="teal" disabled={!hasContent}>
             {t('layoutEditor.saveButton')}
           </Button>
         </Group>

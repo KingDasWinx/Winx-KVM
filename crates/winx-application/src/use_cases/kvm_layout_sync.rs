@@ -8,9 +8,9 @@ use tracing::{debug, info, warn};
 use winx_domain::{
     input_control::{
         events::{KvmLayoutUpdated, PeerMonitorsUpdated},
-        FocusState, FocusTarget, MonitorLayout, MonitorRect,
+        FocusState, FocusTarget, MonitorLayout, MonitorRect, SessionDesktopLayout,
     },
-    shared::ids::PeerId,
+    shared::ids::{DeviceId, PeerId},
     DomainEvent,
 };
 use winx_protocol::{Payload, PeerMonitorsPayload};
@@ -19,7 +19,10 @@ use crate::{
     bus::EventBus,
     ports::{KvmLayoutStore, MonitorBackend},
     use_cases::clipboard::{ClipboardService, LayoutDataHandler},
-    workspace_layout_wire::{monitor_layout_to_wire, rects_from_wire, rects_to_wire},
+    workspace_layout_wire::{
+        monitor_layout_to_session, rects_from_wire, rects_to_wire, session_layout_from_wire,
+        session_layout_to_wire,
+    },
 };
 
 use super::input_control::MouseSendState;
@@ -63,6 +66,7 @@ pub struct KvmLayoutSyncDeps {
     pub mouse_send: Arc<MouseSendState>,
     pub monitors: Arc<dyn MonitorBackend>,
     pub focus: Arc<Mutex<FocusState>>,
+    pub local_device_id: Arc<Mutex<Option<DeviceId>>>,
 }
 
 impl KvmLayoutSyncDeps {
@@ -92,14 +96,17 @@ impl KvmLayoutSyncDeps {
             "layout sync: anunciando monitores locais ao peer"
         );
 
-        let saved = {
-            let guard = self.store.lock().await;
-            if let Some(s) = guard.as_ref() {
-                s.get(peer_id).await.ok().flatten()
-            } else {
-                None
+        let local_device = match *self.local_device_id.lock().await {
+            Some(id) => id,
+            None => {
+                warn!(%peer_id, "layout sync: local_device_id ausente — announce abortado");
+                return Ok(());
             }
         };
+
+        let mut session = load_session_from_store(&self.store, peer_id, local_device).await;
+        session.merge_announced_monitors(local_device, local_monitors, None);
+        persist_session(&self.store, peer_id, &session).await;
 
         clipboard
             .send_data_payload(Payload::PeerMonitorsAnnounce(PeerMonitorsPayload {
@@ -108,20 +115,75 @@ impl KvmLayoutSyncDeps {
             .await?;
         info!(%peer_id, count, "layout sync: PeerMonitorsAnnounce enviado");
 
-        if let Some(layout) = saved.as_ref() {
-            clipboard
-                .send_data_payload(Payload::KvmLayoutShare(monitor_layout_to_wire(layout)))
-                .await?;
-            info!(
-                %peer_id,
-                remote_monitors = layout.remote_monitors.len(),
-                "layout sync: KvmLayoutShare enviado (layout salvo)"
-            );
-        } else {
-            info!(%peer_id, "layout sync: sem layout salvo — KvmLayoutShare omitido");
-        }
+        clipboard
+            .send_data_payload(Payload::KvmLayoutShare(session_layout_to_wire(&session)))
+            .await?;
+        info!(
+            %peer_id,
+            devices = session.per_device.len(),
+            "layout sync: KvmLayoutShare enviado (layout canônico)"
+        );
         Ok(())
     }
+}
+
+fn peer_as_device(peer_id: PeerId) -> DeviceId {
+    DeviceId::from_uuid(peer_id.as_uuid())
+}
+
+async fn load_session_from_store(
+    store: &Arc<Mutex<Option<Arc<dyn KvmLayoutStore>>>>,
+    peer_id: PeerId,
+    local_device: DeviceId,
+) -> SessionDesktopLayout {
+    let store_ref = {
+        let guard = store.lock().await;
+        guard.as_ref().cloned()
+    };
+    let Some(s) = store_ref else {
+        return SessionDesktopLayout::empty();
+    };
+
+    if let Ok(Some(session)) = s.get_session(peer_id).await {
+        if !session.per_device.is_empty() {
+            return session;
+        }
+    }
+
+    if let Ok(Some(legacy)) = s.get(peer_id).await {
+        return monitor_layout_to_session(&legacy, local_device);
+    }
+
+    SessionDesktopLayout::empty()
+}
+
+async fn persist_session(
+    store: &Arc<Mutex<Option<Arc<dyn KvmLayoutStore>>>>,
+    peer_id: PeerId,
+    session: &SessionDesktopLayout,
+) {
+    if let Some(s) = store.lock().await.as_ref() {
+        if let Err(err) = s.save_session(peer_id, session).await {
+            warn!(?err, %peer_id, "layout sync: falha ao persistir session layout");
+        }
+    }
+}
+
+async fn apply_session_to_runtime(
+    deps: &KvmLayoutSyncDeps,
+    peer_id: PeerId,
+    session: &SessionDesktopLayout,
+) {
+    let local_device = match *deps.local_device_id.lock().await {
+        Some(id) => id,
+        None => return,
+    };
+    let runtime = session.derive_runtime_layout(local_device, peer_id);
+    let scale = runtime.remote_mouse_scale();
+    deps.mouse_send
+        .scale_q8
+        .store((scale * 256.0).round() as i32, Ordering::SeqCst);
+    *deps.layout.lock().await = Some(runtime);
 }
 
 pub async fn store_peer_monitors(
@@ -169,78 +231,50 @@ async fn handle_layout_payload(deps: &KvmLayoutSyncDeps, peer_id: PeerId, payloa
                 "layout sync: processando PeerMonitorsAnnounce"
             );
             store_peer_monitors(&deps.store, &deps.bus, peer_id, monitors.clone()).await;
+
+            let local_device = match *deps.local_device_id.lock().await {
+                Some(id) => id,
+                None => {
+                    warn!(%peer_id, "layout sync: local_device_id ausente — announce ignorado para session");
+                    return;
+                }
+            };
+            let remote_device = peer_as_device(peer_id);
+            let mut session = load_session_from_store(&deps.store, peer_id, local_device).await;
+            let local_os = deps
+                .monitors
+                .enumerate_local_monitors()
+                .await
+                .unwrap_or_default();
+            if !local_os.is_empty() {
+                session.merge_announced_monitors(local_device, &local_os, None);
+            }
+            session.merge_announced_monitors(remote_device, &monitors, Some(local_device));
+            persist_session(&deps.store, peer_id, &session).await;
+
             let input_enabled = *deps.enabled.lock().await;
             let active = *deps.active_peer.lock().await;
             if input_enabled && active == Some(peer_id) {
-                let mut current = deps.layout.lock().await;
-                if let Some(ref mut active) = *current {
-                    let was_empty = active.remote_monitors.is_empty();
-                    active.remote_monitors = monitors;
-                    if was_empty {
-                        active.infer_edges_from_geometry();
-                        let scale = active.remote_mouse_scale();
-                        deps.mouse_send
-                            .scale_q8
-                            .store((scale * 256.0).round() as i32, Ordering::SeqCst);
-                        info!(%peer_id, scale, "layout sync: bordas recalculadas após 1º announce");
-                    } else {
-                        debug!(
-                            %peer_id,
-                            "layout sync: remote_monitors atualizado (bordas preservadas mid-session)"
-                        );
-                    }
-                }
+                apply_session_to_runtime(deps, peer_id, &session).await;
+                info!(%peer_id, "layout sync: runtime atualizado após PeerMonitorsAnnounce");
             } else {
                 debug!(
                     %peer_id,
                     input_enabled,
                     ?active,
-                    "layout sync: monitores persistidos; layout ativo não atualizado (input inativo ou outro peer)"
+                    "layout sync: session persistida; runtime inativo ou outro peer"
                 );
             }
         }
         Payload::KvmLayoutShare(wire) => {
-            let received = crate::workspace_layout_wire::monitor_layout_from_wire(&wire);
+            let received = session_layout_from_wire(&wire);
             info!(
                 %peer_id,
-                local_count = received.local_monitors.len(),
-                remote_count = received.remote_monitors.len(),
-                "layout sync: processando KvmLayoutShare"
+                devices = received.per_device.len(),
+                "layout sync: processando KvmLayoutShare canônico"
             );
-            if !received.local_monitors.is_empty() {
-                store_peer_monitors(
-                    &deps.store,
-                    &deps.bus,
-                    peer_id,
-                    received.local_monitors.clone(),
-                )
-                .await;
-            }
 
-            let local_monitors = resolve_local_monitors_for_mirror(deps, peer_id).await;
-            if local_monitors.is_empty() {
-                warn!(
-                    %peer_id,
-                    "layout sync: KvmLayoutShare ignorado — monitores locais indisponíveis"
-                );
-                return;
-            }
-
-            let mirrored =
-                MonitorLayout::from_peer_share(&received, local_monitors, peer_id);
-
-            if let Some(s) = deps.store.lock().await.as_ref() {
-                match s.save(peer_id, &mirrored).await {
-                    Ok(()) => info!(
-                        %peer_id,
-                        exit = ?mirrored.edge.local_exit,
-                        remote_x = mirrored.remote_virtual.x,
-                        "layout sync: layout espelhado persistido"
-                    ),
-                    Err(err) => warn!(?err, %peer_id, "layout sync: falha ao persistir layout espelhado"),
-                }
-            }
-
+            persist_session(&deps.store, peer_id, &received).await;
             deps.bus
                 .publish(DomainEvent::KvmLayoutUpdated(KvmLayoutUpdated { peer_id }));
 
@@ -252,21 +286,17 @@ async fn handle_layout_payload(deps: &KvmLayoutSyncDeps, peer_id: PeerId, payloa
             );
 
             if session_active && !focus_on_remote {
-                let scale = mirrored.remote_mouse_scale();
-                deps.mouse_send
-                    .scale_q8
-                    .store((scale * 256.0).round() as i32, Ordering::SeqCst);
-                *deps.layout.lock().await = Some(mirrored);
-                info!(%peer_id, "layout sync: layout ativo substituído via KvmLayoutShare espelhado");
+                apply_session_to_runtime(deps, peer_id, &received).await;
+                info!(%peer_id, "layout sync: layout ativo substituído via KvmLayoutShare");
             } else if session_active && focus_on_remote {
                 debug!(
                     %peer_id,
-                    "layout sync: layout espelhado persistido; runtime adiado (foco remoto ativo)"
+                    "layout sync: layout canônico persistido; runtime adiado (foco remoto ativo)"
                 );
             } else {
                 debug!(
                     %peer_id,
-                    "layout sync: layout espelhado salvo; runtime inativo ou outro peer"
+                    "layout sync: layout canônico salvo; runtime inativo ou outro peer"
                 );
             }
         }
@@ -280,29 +310,34 @@ async fn handle_layout_payload(deps: &KvmLayoutSyncDeps, peer_id: PeerId, payloa
     }
 }
 
-async fn resolve_local_monitors_for_mirror(
+pub async fn broadcast_session_layout(
     deps: &KvmLayoutSyncDeps,
+    clipboard: &ClipboardService,
     peer_id: PeerId,
-) -> Vec<MonitorRect> {
-    {
-        let guard = deps.layout.lock().await;
-        if let Some(ref active) = *guard {
-            if !active.local_monitors.is_empty() {
-                return active.local_monitors.clone();
-            }
-        }
-    }
-    if let Some(s) = deps.store.lock().await.as_ref() {
-        if let Ok(Some(saved)) = s.get(peer_id).await {
-            if !saved.local_monitors.is_empty() {
-                return saved.local_monitors.clone();
-            }
-        }
-    }
-    deps.monitors
-        .enumerate_local_monitors()
+    local_monitors: Vec<MonitorRect>,
+    session: &SessionDesktopLayout,
+) {
+    info!(
+        %peer_id,
+        local_count = local_monitors.len(),
+        devices = session.per_device.len(),
+        "layout sync: broadcast session após save"
+    );
+    if let Err(err) = clipboard
+        .send_data_payload(Payload::PeerMonitorsAnnounce(PeerMonitorsPayload {
+            monitors: rects_to_wire(&local_monitors),
+        }))
         .await
-        .unwrap_or_default()
+    {
+        warn!(?err, %peer_id, "layout sync: falha ao broadcast PeerMonitorsAnnounce");
+    }
+    if let Err(err) = clipboard
+        .send_data_payload(Payload::KvmLayoutShare(session_layout_to_wire(session)))
+        .await
+    {
+        warn!(?err, %peer_id, "layout sync: falha ao broadcast KvmLayoutShare");
+    }
+    let _ = deps;
 }
 
 pub async fn get_peer_monitors_from_store(
@@ -320,36 +355,6 @@ pub async fn get_peer_monitors_from_store(
         .unwrap_or_default()
 }
 
-pub async fn broadcast_kvm_layout(
-    deps: &KvmLayoutSyncDeps,
-    clipboard: &ClipboardService,
-    peer_id: PeerId,
-    local_monitors: Vec<MonitorRect>,
-    layout: &MonitorLayout,
-) {
-    info!(
-        %peer_id,
-        local_count = local_monitors.len(),
-        remote_count = layout.remote_monitors.len(),
-        "layout sync: broadcast após save"
-    );
-    if let Err(err) = clipboard
-        .send_data_payload(Payload::PeerMonitorsAnnounce(PeerMonitorsPayload {
-            monitors: rects_to_wire(&local_monitors),
-        }))
-        .await
-    {
-        warn!(?err, %peer_id, "layout sync: falha ao broadcast PeerMonitorsAnnounce");
-    }
-    if let Err(err) = clipboard
-        .send_data_payload(Payload::KvmLayoutShare(monitor_layout_to_wire(layout)))
-        .await
-    {
-        warn!(?err, %peer_id, "layout sync: falha ao broadcast KvmLayoutShare");
-    }
-    let _ = deps;
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -358,7 +363,8 @@ mod tests {
 
     use tokio::sync::{Mutex, Notify};
     use uuid::Uuid;
-    use winx_domain::input_control::{FocusState, MonitorId};
+    use winx_domain::input_control::{FocusState, MonitorId, SessionDesktopLayout};
+    use winx_domain::shared::ids::DeviceId;
     use winx_protocol::PeerMonitorsPayload;
 
     use crate::use_cases::{input_control::MouseSendState, mouse_coalesce::MouseCoalescer};
@@ -367,6 +373,7 @@ mod tests {
     struct MockKvmLayoutStore {
         peer_monitors: StdMutex<HashMap<PeerId, Vec<MonitorRect>>>,
         layouts: StdMutex<HashMap<PeerId, MonitorLayout>>,
+        sessions: StdMutex<HashMap<PeerId, SessionDesktopLayout>>,
     }
 
     impl Default for MockKvmLayoutStore {
@@ -374,6 +381,7 @@ mod tests {
             Self {
                 peer_monitors: StdMutex::new(HashMap::new()),
                 layouts: StdMutex::new(HashMap::new()),
+                sessions: StdMutex::new(HashMap::new()),
             }
         }
     }
@@ -413,6 +421,25 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert(peer_id, monitors.to_vec());
+            Ok(())
+        }
+
+        async fn get_session(
+            &self,
+            peer_id: PeerId,
+        ) -> anyhow::Result<Option<SessionDesktopLayout>> {
+            Ok(self.sessions.lock().unwrap().get(&peer_id).cloned())
+        }
+
+        async fn save_session(
+            &self,
+            peer_id: PeerId,
+            layout: &SessionDesktopLayout,
+        ) -> anyhow::Result<()> {
+            self.sessions
+                .lock()
+                .unwrap()
+                .insert(peer_id, layout.clone());
             Ok(())
         }
     }
@@ -455,6 +482,7 @@ mod tests {
 
     fn test_deps(
         peer_id: PeerId,
+        local_device: DeviceId,
         mock: Arc<MockKvmLayoutStore>,
         bus: EventBus,
     ) -> KvmLayoutSyncDeps {
@@ -483,17 +511,19 @@ mod tests {
             }),
             monitors: Arc::new(MockMonitors),
             focus: Arc::new(Mutex::new(FocusState::default())),
+            local_device_id: Arc::new(Mutex::new(Some(local_device))),
         }
     }
 
     #[tokio::test]
     async fn peer_monitors_announce_persists_publishes_and_updates_active_layout() {
         let peer_id = PeerId::from_uuid(Uuid::new_v4());
+        let local_device = DeviceId::from_uuid(Uuid::new_v4());
         let monitors = remote_monitors_pair();
         let mock = Arc::new(MockKvmLayoutStore::default());
         let bus = EventBus::new();
         let mut rx = bus.subscribe();
-        let deps = test_deps(peer_id, Arc::clone(&mock), bus);
+        let deps = test_deps(peer_id, local_device, Arc::clone(&mock), bus);
 
         handle_layout_payload(
             &deps,
@@ -523,12 +553,34 @@ mod tests {
             other => panic!("evento inesperado: {other:?}"),
         }
 
+        let session = mock
+            .sessions
+            .lock()
+            .unwrap()
+            .get(&peer_id)
+            .cloned()
+            .expect("session persistida");
+        let remote_device = peer_as_device(peer_id);
+        assert_eq!(session.device_monitors(remote_device).len(), 2);
+
         let active = deps.layout.lock().await;
         let active = active.as_ref().expect("layout ativo");
         assert_eq!(active.remote_monitors.len(), 2);
-        assert_eq!(active.remote_monitors, monitors);
+    }
 
-        let mut expected = MonitorLayout::default_side_by_side(
+    #[tokio::test]
+    async fn kvm_layout_share_persists_session_and_publishes_event() {
+        let peer_id = PeerId::from_uuid(Uuid::new_v4());
+        let local_device = DeviceId::from_uuid(Uuid::new_v4());
+        let remote_device = peer_as_device(peer_id);
+        let mock = Arc::new(MockKvmLayoutStore::default());
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let deps = test_deps(peer_id, local_device, Arc::clone(&mock), bus);
+
+        let mut session = SessionDesktopLayout::empty();
+        session.set_device_monitors(
+            local_device,
             vec![MonitorRect {
                 id: MonitorId(10),
                 x: 0,
@@ -536,47 +588,33 @@ mod tests {
                 width: 1920,
                 height: 1080,
             }],
-            peer_id,
         );
-        expected.remote_monitors = monitors;
-        expected.infer_edges_from_geometry();
-        assert_eq!(active.edge, expected.edge);
-    }
-
-    #[tokio::test]
-    async fn kvm_layout_share_mirrors_persists_and_publishes_event() {
-        let peer_id = PeerId::from_uuid(Uuid::new_v4());
-        let mock = Arc::new(MockKvmLayoutStore::default());
-        let bus = EventBus::new();
-        let mut rx = bus.subscribe();
-        let deps = test_deps(peer_id, Arc::clone(&mock), bus);
-
-        let peer_layout = MonitorLayout::default_side_by_side(
+        session.set_device_monitors(
+            remote_device,
             vec![MonitorRect {
                 id: MonitorId(1),
-                x: 0,
+                x: 1920,
                 y: 0,
-                width: 2560,
+                width: 1920,
                 height: 1080,
             }],
-            peer_id,
         );
 
         handle_layout_payload(
             &deps,
             peer_id,
-            Payload::KvmLayoutShare(monitor_layout_to_wire(&peer_layout)),
+            Payload::KvmLayoutShare(session_layout_to_wire(&session)),
         )
         .await;
 
         let saved = mock
-            .layouts
+            .sessions
             .lock()
             .unwrap()
             .get(&peer_id)
             .cloned()
-            .expect("layout espelhado persistido");
-        assert_eq!(saved.edge.local_exit, winx_domain::input_control::BorderSide::Left);
+            .expect("session persistida");
+        assert_eq!(saved.device_monitors(remote_device).len(), 1);
 
         loop {
             let evt = rx.recv().await.unwrap();

@@ -14,6 +14,7 @@ pub mod focus_policy;
 pub mod input_event;
 pub mod layout;
 pub mod monitor;
+pub mod session_layout;
 pub mod mouse;
 
 pub use edge::{
@@ -31,4 +32,5 @@ pub use focus_policy::{
 pub use input_event::{InputEvent, KeyModifiers, MouseButton, PortableKeyCode};
 pub use layout::{BorderSide, EdgeConfig, MonitorLayout};
 pub use monitor::{MonitorId, MonitorRect};
+pub use session_layout::SessionDesktopLayout;
 pub use mouse::{MOUSE_COALESCE_FLUSH_MS, MOUSE_SEND_MIN_MANHATTAN};

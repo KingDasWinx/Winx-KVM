@@ -1,6 +1,7 @@
 use anyhow::Result;
 use winx_domain::{
-    input_control::MonitorLayout,
+    input_control::{MonitorLayout, SessionDesktopLayout},
+    input_control::MonitorRect,
     shared::ids::PeerId,
 };
 
@@ -11,10 +12,14 @@ pub trait KvmLayoutStore: Send + Sync {
     async fn save(&self, peer_id: PeerId, layout: &MonitorLayout) -> Result<()>;
     async fn delete(&self, peer_id: PeerId) -> Result<()>;
     /// Monitores locais reportados pelo peer (cache de sync).
-    async fn get_peer_monitors(&self, peer_id: PeerId) -> Result<Option<Vec<winx_domain::input_control::MonitorRect>>>;
+    async fn get_peer_monitors(&self, peer_id: PeerId) -> Result<Option<Vec<MonitorRect>>>;
     async fn save_peer_monitors(
         &self,
         peer_id: PeerId,
-        monitors: &[winx_domain::input_control::MonitorRect],
+        monitors: &[MonitorRect],
     ) -> Result<()>;
+
+    /// Layout canônico compartilhado da sessão (mesmo em todos os PCs).
+    async fn get_session(&self, peer_id: PeerId) -> Result<Option<SessionDesktopLayout>>;
+    async fn save_session(&self, peer_id: PeerId, layout: &SessionDesktopLayout) -> Result<()>;
 }

@@ -199,6 +199,7 @@ fn init_services(
     rt.block_on(
         input_control.attach_kvm_layout_store(Arc::clone(&kvm_layout_store)),
     );
+    rt.block_on(input_control.set_local_device_id(device.id));
     rt.block_on(async {
         input_control
             .init_layout_sync(Arc::clone(&clipboard))
@@ -536,8 +537,10 @@ pub fn run() {
             commands::enable_input_control,
             commands::list_local_monitors,
             commands::get_kvm_layout,
+            commands::get_kvm_session_layout,
             commands::get_peer_monitors,
             commands::update_kvm_layout,
+            commands::update_kvm_session_layout,
             commands::run_connectivity_suite,
             commands::start_keyboard_mirror_test,
             commands::get_keyboard_mirror_status,

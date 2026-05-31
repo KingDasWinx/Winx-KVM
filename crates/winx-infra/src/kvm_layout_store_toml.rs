@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use winx_application::ports::KvmLayoutStore;
 use winx_domain::{
     input_control::MonitorLayout,
-    input_control::MonitorRect,
+    input_control::{MonitorRect, SessionDesktopLayout},
     shared::ids::PeerId,
 };
 
@@ -48,6 +48,8 @@ struct KvmLayoutsFile {
     schema_version: u32,
     #[serde(default)]
     layouts: BTreeMap<String, MonitorLayout>,
+    #[serde(default)]
+    session_layouts: BTreeMap<String, SessionDesktopLayout>,
     /// Monitores locais de cada peer (reportados via sync).
     #[serde(default)]
     peer_monitors: BTreeMap<String, Vec<MonitorRect>>,
@@ -56,8 +58,9 @@ struct KvmLayoutsFile {
 impl Default for KvmLayoutsFile {
     fn default() -> Self {
         Self {
-            schema_version: 1,
+            schema_version: 2,
             layouts: BTreeMap::new(),
+            session_layouts: BTreeMap::new(),
             peer_monitors: BTreeMap::new(),
         }
     }
@@ -67,7 +70,7 @@ impl Default for KvmLayoutsFile {
 impl KvmLayoutStore for TomlKvmLayoutStore {
     async fn get(&self, peer_id: PeerId) -> Result<Option<MonitorLayout>> {
         let file = self.read_all().await?;
-        if file.schema_version != 1 {
+        if file.schema_version != 1 && file.schema_version != 2 {
             return Err(anyhow!(
                 "kvm_layouts.toml schema version {} não é suportado",
                 file.schema_version
@@ -102,6 +105,19 @@ impl KvmLayoutStore for TomlKvmLayoutStore {
         let mut file = self.read_all().await?;
         file.peer_monitors
             .insert(peer_id.to_string(), monitors.to_vec());
+        self.write_all(&file).await
+    }
+
+    async fn get_session(&self, peer_id: PeerId) -> Result<Option<SessionDesktopLayout>> {
+        let file = self.read_all().await?;
+        Ok(file.session_layouts.get(&peer_id.to_string()).cloned())
+    }
+
+    async fn save_session(&self, peer_id: PeerId, layout: &SessionDesktopLayout) -> Result<()> {
+        let mut file = self.read_all().await?;
+        file.schema_version = 2;
+        file.session_layouts
+            .insert(peer_id.to_string(), layout.clone());
         self.write_all(&file).await
     }
 }

@@ -5,9 +5,9 @@ import { listen } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
 
 import MonitorLayoutModal from '../shared/MonitorLayoutModal';
-import { buildDefaultLayout } from '../../lib/monitorLayoutGeometry';
+import { buildDefaultSessionLayout } from '../../lib/monitorLayoutGeometry';
 import * as ipc from '../../ipc/commands';
-import type { MonitorLayoutDto } from '../../ipc/commands';
+import type { SessionDesktopLayoutDto } from '../../ipc/commands';
 
 interface Props {
   peerId: string;
@@ -18,29 +18,34 @@ export default function SingleKvmLayoutPanel({ peerId, peerUsername }: Props) {
   const { t } = useTranslation('common');
   const { t: tw } = useTranslation('workspace');
   const [open, setOpen] = useState(false);
-  const [layout, setLayout] = useState<MonitorLayoutDto | null>(null);
+  const [sessionLayout, setSessionLayout] = useState<SessionDesktopLayoutDto | null>(null);
+  const [localDeviceId, setLocalDeviceId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const loadLayout = useCallback(async () => {
     setLoading(true);
     try {
-      const [localMonitors, saved, remoteMonitors] = await Promise.all([
-        ipc.listLocalMonitors(),
-        ipc.getKvmLayout(peerId),
+      const [deviceInfo, saved, remoteMonitors, localMonitors] = await Promise.all([
+        ipc.getDeviceInfo(),
+        ipc.getKvmSessionLayout(peerId),
         ipc.getPeerMonitors(peerId),
+        ipc.listLocalMonitors(),
       ]);
 
+      setLocalDeviceId(deviceInfo.id);
+
       if (saved) {
-        setLayout({
-          ...saved,
-          local_monitors: localMonitors,
-          remote_monitors: remoteMonitors.length > 0
-            ? remoteMonitors
-            : saved.remote_monitors,
-        });
+        setSessionLayout(saved);
       } else {
-        setLayout(buildDefaultLayout(localMonitors, peerId, remoteMonitors));
+        setSessionLayout(
+          buildDefaultSessionLayout(
+            deviceInfo.id,
+            localMonitors,
+            peerId,
+            remoteMonitors,
+          ),
+        );
       }
     } catch (err) {
       console.error('Failed to load KVM layout:', err);
@@ -73,10 +78,10 @@ export default function SingleKvmLayoutPanel({ peerId, peerUsername }: Props) {
     };
   }, [peerId, loadLayout]);
 
-  const handleSave = async (normalized: MonitorLayoutDto) => {
+  const handleSave = async (layout: SessionDesktopLayoutDto) => {
     setSaving(true);
     try {
-      await ipc.updateKvmLayout({ peerId, layout: normalized });
+      await ipc.updateKvmSessionLayout({ peerId, layout });
       notifications.show({
         title: tw('layoutEditor.saveSuccessTitle'),
         message: tw('layoutEditor.saveSuccessMessage'),
@@ -109,9 +114,11 @@ export default function SingleKvmLayoutPanel({ peerId, peerUsername }: Props) {
       <MonitorLayoutModal
         opened={open}
         onClose={() => setOpen(false)}
-        layout={loading ? null : layout}
-        onLayoutChange={setLayout}
-        onSave={handleSave}
+        sessionLayout={loading ? null : sessionLayout}
+        localDeviceId={localDeviceId ?? undefined}
+        remoteDeviceId={peerId}
+        onSessionLayoutChange={setSessionLayout}
+        onSaveSession={handleSave}
         saving={saving}
         loading={loading}
         remoteLabel={peerUsername}

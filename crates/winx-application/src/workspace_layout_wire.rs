@@ -1,5 +1,6 @@
 //! Conversão entre layout de domínio e wire format (workspace sync).
 
+use winx_domain::input_control::SessionDesktopLayout;
 use winx_domain::input_control::layout::{BorderSide, EdgeConfig, MonitorLayout};
 use winx_domain::input_control::{MonitorId, MonitorRect};
 use winx_domain::shared::ids::{DeviceId, PeerId};
@@ -7,6 +8,7 @@ use winx_domain::workspace::WorkspaceLayout;
 use winx_protocol::workspace::{
     EdgeConfigPayload, MonitorLayoutPayload, MonitorRectPayload, WorkspaceLayoutPayload,
 };
+use winx_protocol::KvmSessionLayoutPayload;
 
 pub fn layout_to_payload(layout: &WorkspaceLayout) -> WorkspaceLayoutPayload {
     WorkspaceLayoutPayload {
@@ -131,4 +133,39 @@ fn monitor_layout_from_payload(payload: &MonitorLayoutPayload) -> MonitorLayout 
             exit_local_monitor_id: payload.edge.exit_local_monitor_id.map(MonitorId),
         },
     }
+}
+
+pub fn session_layout_to_wire(layout: &SessionDesktopLayout) -> KvmSessionLayoutPayload {
+    KvmSessionLayoutPayload {
+        per_device: layout
+            .per_device
+            .iter()
+            .map(|(id, rects)| (id.to_string(), rects_to_wire(rects)))
+            .collect(),
+    }
+}
+
+pub fn session_layout_from_wire(payload: &KvmSessionLayoutPayload) -> SessionDesktopLayout {
+    let mut layout = SessionDesktopLayout::empty();
+    for (device_id, monitors) in &payload.per_device {
+        if let Ok(uuid) = uuid::Uuid::parse_str(device_id) {
+            layout.set_device_monitors(
+                DeviceId::from_uuid(uuid),
+                rects_from_wire(monitors),
+            );
+        }
+    }
+    layout
+}
+
+/// Converte layout legado (perspectiva local) para canônico mínimo.
+pub fn monitor_layout_to_session(
+    layout: &MonitorLayout,
+    local_device: DeviceId,
+) -> SessionDesktopLayout {
+    let remote_device = DeviceId::from_uuid(layout.remote_peer.as_uuid());
+    let mut session = SessionDesktopLayout::empty();
+    session.set_device_monitors(local_device, layout.local_monitors.clone());
+    session.set_device_monitors(remote_device, layout.placed_remote_monitors());
+    session
 }

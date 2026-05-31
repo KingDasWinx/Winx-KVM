@@ -11,9 +11,10 @@ use winx_domain::{
         events::{FocusSwitched, HotkeyTriggered, InputBlocked},
         should_return_to_local, should_switch_to_remote, toggle_lock_mode, remote_inland_px,
         EdgeDetectInput, FocusState, FocusTarget, HotkeyAction, InputEvent, MonitorLayout,
-        RemoteCursorEst, MOUSE_COALESCE_FLUSH_MS, MOUSE_SEND_MIN_MANHATTAN, REMOTE_MIN_INLAND_PX,
+        RemoteCursorEst, SessionDesktopLayout, MOUSE_COALESCE_FLUSH_MS, MOUSE_SEND_MIN_MANHATTAN,
+        REMOTE_MIN_INLAND_PX,
     },
-    shared::{ids::PeerId, DomainErrorCode},
+    shared::{ids::{DeviceId, PeerId}, DomainErrorCode},
     DomainError, DomainEvent,
 };
 
@@ -22,6 +23,7 @@ use crate::{
     ports::{transport::StreamSender, InputBackend, KvmLayoutStore, MonitorBackend, WorkspaceGlobalCursor},
     protocol_convert::{encode_input_payload, input_event_from_dto},
     use_cases::{input_streams, mouse_coalesce::MouseCoalescer, TransportService},
+    workspace_layout_wire::monitor_layout_to_session,
 };
 
 /// Estado de envio agregado de mouse para o peer remoto.
@@ -91,6 +93,7 @@ pub struct InputControlService {
     focus_transition: Arc<Mutex<()>>,
     layout_sync_deps: Arc<Mutex<Option<Arc<super::kvm_layout_sync::KvmLayoutSyncDeps>>>>,
     clipboard: Arc<Mutex<Option<Arc<super::ClipboardService>>>>,
+    local_device_id: Arc<Mutex<Option<DeviceId>>>,
 }
 
 impl InputControlService {
@@ -134,7 +137,19 @@ impl InputControlService {
             focus_transition: Arc::new(Mutex::new(())),
             layout_sync_deps: Arc::new(Mutex::new(None)),
             clipboard: Arc::new(Mutex::new(None)),
+            local_device_id: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub async fn set_local_device_id(&self, device_id: DeviceId) {
+        *self.local_device_id.lock().await = Some(device_id);
+    }
+
+    async fn require_local_device_id(&self) -> Result<DeviceId, DomainError> {
+        self.local_device_id
+            .lock()
+            .await
+            .ok_or_else(|| internal_err("local_device_id não configurado"))
     }
 
     pub async fn attach_clipboard(&self, clipboard: Arc<super::ClipboardService>) {
@@ -151,6 +166,7 @@ impl InputControlService {
             mouse_send: Arc::clone(&self.mouse_send),
             monitors: Arc::clone(&self.monitors),
             focus: Arc::clone(&self.focus),
+            local_device_id: Arc::clone(&self.local_device_id),
         });
         *self.layout_sync_deps.lock().await = Some(Arc::clone(&deps));
         deps.register_handler(clipboard.as_ref()).await;
@@ -224,7 +240,134 @@ impl InputControlService {
         .await)
     }
 
+    pub async fn get_kvm_session_layout(
+        &self,
+        peer_id: PeerId,
+    ) -> Result<Option<SessionDesktopLayout>, DomainError> {
+        let local_device = self.require_local_device_id().await?;
+        let local_os = self.list_local_monitors().await?;
+        let peer_mons = self.get_peer_monitors(peer_id).await?;
+
+        let store = self.kvm_layout_store.lock().await;
+        let Some(store) = store.as_ref() else {
+            return Ok(None);
+        };
+
+        let mut session = if let Some(saved) = store
+            .get_session(peer_id)
+            .await
+            .map_err(|e| internal_err(&e.to_string()))?
+        {
+            if !saved.per_device.is_empty() {
+                saved
+            } else if let Some(legacy) = store
+                .get(peer_id)
+                .await
+                .map_err(|e| internal_err(&e.to_string()))?
+            {
+                monitor_layout_to_session(&legacy, local_device)
+            } else {
+                SessionDesktopLayout::empty()
+            }
+        } else if let Some(legacy) = store
+            .get(peer_id)
+            .await
+            .map_err(|e| internal_err(&e.to_string()))?
+        {
+            monitor_layout_to_session(&legacy, local_device)
+        } else {
+            SessionDesktopLayout::empty()
+        };
+
+        if session.device_monitors(local_device).is_empty() && !local_os.is_empty() {
+            session.merge_announced_monitors(local_device, &local_os, None);
+        }
+        let remote_device = DeviceId::from_uuid(peer_id.as_uuid());
+        if session.device_monitors(remote_device).is_empty() && !peer_mons.is_empty() {
+            session.merge_announced_monitors(remote_device, &peer_mons, Some(local_device));
+        }
+
+        refresh_device_geometry(&mut session, local_device, &local_os);
+        refresh_device_geometry(&mut session, remote_device, &peer_mons);
+
+        if session.per_device.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(session))
+        }
+    }
+
+    pub async fn save_kvm_session_layout(
+        &self,
+        peer_id: PeerId,
+        mut session: SessionDesktopLayout,
+    ) -> Result<(), DomainError> {
+        let local_device = self.require_local_device_id().await?;
+        let local = self.list_local_monitors().await?;
+        refresh_device_geometry(&mut session, local_device, &local);
+
+        {
+            let store = self.kvm_layout_store.lock().await;
+            let Some(store) = store.as_ref() else {
+                return Err(internal_err("kvm layout store não configurado"));
+            };
+            store
+                .save_session(peer_id, &session)
+                .await
+                .map_err(|e| internal_err(&e.to_string()))?;
+        }
+
+        let runtime = session.derive_runtime_layout(local_device, peer_id);
+        if *self.enabled.lock().await && *self.active_peer.lock().await == Some(peer_id) {
+            self.apply_monitor_layout(runtime).await;
+        }
+
+        if let Err(err) = self.ensure_layout_sync_for_peer(peer_id).await {
+            warn!(
+                ?err,
+                %peer_id,
+                "layout sync: falha ao garantir canal Data — broadcast pode falhar"
+            );
+        }
+
+        let layout_deps = self.layout_sync_deps.lock().await.clone();
+        let clipboard_svc = self.clipboard.lock().await.clone();
+        if let (Some(deps), Some(clipboard)) = (layout_deps, clipboard_svc) {
+            super::kvm_layout_sync::broadcast_session_layout(
+                deps.as_ref(),
+                clipboard.as_ref(),
+                peer_id,
+                local,
+                &session,
+            )
+            .await;
+        } else {
+            warn!(
+                %peer_id,
+                "layout sync: save session concluído mas broadcast omitido (deps ou clipboard ausente)"
+            );
+        }
+
+        Ok(())
+    }
+
     pub async fn get_kvm_layout(
+        &self,
+        peer_id: PeerId,
+    ) -> Result<Option<MonitorLayout>, DomainError> {
+        let local_device = match self.require_local_device_id().await {
+            Ok(id) => id,
+            Err(_) => {
+                return self.get_kvm_layout_legacy(peer_id).await;
+            }
+        };
+        if let Some(session) = self.get_kvm_session_layout(peer_id).await? {
+            return Ok(Some(session.derive_runtime_layout(local_device, peer_id)));
+        }
+        self.get_kvm_layout_legacy(peer_id).await
+    }
+
+    async fn get_kvm_layout_legacy(
         &self,
         peer_id: PeerId,
     ) -> Result<Option<MonitorLayout>, DomainError> {
@@ -256,6 +399,13 @@ impl InputControlService {
         peer_id: PeerId,
         mut layout: MonitorLayout,
     ) -> Result<(), DomainError> {
+        if let Ok(local_device) = self.require_local_device_id().await {
+            let local = self.list_local_monitors().await?;
+            layout.finalize_for_runtime(local.clone(), peer_id);
+            let session = monitor_layout_to_session(&layout, local_device);
+            return self.save_kvm_session_layout(peer_id, session).await;
+        }
+
         let local = self.list_local_monitors().await?;
         layout.finalize_for_runtime(local.clone(), peer_id);
         {
@@ -284,12 +434,14 @@ impl InputControlService {
         let layout_deps = self.layout_sync_deps.lock().await.clone();
         let clipboard_svc = self.clipboard.lock().await.clone();
         if let (Some(deps), Some(clipboard)) = (layout_deps, clipboard_svc) {
-            super::kvm_layout_sync::broadcast_kvm_layout(
+            let local_device = self.require_local_device_id().await?;
+            let session = monitor_layout_to_session(&layout, local_device);
+            super::kvm_layout_sync::broadcast_session_layout(
                 deps.as_ref(),
                 clipboard.as_ref(),
                 peer_id,
                 local,
-                &layout,
+                &session,
             )
             .await;
         } else {
@@ -490,6 +642,14 @@ impl InputControlService {
             }
         }
         if let Some(store) = self.kvm_layout_store.lock().await.as_ref() {
+            let local_device = self.local_device_id.lock().await;
+            if let Some(local_device) = *local_device {
+                if let Ok(Some(session)) = store.get_session(peer_id).await {
+                    if !session.per_device.is_empty() {
+                        return session.derive_runtime_layout(local_device, peer_id);
+                    }
+                }
+            }
             if let Ok(Some(mut saved)) = store.get(peer_id).await {
                 saved.finalize_for_runtime(local_monitors.to_vec(), peer_id);
                 if saved.remote_monitors.is_empty() {
@@ -810,6 +970,7 @@ impl InputControlService {
         let reload_monitors = Arc::clone(&self.monitors);
         let reload_mouse = Arc::clone(&self.mouse_send);
         let reload_return_armed = Arc::clone(&self.remote_return_armed);
+        let reload_local_device = Arc::clone(&self.local_device_id);
 
         tokio::spawn(async move {
             while let Ok(event) = rx.recv().await {
@@ -853,6 +1014,7 @@ impl InputControlService {
                             &reload_layout,
                             &reload_mouse,
                             &reload_return_armed,
+                            &reload_local_device,
                             e.peer_id,
                         )
                         .await;
@@ -873,6 +1035,7 @@ impl InputControlService {
                             &reload_layout,
                             &reload_mouse,
                             &reload_return_armed,
+                            &reload_local_device,
                             peer_id,
                         )
                         .await;
@@ -884,12 +1047,42 @@ impl InputControlService {
     }
 }
 
+fn refresh_device_geometry(
+    session: &mut SessionDesktopLayout,
+    device_id: DeviceId,
+    os_monitors: &[winx_domain::input_control::MonitorRect],
+) {
+    if os_monitors.is_empty() {
+        return;
+    }
+    let Some(existing) = session.per_device.get(&device_id).cloned() else {
+        session.merge_announced_monitors(device_id, os_monitors, None);
+        return;
+    };
+    let mut updated = Vec::with_capacity(os_monitors.len());
+    for os in os_monitors {
+        if let Some(saved) = existing.iter().find(|m| m.id == os.id) {
+            updated.push(winx_domain::input_control::MonitorRect {
+                id: os.id,
+                x: saved.x,
+                y: saved.y,
+                width: os.width,
+                height: os.height,
+            });
+        } else {
+            updated.push(*os);
+        }
+    }
+    session.set_device_monitors(device_id, updated);
+}
+
 async fn apply_stored_layout_to_runtime(
     kvm_layout_store: &Arc<Mutex<Option<Arc<dyn KvmLayoutStore>>>>,
     monitors: &Arc<dyn MonitorBackend>,
     layout: &Arc<Mutex<Option<MonitorLayout>>>,
     mouse_send: &Arc<MouseSendState>,
     remote_return_armed: &Arc<AtomicBool>,
+    local_device_id: &Arc<Mutex<Option<DeviceId>>>,
     peer_id: PeerId,
 ) {
     let Some(store) = kvm_layout_store.lock().await.clone() else {
@@ -899,6 +1092,24 @@ async fn apply_stored_layout_to_runtime(
     if local.is_empty() {
         return;
     }
+    let Some(local_device) = *local_device_id.lock().await else {
+        return;
+    };
+
+    if let Ok(Some(session)) = store.get_session(peer_id).await {
+        if !session.per_device.is_empty() {
+            let runtime = session.derive_runtime_layout(local_device, peer_id);
+            let scale = runtime.remote_mouse_scale();
+            mouse_send
+                .scale_q8
+                .store((scale * 256.0).round() as i32, Ordering::SeqCst);
+            *layout.lock().await = Some(runtime);
+            remote_return_armed.store(false, Ordering::SeqCst);
+            info!(%peer_id, "layout runtime recarregado do session store");
+            return;
+        }
+    }
+
     if let Ok(Some(mut saved)) = store.get(peer_id).await {
         saved.finalize_for_runtime(local, peer_id);
         if saved.remote_monitors.is_empty() {
