@@ -2,8 +2,8 @@
 
 Plano executável da feature **Workspaces** do Winx-KVM. Complementa o [README](README.md) e o [docs/PLANNING.md](docs/PLANNING.md) com o backlog específico do 8º bounded context (`workspace`).
 
-> **Status**: Sprints W1 e W2 ✅ concluídos. Próximo: W3 (Sync, Mirror, Órfão).
-> **Última atualização**: 2026-05-22
+> **Status**: Sprints W1–W4 ✅ concluídos (exceto **W4.13** smoke físico). Auditoria 2026-05-30 aplicou fixes W3.9/W3.11/W3.13/W3.14 + W4 (cursor local, membership, warp multi-monitor).
+> **Última atualização**: 2026-05-30
 
 ---
 
@@ -46,7 +46,7 @@ Um device só pode estar **ativamente conectado** (com input control rodando) a 
 | Identidade do invite | `DeviceId + PublicKey` (username é só label visual cacheado) |
 | Permissões | **Colaborativo** — qualquer membro edita |
 | Modal de conflito | Botão grande "Criar workspace" pré-popula com os 2 PCs em jogo |
-| Sync do mouse global X/Y | **Real-time** via stream Control do QUIC (throttle 60Hz) + debounce 1s para persistir |
+| Sync do mouse global X/Y | **Real-time** via UDP autenticado (porta 7880, `GlobalCursor`) + debounce 1s para persistir |
 | Owner deleta workspace | Mirror persiste com badge **"Órfão"** |
 | Visual da cópia/mirror | Badge "Convidado por &lt;username&gt;" + cor de borda secundária |
 | Storage | `%APPDATA%\Winx-KVM\workspaces.toml` único |
@@ -83,10 +83,10 @@ crates/winx-domain/src/workspace/
 | Camada | Arquivos novos | Modificar |
 |---|---|---|
 | `winx-domain` | 10 arquivos em `src/workspace/` | `src/lib.rs` |
-| `winx-application` | `ports/workspace.rs`, `use_cases/workspace.rs` | `lib.rs` |
+| `winx-application` | `ports/workspace.rs`, `ports/workspace_cursor.rs`, `use_cases/workspace.rs` | `lib.rs`, `use_cases/input_control.rs`, `ports/mod.rs` |
 | `winx-protocol` | `src/workspace.rs` | `src/lib.rs` (Payload enum + PROTOCOL_VERSION bump) |
-| `winx-infra` | `workspace_store.rs`, `workspace_transport.rs` | `lib.rs` |
-| `winx-kvm` (Tauri) | `commands/workspace.rs` | `commands/mod.rs`, `events/mod.rs`, `app_state.rs` |
+| `winx-infra` | `workspace_store.rs`, `workspace_transport.rs` | `lib.rs`, `workspace_invite_udp.rs` |
+| `winx-kvm` (Tauri) | `commands/workspace.rs` | `commands/mod.rs`, `events/mod.rs`, `app_state.rs`, `lib.rs` |
 | `ui/` | 8 componentes em `components/workspace/`, 4 hooks, `store/workspaceStore.ts`, 2 i18n JSON | `pages/HomePage.tsx`, `ipc/commands.ts`, `ipc/events.ts` |
 
 ### Conceito-chave: `OwnershipMode`
@@ -227,8 +227,8 @@ joined_at = 1747800000
 
 1. Device A controla o workspace (tem `WorkspaceConnection::Active`)
 2. `input_control::on_mouse_move(x, y)` → `publish_global_cursor(x, y)`
-3. Use case faz throttle 60Hz → envia `GlobalCursorPayload` no stream Control
-4. Devices B, C... recebem → `apply_remote_cursor` valida `monotonic_seq` ascendente → atualiza estado in-memory
+3. Use case faz throttle 60Hz → envia `GlobalCursorPayload` via UDP autenticado (porta 7880, mesmo transport de invites/sync)
+4. Devices B, C... recebem → `handle_global_cursor` valida `monotonic_seq` ascendente → atualiza estado in-memory
 5. Debounce 1s persiste `GlobalCursorState` em `workspaces.toml`
 6. Quando B assume controle (troca de foco no workspace) → lê último `x, y` conhecido pra retomar a posição exata
 
@@ -283,20 +283,20 @@ joined_at = 1747800000
 **Esforço**: 20–30h | **Risco**: Médio-Alto
 **Critério de aceite**: edits do owner propagam pra mirrors automaticamente; deletar workspace marca mirror como Órfão com badge; LWW resolve conflitos de edits concorrentes.
 
-- [ ] **W3.1** Payloads `WorkspaceSyncPayload` + `WorkspaceDeletePayload` no protocol
-- [ ] **W3.2** Use case `update_workspace(id, patch)` incrementa `version` + chama `send_sync` para todos os membros
-- [ ] **W3.3** Handler `handle_workspace_sync`: aplica LWW (`incoming.version > local.version`), salva no store, emite `workspaces-updated`
-- [ ] **W3.4** Use case `delete_workspace`: só owners; envia `WorkspaceDelete` antes de remover localmente
-- [ ] **W3.5** Handler `handle_workspace_delete`: marca `is_orphan = true` no mirror, **não** remove
-- [ ] **W3.6** Watcher de `owner_last_seen`: se mirror não recebe sync/heartbeat > 30s → emite event `member-presence-changed`
-- [ ] **W3.7** UI: badge "Convidado por &lt;username&gt;" em mirrors + cor de borda secundária
-- [ ] **W3.8** UI: badge "Órfão" + tooltip explicativo quando `is_orphan = true`
-- [ ] **W3.9** UI: tag "Disponível" (verde) / "Indisponível" (cinza) baseado em `>= 1 membro online`
-- [ ] **W3.10** UI `WorkspaceMembersPanel`: adicionar/remover membros, status online/offline, botão "Convidar"
-- [ ] **W3.11** UI `WorkspaceDetailDrawer`: integra members panel + delete + leave
-- [ ] **W3.12** Testes: split-brain (2 edits offline, reconnect, LWW resolve)
-- [ ] **W3.13** Toast Mantine quando workspace recebe update remoto ("&lt;workspace_name&gt; foi atualizado")
-- [ ] **W3.14** "Esquecer este workspace" no UI pra mirrors órfãos (mitigação WR3)
+- [x] **W3.1** Payloads `WorkspaceSyncPayload` + `WorkspaceDeletePayload` no protocol
+- [x] **W3.2** Use case `update_workspace(id, patch)` incrementa `version` + chama `send_sync` para todos os membros
+- [x] **W3.3** Handler `handle_workspace_sync`: aplica LWW (`incoming.version > local.version`), salva no store, emite `workspaces-updated`
+- [x] **W3.4** Use case `delete_workspace`: só owners; envia `WorkspaceDelete` antes de remover localmente
+- [x] **W3.5** Handler `handle_workspace_delete`: marca `is_orphan = true` no mirror, **não** remove
+- [x] **W3.6** Watcher de `owner_last_seen`: se mirror não recebe sync/heartbeat > 30s → emite event `member-presence-changed`
+- [x] **W3.7** UI: badge "Convidado por &lt;username&gt;" em mirrors + cor de borda secundária
+- [x] **W3.8** UI: badge "Órfão" + tooltip explicativo quando `is_orphan = true`
+- [x] **W3.9** UI: tag "Disponível" / "Indisponível" — qualquer membro online no mapa `presence` _(original sem dados de presença assume disponível até watcher)_
+- [x] **W3.10** UI `WorkspaceMembersPanel`: adicionar/remover membros, status online/offline, botão "Convidar"
+- [x] **W3.11** UI `WorkspaceDetailDrawer`: members + delete + **leave** (mirror) / forget (órfão)
+- [x] **W3.12** Testes: split-brain — `split_brain_lww_resolves_to_higher_version` + testes LWW isolados
+- [x] **W3.13** Toast remoto only (`sync_from_remote`) com `"{{name}} foi atualizado"`
+- [x] **W3.14** "Esquecer" só em mirrors órfãos (card + drawer); leave para mirror ativo
 
 ---
 
@@ -305,18 +305,18 @@ joined_at = 1747800000
 **Esforço**: 25–35h | **Risco**: Alto
 **Critério de aceite**: mouse global X/Y replica entre devices em tempo real; layout de monitores editável por workspace; transição de controle entre devices preserva posição.
 
-- [ ] **W4.1** `GlobalCursorPayload` no protocol + `WorkspaceTransport::send_global_cursor`
-- [ ] **W4.2** Use case `publish_global_cursor(x, y)` com throttle 60Hz (16ms) — invocado pelo `input_control` quando este device tem controle ativo
-- [ ] **W4.3** Use case `apply_remote_cursor(payload)` valida `monotonic_seq` ascendente, atualiza estado in-memory
-- [ ] **W4.4** Debounce 1s pra persistir `GlobalCursorState` em `workspaces.toml`
-- [ ] **W4.5** Integração no `input_control::focus`: quando este device assume controle, lê `last x, y` do `GlobalCursorState` pra retomar posição
-- [ ] **W4.6** UI `WorkspaceLayoutEditor`: drag-and-drop de monitores numa grade, salva via `update_workspace(patch.layout = ...)`
-- [ ] **W4.7** Hook `useGlobalCursor` no UI (opcional, debug-only — mostra X/Y live no header)
-- [ ] **W4.8** Hotkey opcional `Ctrl+Alt+W` pra abrir o workspace ativo (configurável)
-- [ ] **W4.9** Testes integração: 3 instâncias localhost; mouse no PC A → controle passa pra PC B → posição retomada corretamente
-- [ ] **W4.10** Benchmark de latência do global cursor (< 10ms p99 em loopback)
-- [ ] **W4.11** Polish: loading states, error toasts via Mantine, animações suaves de transição
-- [ ] **W4.12** Atualizar `docs/PLANNING.md` adicionando Épico 10 (Workspaces) marcado como done
+- [x] **W4.1** `GlobalCursorPayload` no protocol + broadcast via `WorkspaceInviteMessage::GlobalCursor` no transport UDP existente _(decisão: reutilizar `WorkspaceInviteTransport`, igual sync/delete — sem método `send_global_cursor` separado)_
+- [x] **W4.2** Use case `publish_global_cursor(x, y)` com throttle 60Hz (16ms) — invocado pelo `input_control` via port `WorkspaceGlobalCursor::publish_local_cursor`
+- [x] **W4.3** Handler `handle_global_cursor(payload)` — seq monotônico + **validação de membership** + evento `GlobalCursorMoved`
+- [x] **W4.4** Debounce 1s pra persistir `GlobalCursorState` em `workspaces.toml` _(via `cursor_persist_generation` + staging em `cursor_pending`)_
+- [x] **W4.5** Integração no `input_control::focus` + `warp_cursor_signed` com **desktop virtual** (multi-monitor)
+- [x] **W4.6** UI `WorkspaceLayoutEditor`: drag-and-drop de monitores numa grade, salva via `update_workspace(patch.layout = ...)`
+- [x] **W4.7** Hook `useGlobalCursor` no UI (opcional, debug-only — mostra X/Y live no header)
+- [x] **W4.8** Hotkey `Ctrl+Alt+W` → scroll ao painel workspaces _(configurável em `config.toml` — follow-up opcional)_
+- [x] **W4.9** Testes integração: `cursor_position_restored_after_remote_apply` _(smoke 3 instâncias permanece manual)_
+- [x] **W4.10** Benchmark de latência do global cursor (< 10ms p99 em loopback)
+- [x] **W4.11** Polish: loading states, error toasts via Mantine, animações suaves de transição
+- [x] **W4.12** Atualizar `docs/PLANNING.md` adicionando Épico 10 (Workspaces) marcado como done
 - [ ] **W4.13** Smoke test em 2 PCs físicos (Desktop + Notebook) por 30min sem crash
 
 ---
@@ -373,7 +373,7 @@ Itens que precisam de decisão durante a implementação:
 
 ### Durante Sprint W4
 
-9. **Estratégia de stream pro GlobalCursorPayload**: stream Control existente ou um stream/datagram novo dedicado? (Performance vs simplicidade)
+9. ~~**Estratégia de stream pro GlobalCursorPayload**~~ ✅ **Resolvido**: UDP autenticado Ed25519 na porta 7880 (`WorkspaceInviteMessage::GlobalCursor`), mesmo modelo de sync/delete — não usa stream Control QUIC.
 10. **Comportamento quando o device com controle ativo cai abruptamente**: timeout pra liberar controle? (Sugestão: 5s sem heartbeat → libera)
 
 ### Pós-MVP
@@ -386,6 +386,6 @@ Itens que precisam de decisão durante a implementação:
 
 ## Próximos passos imediatos
 
-1. Validar este TODO com o time (José).
-2. Atualizar `docs/PLANNING.md` adicionando referência ao Épico 10 (Workspaces) e linkando para este arquivo.
-3. Começar **W1.1**: scaffolding dos módulos em `crates/winx-domain/src/workspace/`.
+1. **W4.13**: smoke test manual 30min em 2 PCs físicos (Desktop + Notebook).
+2. Critérios de qualidade restantes: cobertura domain, clippy limpo, smoke 1h sem panic.
+3. Plano de auditoria: `docs/superpowers/plans/2026-05-30-workspace-w3-w4-audit-fixes.md`

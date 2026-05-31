@@ -108,6 +108,9 @@ pub struct WorkspaceMarkedOrphan {
 pub struct WorkspaceSyncApplied {
     pub workspace_id: WorkspaceId,
     pub new_version: u64,
+    pub workspace_name: String,
+    /// `true` quando aplicado via `handle_workspace_sync` (remoto); `false` em edit local.
+    pub from_remote: bool,
 }
 
 /// Sync foi descartado (versão local >= versão remota).
@@ -135,4 +138,15 @@ pub struct WorkspaceDisconnected {
 pub struct WorkspaceConnectionConflict {
     pub active_id: WorkspaceId,
     pub target_id: WorkspaceId,
+}
+
+/// Estado de presença de um membro do workspace mudou (online/offline).
+///
+/// Emitido pelo `presence_watcher` quando `owner_last_seen` cruza o threshold
+/// de 30s sem heartbeat/sync.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemberPresenceChanged {
+    pub workspace_id: WorkspaceId,
+    pub device_id: DeviceId,
+    pub is_online: bool,
 }

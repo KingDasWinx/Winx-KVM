@@ -17,9 +17,9 @@ use crate::pairing::events::{
 use crate::transport::events::{ConnectionEstablished, ConnectionLost, StatsUpdated};
 use crate::workspace::events::{
     GlobalCursorMoved, InviteAccepted, InviteExpired, InviteIncoming, InviteRejected, InviteSent,
-    MemberJoined, MemberLeft, WorkspaceConnected, WorkspaceConnectionConflict, WorkspaceCreated,
-    WorkspaceDeleted, WorkspaceDisconnected, WorkspaceMarkedOrphan, WorkspaceSyncApplied,
-    WorkspaceSyncDiscarded, WorkspaceUpdated,
+    MemberJoined, MemberLeft, MemberPresenceChanged, WorkspaceConnected,
+    WorkspaceConnectionConflict, WorkspaceCreated, WorkspaceDeleted, WorkspaceDisconnected,
+    WorkspaceMarkedOrphan, WorkspaceSyncApplied, WorkspaceSyncDiscarded, WorkspaceUpdated,
 };
 
 /// União de todos os eventos de domínio.
@@ -62,6 +62,7 @@ pub enum DomainEvent {
     WorkspaceDeleted(WorkspaceDeleted),
     WorkspaceMemberJoined(MemberJoined),
     WorkspaceMemberLeft(MemberLeft),
+    WorkspaceMemberPresenceChanged(MemberPresenceChanged),
     WorkspaceInviteSent(InviteSent),
     WorkspaceInviteIncoming(InviteIncoming),
     WorkspaceInviteAccepted(InviteAccepted),

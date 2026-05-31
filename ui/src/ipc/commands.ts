@@ -231,8 +231,16 @@ export interface WorkspaceDto {
   owner_device_id: string;
   is_mirror: boolean;
   is_orphan: boolean;
+  owner_username: string | null;
   member_count: number;
   version: number;
+}
+
+export interface WorkspaceMemberDto {
+  device_id: string;
+  public_key_hex: string;
+  username: string;
+  is_owner: boolean;
 }
 
 export interface PendingInviteDto {
@@ -278,4 +286,74 @@ export async function forceDisconnectAndConnect(workspaceId: string): Promise<vo
 
 export async function deleteWorkspace(workspaceId: string): Promise<void> {
   return await invoke<void>('delete_workspace', { workspaceId });
+}
+
+export async function renameWorkspace(workspaceId: string, newName: string): Promise<WorkspaceDto> {
+  return invoke('rename_workspace', { workspaceId, newName });
+}
+
+export async function addWorkspaceMember(input: {
+  workspaceId: string;
+  deviceId: string;
+  publicKeyHex: string;
+  username: string;
+}): Promise<WorkspaceDto> {
+  return invoke('add_workspace_member', { input });
+}
+
+export async function removeWorkspaceMember(
+  workspaceId: string,
+  deviceId: string,
+): Promise<WorkspaceDto> {
+  return invoke('remove_workspace_member', { workspaceId, deviceId });
+}
+
+export async function forgetWorkspace(workspaceId: string): Promise<void> {
+  return invoke('forget_workspace', { workspaceId });
+}
+
+export async function listWorkspaceMembers(workspaceId: string): Promise<WorkspaceMemberDto[]> {
+  return invoke('list_workspace_members', { workspaceId });
+}
+
+export interface MonitorRectDto {
+  id: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface EdgeConfigDto {
+  local_exit: string;
+  remote_entry: string;
+}
+
+export interface MonitorLayoutDto {
+  local_monitors: MonitorRectDto[];
+  remote_peer: string;
+  remote_virtual: MonitorRectDto;
+  edge: EdgeConfigDto;
+}
+
+export interface WorkspaceLayoutDto {
+  per_device: Record<string, MonitorLayoutDto>;
+}
+
+export async function getWorkspaceLayout(workspaceId: string): Promise<WorkspaceLayoutDto> {
+  return invoke('get_workspace_layout', { workspaceId });
+}
+
+export async function updateWorkspaceLayout(input: {
+  workspaceId: string;
+  deviceId: string;
+  layout: MonitorLayoutDto;
+}): Promise<WorkspaceDto> {
+  return invoke('update_workspace_layout', {
+    input: {
+      workspace_id: input.workspaceId,
+      device_id: input.deviceId,
+      layout: input.layout,
+    },
+  });
 }

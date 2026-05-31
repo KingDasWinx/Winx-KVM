@@ -9,6 +9,9 @@ pub enum WorkspaceInviteMessage {
     Invite(WorkspaceInvitePayload),
     Response(WorkspaceInviteResponsePayload),
     Cancel(WorkspaceInviteCancelPayload),
+    Sync(WorkspaceSyncPayload),
+    Delete(WorkspaceDeletePayload),
+    GlobalCursor(GlobalCursorPayload),
 }
 
 /// Invite sent to a peer to join a workspace.
@@ -55,4 +58,39 @@ pub struct WorkspaceInviteResponsePayload {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WorkspaceInviteCancelPayload {
     pub invite_id: Uuid,
+}
+
+/// Sincronização incremental de um workspace.
+///
+/// O `sender_pubkey` é validado pela assinatura do datagrama (mesmo modelo
+/// do invite). Receptores aplicam LWW: `incoming.version > local.version`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct WorkspaceSyncPayload {
+    pub workspace_id: Uuid,
+    pub snapshot: WorkspaceSnapshotPayload,
+    pub sender_device_id: Uuid,
+    pub sender_pubkey: [u8; 32],
+}
+
+/// Notificação de deleção de workspace pelo owner.
+///
+/// Receptores que possuem um mirror desse workspace marcam `is_orphan = true`
+/// mas não removem o mirror.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct WorkspaceDeletePayload {
+    pub workspace_id: Uuid,
+    pub sender_device_id: Uuid,
+    pub sender_pubkey: [u8; 32],
+}
+
+/// Posição do cursor global compartilhado dentro de um workspace.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct GlobalCursorPayload {
+    pub workspace_id: Uuid,
+    pub x: i32,
+    pub y: i32,
+    pub active_device_id: Uuid,
+    pub monotonic_seq: u64,
+    pub sender_device_id: Uuid,
+    pub sender_pubkey: [u8; 32],
 }

@@ -1,4 +1,4 @@
-import { Badge, Button, Card, Group, Stack, Text } from '@mantine/core';
+import { Badge, Button, Card, Group, Stack, Text, Tooltip } from '@mantine/core';
 import { useTranslation } from 'react-i18next';
 import { useWorkspaceStore } from '../../store/workspaceStore';
 import * as ipc from '../../ipc/commands';
@@ -6,27 +6,37 @@ import type { WorkspaceDto } from '../../ipc/commands';
 
 interface Props {
   workspace: WorkspaceDto;
+  onOpenDetail?: () => void;
 }
 
-export default function WorkspaceCard({ workspace }: Props) {
+export default function WorkspaceCard({ workspace, onOpenDetail }: Props) {
   const { t } = useTranslation('workspace');
-  const { activeWorkspaceId, setConflict } = useWorkspaceStore();
+  const { activeWorkspaceId, presence, setConflict } = useWorkspaceStore();
   const isActive = activeWorkspaceId === workspace.id;
+
+  const presencePrefix = `${workspace.id}:`;
+  const memberPresence = Object.entries(presence).filter(([key]) =>
+    key.startsWith(presencePrefix),
+  );
+  const isAvailable =
+    memberPresence.some(([, online]) => online) ||
+    (!workspace.is_mirror && memberPresence.length === 0);
+
+  const borderColor = workspace.is_mirror ? 'var(--mantine-color-gray-4)' : undefined;
 
   const handleConnect = async () => {
     try {
       await ipc.connectToWorkspace(workspace.id);
-    } catch (err: any) {
-      const errorMsg = typeof err === 'string' ? err : err?.message;
+    } catch (err: unknown) {
+      const errorMsg = typeof err === 'string' ? err : (err as Error)?.message;
       if (errorMsg && errorMsg.includes('workspace.conflict')) {
         try {
-          const parsedError = JSON.parse(errorMsg);
+          const parsedError = JSON.parse(errorMsg) as { code: string; active_id: string };
           if (parsedError.code === 'workspace.conflict') {
-            const activeWs = workspace; // TODO: get active workspace name
             setConflict({
               activeId: parsedError.active_id,
               targetId: workspace.id,
-              activeName: activeWs.name,
+              activeName: workspace.name,
               targetName: workspace.name,
             });
           }
@@ -38,29 +48,39 @@ export default function WorkspaceCard({ workspace }: Props) {
   };
 
   const handleDisconnect = async () => {
-    try {
-      await ipc.disconnectFromWorkspace();
-    } catch (err) {
-      console.error('Failed to disconnect:', err);
-    }
+    await ipc.disconnectFromWorkspace().catch(console.error);
   };
 
   const handleDelete = async () => {
-    try {
-      await ipc.deleteWorkspace(workspace.id);
-    } catch (err) {
-      console.error('Failed to delete workspace:', err);
-    }
+    await ipc.deleteWorkspace(workspace.id).catch(console.error);
+  };
+
+  const handleForget = async () => {
+    await ipc.forgetWorkspace(workspace.id).catch(console.error);
   };
 
   return (
-    <Card withBorder radius="md" p="md">
+    <Card withBorder radius="md" p="md" style={{ borderColor }}>
       <Stack gap="xs">
         <Group justify="space-between">
-          <Text fw={600}>{workspace.name}</Text>
-          <Badge color={workspace.is_mirror ? 'gray' : 'blue'} variant="light">
-            {workspace.is_mirror ? t('card.mirrorBadge', { username: 'Owner' }) : t('card.ownedBadge')}
-          </Badge>
+          <Group gap="xs">
+            <Text fw={600} onClick={onOpenDetail} style={{ cursor: onOpenDetail ? 'pointer' : undefined }}>
+              {workspace.name}
+            </Text>
+            {workspace.is_mirror && workspace.owner_username && (
+              <Badge color="gray" variant="light">
+                {t('card.mirrorBadge', { username: workspace.owner_username })}
+              </Badge>
+            )}
+            {workspace.is_orphan && (
+              <Tooltip label={t('card.orphanTooltip')}>
+                <Badge color="orange" variant="filled">{t('card.orphanBadge')}</Badge>
+              </Tooltip>
+            )}
+            <Badge color={isAvailable ? 'green' : 'gray'} variant="dot">
+              {isAvailable ? t('card.available') : t('card.unavailable')}
+            </Badge>
+          </Group>
         </Group>
         <Text size="sm" c="dimmed">
           {t('card.memberCount_other', { count: workspace.member_count })}
@@ -71,13 +91,18 @@ export default function WorkspaceCard({ workspace }: Props) {
               {t('card.disconnectButton')}
             </Button>
           ) : (
-            <Button size="xs" variant="filled" onClick={handleConnect}>
+            <Button size="xs" variant="filled" onClick={handleConnect} disabled={!isAvailable}>
               {t('card.connectButton')}
             </Button>
           )}
           {!workspace.is_mirror && (
             <Button size="xs" variant="subtle" color="red" onClick={handleDelete}>
               {t('card.deleteButton')}
+            </Button>
+          )}
+          {workspace.is_mirror && workspace.is_orphan && (
+            <Button size="xs" variant="subtle" color="orange" onClick={handleForget}>
+              {t('card.forgetButton')}
             </Button>
           )}
         </Group>

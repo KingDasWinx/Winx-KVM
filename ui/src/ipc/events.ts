@@ -34,10 +34,25 @@ export type WinxEvent =
   | { kind: 'workspace-invite-accepted'; invite_id: string }
   | { kind: 'workspace-invite-rejected'; invite_id: string }
   | { kind: 'workspace-invite-expired'; invite_id: string }
-  | { kind: 'workspaces-updated' }
+  | {
+      kind: 'workspaces-updated';
+      workspace_id?: string;
+      workspace_name?: string;
+      new_version?: number;
+      sync_from_remote?: boolean;
+    }
+  | { kind: 'workspace-marked-orphan'; workspace_id: string }
+  | { kind: 'workspace-member-presence'; workspace_id: string; peer_id: string; is_online: boolean }
   | { kind: 'workspace-connected'; workspace_id: string }
   | { kind: 'workspace-disconnected'; workspace_id: string }
   | { kind: 'workspace-connection-conflict'; workspace_id: string; other_workspace_id: string }
+  | {
+      kind: 'workspace-global-cursor';
+      workspace_id: string;
+      x: number;
+      y: number;
+      seq?: number;
+    }
   | { kind: 'unknown' };
 
 export function onWinxEvent(handler: (event: WinxEvent) => void): Promise<UnlistenFn> {

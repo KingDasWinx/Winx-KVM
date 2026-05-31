@@ -1,21 +1,27 @@
 use ed25519_dalek::SigningKey;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use winx_domain::identity::key::PublicKey;
 use winx_domain::shared::{ids::DeviceId, DomainError, DomainErrorCode, DomainEvent};
-use winx_domain::workspace::{InviteSession, Workspace, WorkspaceId, WorkspaceMember};
+use winx_domain::workspace::{
+    GlobalCursorUpdate, InviteSession, Workspace, WorkspaceId, WorkspaceMember,
+};
 use winx_protocol::workspace::{
-    MemberSnapshotPayload, WorkspaceInviteMessage, WorkspaceInvitePayload,
-    WorkspaceInviteResponsePayload, WorkspaceSnapshotPayload,
+    GlobalCursorPayload, MemberSnapshotPayload, WorkspaceDeletePayload, WorkspaceInviteMessage,
+    WorkspaceInvitePayload, WorkspaceInviteResponsePayload, WorkspaceSnapshotPayload,
+    WorkspaceSyncPayload,
 };
 
 use crate::bus::EventBus;
 use crate::ports::{
-    DiscoveryQuery, IdentityStore, SecretStore, WorkspaceInviteTransport, WorkspaceStore,
+    DiscoveryQuery, IdentityStore, SecretStore, WorkspaceGlobalCursor, WorkspaceInviteTransport,
+    WorkspaceStore,
 };
 use tracing::{debug, info, warn};
 use winx_domain::identity::TrustedPeer;
@@ -25,6 +31,31 @@ struct PendingInviteData {
     session: InviteSession,
     snapshot: Option<WorkspaceSnapshotPayload>,
     sender_pubkey: Option<[u8; 32]>,
+}
+
+const CURSOR_BROADCAST_MIN_INTERVAL: Duration = Duration::from_millis(16);
+const CURSOR_PERSIST_DEBOUNCE: Duration = Duration::from_secs(1);
+
+/// Mutação aplicável a um Workspace via use case `update_workspace`.
+///
+/// Cada variante mapeia 1-para-1 com uma operação no aggregate `Workspace`.
+#[derive(Debug, Clone)]
+pub enum WorkspacePatch {
+    Rename {
+        new_name: String,
+    },
+    AddMember {
+        device_id: DeviceId,
+        public_key: PublicKey,
+        username: String,
+    },
+    RemoveMember {
+        device_id: DeviceId,
+    },
+    UpdateLayout {
+        device_id: DeviceId,
+        layout: winx_domain::input_control::layout::MonitorLayout,
+    },
 }
 
 /// Service for workspace invites and membership management.
@@ -37,6 +68,10 @@ pub struct WorkspaceService {
     discovery_query: Arc<dyn DiscoveryQuery>,
     pending_invites: Arc<Mutex<HashMap<Uuid, PendingInviteData>>>,
     active_workspace: Arc<RwLock<Option<WorkspaceId>>>,
+    member_online_state: Arc<Mutex<HashMap<(WorkspaceId, DeviceId), bool>>>,
+    cursor_last_broadcast: Arc<Mutex<Option<Instant>>>,
+    cursor_persist_generation: Arc<AtomicU64>,
+    cursor_pending: Arc<Mutex<HashMap<WorkspaceId, Workspace>>>,
     local_device_id: Uuid,
     local_username: String,
     bus: EventBus,
@@ -61,6 +96,10 @@ impl WorkspaceService {
             discovery_query,
             pending_invites: Arc::new(Mutex::new(HashMap::new())),
             active_workspace: Arc::new(RwLock::new(None)),
+            member_online_state: Arc::new(Mutex::new(HashMap::new())),
+            cursor_last_broadcast: Arc::new(Mutex::new(None)),
+            cursor_persist_generation: Arc::new(AtomicU64::new(0)),
+            cursor_pending: Arc::new(Mutex::new(HashMap::new())),
             local_device_id,
             local_username,
             bus,
@@ -211,33 +250,7 @@ impl WorkspaceService {
         }
 
         // Build snapshot for payload
-        let members_snapshot: Vec<MemberSnapshotPayload> = ws
-            .members
-            .iter()
-            .map(|m| MemberSnapshotPayload {
-                device_id: m.device_id.as_uuid(),
-                public_key: *m.public_key.as_bytes(),
-                username: m.username_cache.clone(),
-                joined_at_rfc3339: m
-                    .joined_at
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .unwrap_or_default(),
-            })
-            .collect();
-
-        let snapshot = WorkspaceSnapshotPayload {
-            id: ws.id.as_uuid(),
-            name: ws.name.clone(),
-            owner_device_id: ws.owner_device_id.as_uuid(),
-            owner_username: ws
-                .members
-                .iter()
-                .find(|m| m.device_id == ws.owner_device_id)
-                .map(|m| m.username_cache.clone())
-                .unwrap_or_else(|| "Unknown".to_string()),
-            version: ws.version.as_u64(),
-            members: members_snapshot,
-        };
+        let snapshot = build_snapshot_payload(&ws);
 
         // Load local public key
         let local_device = self
@@ -498,13 +511,307 @@ impl WorkspaceService {
     }
 
     pub async fn delete_workspace(&self, id: WorkspaceId) -> Result<(), DomainError> {
-        self.store.delete(id).await.map_err(|_| {
-            DomainError::new(DomainErrorCode::InternalError, "failed to delete workspace")
-        })
+        let ws = self
+            .store
+            .find_by_id(id)
+            .await
+            .map_err(|e| DomainError::new(DomainErrorCode::InternalError, e.to_string()))?
+            .ok_or_else(|| {
+                DomainError::new(DomainErrorCode::InternalError, "workspace not found")
+            })?;
+
+        if ws.ownership_mode.is_mirror() {
+            return Err(DomainError::new(
+                DomainErrorCode::WorkspaceNotOwner,
+                "use forget_workspace to remove a mirror locally",
+            ));
+        }
+
+        // Notify all members BEFORE removing locally (best-effort)
+        self.broadcast_delete(&ws).await;
+
+        self.store
+            .delete(id)
+            .await
+            .map_err(|e| DomainError::new(DomainErrorCode::InternalError, e.to_string()))?;
+
+        self.bus.publish(DomainEvent::WorkspaceDeleted(
+            winx_domain::workspace::events::WorkspaceDeleted { workspace_id: id },
+        ));
+
+        info!(%id, "workspace deleted");
+        Ok(())
+    }
+
+    /// Aplica uma mutação local e propaga `Sync` para todos os membros.
+    pub async fn update_workspace(
+        &self,
+        workspace_id: WorkspaceId,
+        patch: WorkspacePatch,
+    ) -> Result<Workspace, DomainError> {
+        let mut ws = self
+            .store
+            .find_by_id(workspace_id)
+            .await
+            .map_err(|e| DomainError::new(DomainErrorCode::InternalError, e.to_string()))?
+            .ok_or_else(|| {
+                DomainError::new(DomainErrorCode::InternalError, "workspace not found")
+            })?;
+
+        if ws.ownership_mode.is_mirror() {
+            return Err(DomainError::new(
+                DomainErrorCode::WorkspaceMirrorImmutable,
+                "mirrors cannot be edited locally",
+            ));
+        }
+
+        apply_patch_local(&mut ws, patch)?;
+
+        self.store
+            .save(&ws)
+            .await
+            .map_err(|e| DomainError::new(DomainErrorCode::InternalError, e.to_string()))?;
+
+        self.bus.publish(DomainEvent::WorkspaceSyncApplied(
+            winx_domain::workspace::events::WorkspaceSyncApplied {
+                workspace_id,
+                new_version: ws.version.as_u64(),
+                workspace_name: ws.name.clone(),
+                from_remote: false,
+            },
+        ));
+
+        self.broadcast_sync(&ws).await;
+
+        Ok(ws)
+    }
+
+    /// Remove um mirror localmente sem notificar o owner. Usado para órfãos
+    /// ou para "sair" voluntariamente.
+    pub async fn forget_workspace(&self, id: WorkspaceId) -> Result<(), DomainError> {
+        let ws = self
+            .store
+            .find_by_id(id)
+            .await
+            .map_err(|e| DomainError::new(DomainErrorCode::InternalError, e.to_string()))?
+            .ok_or_else(|| {
+                DomainError::new(DomainErrorCode::InternalError, "workspace not found")
+            })?;
+
+        if !ws.ownership_mode.is_mirror() {
+            return Err(DomainError::new(
+                DomainErrorCode::WorkspaceMirrorImmutable,
+                "use delete_workspace on originals",
+            ));
+        }
+
+        self.store
+            .delete(id)
+            .await
+            .map_err(|e| DomainError::new(DomainErrorCode::InternalError, e.to_string()))?;
+
+        self.bus.publish(DomainEvent::WorkspaceDeleted(
+            winx_domain::workspace::events::WorkspaceDeleted { workspace_id: id },
+        ));
+
+        info!(%id, "mirror forgotten locally");
+        Ok(())
     }
 
     pub async fn active_workspace_id(&self) -> Option<WorkspaceId> {
         self.active_workspace.read().await.clone()
+    }
+
+    async fn load_workspace_for_cursor(&self, workspace_id: WorkspaceId) -> Option<Workspace> {
+        if let Some(ws) = self.cursor_pending.lock().await.get(&workspace_id).cloned() {
+            return Some(ws);
+        }
+        self.store.find_by_id(workspace_id).await.ok().flatten()
+    }
+
+    async fn schedule_cursor_persist(&self, workspace_id: WorkspaceId, ws: Workspace) {
+        {
+            let mut pending = self.cursor_pending.lock().await;
+            pending.insert(workspace_id, ws);
+        }
+        let gen = self
+            .cursor_persist_generation
+            .fetch_add(1, Ordering::SeqCst)
+            + 1;
+        let svc = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(CURSOR_PERSIST_DEBOUNCE).await;
+            if svc.cursor_persist_generation.load(Ordering::SeqCst) != gen {
+                return;
+            }
+            let ws = {
+                let mut pending = svc.cursor_pending.lock().await;
+                pending.remove(&workspace_id)
+            };
+            if let Some(ws) = ws {
+                if let Err(e) = svc.store.save(&ws).await {
+                    warn!(?e, %workspace_id, "failed to persist global cursor");
+                }
+            }
+        });
+    }
+
+    /// Publica a posição local do cursor global (throttle 60Hz) e faz broadcast UDP.
+    pub async fn publish_global_cursor(&self, x: i32, y: i32) {
+        let workspace_id = match self.active_workspace.read().await.clone() {
+            Some(id) => id,
+            None => return,
+        };
+
+        {
+            let mut last = self.cursor_last_broadcast.lock().await;
+            let now = Instant::now();
+            if let Some(prev) = *last {
+                if now.duration_since(prev) < CURSOR_BROADCAST_MIN_INTERVAL {
+                    return;
+                }
+            }
+            *last = Some(now);
+        }
+
+        let local_device = match self.identity_store.load_device().await {
+            Ok(Some(d)) => d,
+            _ => return,
+        };
+        let local_device_id = local_device.id;
+
+        let mut ws = match self.load_workspace_for_cursor(workspace_id).await {
+            Some(ws) => ws,
+            None => {
+                warn!(%workspace_id, "publish_global_cursor: workspace not found");
+                return;
+            }
+        };
+
+        ws.global_cursor.update_local(x, y, local_device_id);
+
+        let monotonic_seq = ws.global_cursor.monotonic_seq;
+        let active_device_id = ws.global_cursor.active_device_id.unwrap_or(local_device_id);
+        let sender_pubkey = *local_device.public_key.as_bytes();
+
+        self.bus.publish(DomainEvent::WorkspaceGlobalCursorMoved(
+            winx_domain::workspace::events::GlobalCursorMoved {
+                workspace_id,
+                x,
+                y,
+                seq: monotonic_seq,
+            },
+        ));
+
+        let payload = GlobalCursorPayload {
+            workspace_id: workspace_id.as_uuid(),
+            x,
+            y,
+            active_device_id: active_device_id.as_uuid(),
+            monotonic_seq,
+            sender_device_id: self.local_device_id,
+            sender_pubkey,
+        };
+
+        self.broadcast_global_cursor(&ws, payload).await;
+        self.schedule_cursor_persist(workspace_id, ws).await;
+    }
+
+    pub async fn handle_global_cursor(&self, payload: &GlobalCursorPayload) {
+        let workspace_id = WorkspaceId::from_uuid(payload.workspace_id);
+
+        let mut ws = match self.load_workspace_for_cursor(workspace_id).await {
+            Some(ws) => ws,
+            None => {
+                debug!(%workspace_id, "global cursor for unknown workspace, ignoring");
+                return;
+            }
+        };
+
+        let sender_device = DeviceId::from_uuid(payload.sender_device_id);
+        let is_member = ws.members.iter().any(|m| {
+            m.device_id == sender_device && m.public_key.as_bytes() == &payload.sender_pubkey
+        });
+        if !is_member {
+            warn!(
+                %workspace_id,
+                %sender_device,
+                "global cursor rejected: sender not a workspace member"
+            );
+            return;
+        }
+
+        let update = GlobalCursorUpdate {
+            x: payload.x,
+            y: payload.y,
+            active_device_id: DeviceId::from_uuid(payload.active_device_id),
+            monotonic_seq: payload.monotonic_seq,
+        };
+
+        if ws.apply_cursor(update).is_err() {
+            debug!(
+                %workspace_id,
+                local_seq = ws.global_cursor.monotonic_seq,
+                incoming_seq = payload.monotonic_seq,
+                "global cursor update rejected (stale seq)"
+            );
+            return;
+        }
+
+        self.bus.publish(DomainEvent::WorkspaceGlobalCursorMoved(
+            winx_domain::workspace::events::GlobalCursorMoved {
+                workspace_id,
+                x: payload.x,
+                y: payload.y,
+                seq: payload.monotonic_seq,
+            },
+        ));
+
+        self.schedule_cursor_persist(workspace_id, ws).await;
+    }
+
+    async fn broadcast_global_cursor(&self, ws: &Workspace, payload: GlobalCursorPayload) {
+        let signing_key = match self.load_signing_key().await {
+            Ok(k) => k,
+            Err(e) => {
+                warn!(workspace_id = %ws.id, ?e, "failed to load signing key for cursor broadcast");
+                return;
+            }
+        };
+        let local_device = match self.identity_store.load_device().await {
+            Ok(Some(d)) => d,
+            _ => return,
+        };
+
+        let msg = WorkspaceInviteMessage::GlobalCursor(payload);
+
+        for member in &ws.members {
+            if member.device_id == local_device.id {
+                continue;
+            }
+            let target_device_id = member.device_id;
+            let svc = self.clone();
+            let msg_clone = msg.clone();
+            let signing_key_clone = signing_key.clone();
+            tokio::spawn(async move {
+                match svc.discovery_query.resolve_address(target_device_id).await {
+                    Ok(Some(mut addr)) => {
+                        addr.set_port(crate::ports::WORKSPACE_INVITE_PORT);
+                        if let Err(e) = svc
+                            .transport
+                            .send_to(addr, &msg_clone, &signing_key_clone)
+                            .await
+                        {
+                            warn!(?e, "failed to send global cursor");
+                        }
+                    }
+                    Ok(None) => {
+                        debug!(%target_device_id, "member offline, cursor broadcast skipped")
+                    }
+                    Err(e) => warn!(?e, "failed to resolve member addr for cursor"),
+                }
+            });
+        }
     }
 
     pub async fn run_invite_listener(&self) -> anyhow::Result<()> {
@@ -521,6 +828,15 @@ impl WorkspaceService {
                 }
                 WorkspaceInviteMessage::Cancel(_) => {
                     debug!("received invite cancellation");
+                }
+                WorkspaceInviteMessage::Sync(payload) => {
+                    self.handle_workspace_sync(payload).await;
+                }
+                WorkspaceInviteMessage::Delete(payload) => {
+                    self.handle_workspace_delete(payload).await;
+                }
+                WorkspaceInviteMessage::GlobalCursor(payload) => {
+                    self.handle_global_cursor(payload).await;
                 }
             }
         }
@@ -618,6 +934,210 @@ impl WorkspaceService {
         }
     }
 
+    async fn handle_workspace_sync(&self, payload: &WorkspaceSyncPayload) {
+        let workspace_id = WorkspaceId::from_uuid(payload.workspace_id);
+
+        let mut ws = match self.store.find_by_id(workspace_id).await {
+            Ok(Some(w)) => w,
+            Ok(None) => {
+                debug!(%workspace_id, "received sync for unknown workspace, ignoring");
+                return;
+            }
+            Err(e) => {
+                warn!(?e, %workspace_id, "failed to load workspace for sync");
+                return;
+            }
+        };
+
+        // Convert protocol snapshot → domain snapshot
+        let domain_members: Vec<WorkspaceMember> = payload
+            .snapshot
+            .members
+            .iter()
+            .map(|m| {
+                WorkspaceMember::new(
+                    DeviceId::from_uuid(m.device_id),
+                    PublicKey::new(m.public_key),
+                    m.username.clone(),
+                )
+            })
+            .collect();
+
+        let domain_snapshot = winx_domain::workspace::WorkspaceSnapshot {
+            id: workspace_id,
+            name: payload.snapshot.name.clone(),
+            owner_device_id: DeviceId::from_uuid(payload.snapshot.owner_device_id),
+            version: winx_domain::workspace::WorkspaceVersion::from_u64(payload.snapshot.version),
+            ownership_mode: ws.ownership_mode.clone(),
+            members: domain_members,
+            layout: ws.layout.clone(), // layout não vem no MVP de sync; preservar local
+        };
+
+        let local_version = ws.version.as_u64();
+        let outcome = ws.apply_sync(domain_snapshot);
+
+        match outcome {
+            winx_domain::workspace::SyncOutcome::Applied => {
+                // Mirror: refresh owner_last_seen
+                if let winx_domain::workspace::OwnershipMode::Mirror { .. } = &mut ws.ownership_mode
+                {
+                    let _ = ws.ownership_mode.touch_owner_seen();
+                }
+                if let Err(e) = self.store.save(&ws).await {
+                    warn!(?e, %workspace_id, "failed to persist synced workspace");
+                    return;
+                }
+                self.bus.publish(DomainEvent::WorkspaceSyncApplied(
+                    winx_domain::workspace::events::WorkspaceSyncApplied {
+                        workspace_id,
+                        new_version: ws.version.as_u64(),
+                        workspace_name: ws.name.clone(),
+                        from_remote: true,
+                    },
+                ));
+                info!(%workspace_id, new_version = ws.version.as_u64(), "sync applied (LWW)");
+            }
+            winx_domain::workspace::SyncOutcome::Discarded {
+                incoming_version, ..
+            } => {
+                self.bus.publish(DomainEvent::WorkspaceSyncDiscarded(
+                    winx_domain::workspace::events::WorkspaceSyncDiscarded {
+                        workspace_id,
+                        local_version,
+                        incoming_version,
+                    },
+                ));
+                debug!(%workspace_id, local_version, incoming_version, "sync discarded (LWW)");
+            }
+        }
+    }
+
+    async fn handle_workspace_delete(&self, payload: &WorkspaceDeletePayload) {
+        let workspace_id = WorkspaceId::from_uuid(payload.workspace_id);
+
+        let mut ws = match self.store.find_by_id(workspace_id).await {
+            Ok(Some(w)) => w,
+            Ok(None) => return,
+            Err(e) => {
+                warn!(?e, %workspace_id, "failed to load workspace for delete notice");
+                return;
+            }
+        };
+
+        // Only mirrors should be marked orphan; an Original receiving delete is suspicious — ignore.
+        if !ws.ownership_mode.is_mirror() {
+            warn!(%workspace_id, "received Delete for an Original workspace, ignoring");
+            return;
+        }
+
+        if let Err(e) = ws.mark_orphan() {
+            warn!(?e, %workspace_id, "failed to mark orphan");
+            return;
+        }
+
+        if let Err(e) = self.store.save(&ws).await {
+            warn!(?e, %workspace_id, "failed to persist orphan flag");
+            return;
+        }
+
+        self.bus.publish(DomainEvent::WorkspaceMarkedOrphan(
+            winx_domain::workspace::events::WorkspaceMarkedOrphan { workspace_id },
+        ));
+
+        info!(%workspace_id, "mirror marked as orphan after owner delete");
+    }
+
+    /// Envia `WorkspaceSyncPayload` assinado para todos os membros (exceto self).
+    async fn broadcast_sync(&self, ws: &Workspace) {
+        let signing_key = match self.load_signing_key().await {
+            Ok(k) => k,
+            Err(e) => {
+                warn!(workspace_id = %ws.id, ?e, "failed to load signing key for sync broadcast");
+                return;
+            }
+        };
+        let local_device = match self.identity_store.load_device().await {
+            Ok(Some(d)) => d,
+            _ => return,
+        };
+        let sender_pubkey = *local_device.public_key.as_bytes();
+
+        let snapshot = build_snapshot_payload(ws);
+
+        for member in &ws.members {
+            if member.device_id == local_device.id {
+                continue;
+            }
+            let payload = WorkspaceSyncPayload {
+                workspace_id: ws.id.as_uuid(),
+                snapshot: snapshot.clone(),
+                sender_device_id: self.local_device_id,
+                sender_pubkey,
+            };
+            let msg = WorkspaceInviteMessage::Sync(payload);
+            let target_device_id = member.device_id;
+            let svc = self.clone();
+            let signing_key_clone = signing_key.clone();
+            tokio::spawn(async move {
+                match svc.discovery_query.resolve_address(target_device_id).await {
+                    Ok(Some(mut addr)) => {
+                        addr.set_port(crate::ports::WORKSPACE_INVITE_PORT);
+                        if let Err(e) = svc.transport.send_to(addr, &msg, &signing_key_clone).await
+                        {
+                            warn!(?e, "failed to send workspace sync");
+                        }
+                    }
+                    Ok(None) => debug!(%target_device_id, "member offline, sync skipped"),
+                    Err(e) => warn!(?e, "failed to resolve member addr"),
+                }
+            });
+        }
+    }
+
+    async fn broadcast_delete(&self, ws: &Workspace) {
+        let signing_key = match self.load_signing_key().await {
+            Ok(k) => k,
+            Err(e) => {
+                warn!(?e, "failed to load signing key for delete broadcast");
+                return;
+            }
+        };
+        let local_device = match self.identity_store.load_device().await {
+            Ok(Some(d)) => d,
+            _ => return,
+        };
+        let sender_pubkey = *local_device.public_key.as_bytes();
+        let workspace_id = ws.id.as_uuid();
+
+        for member in &ws.members {
+            if member.device_id == local_device.id {
+                continue;
+            }
+            let payload = WorkspaceDeletePayload {
+                workspace_id,
+                sender_device_id: self.local_device_id,
+                sender_pubkey,
+            };
+            let msg = WorkspaceInviteMessage::Delete(payload);
+            let target_device_id = member.device_id;
+            let svc = self.clone();
+            let signing_key_clone = signing_key.clone();
+            tokio::spawn(async move {
+                match svc.discovery_query.resolve_address(target_device_id).await {
+                    Ok(Some(mut addr)) => {
+                        addr.set_port(crate::ports::WORKSPACE_INVITE_PORT);
+                        if let Err(e) = svc.transport.send_to(addr, &msg, &signing_key_clone).await
+                        {
+                            warn!(?e, "failed to send workspace delete");
+                        }
+                    }
+                    Ok(None) => debug!(%target_device_id, "member offline, delete notice skipped"),
+                    Err(e) => warn!(?e, "failed to resolve member addr"),
+                }
+            });
+        }
+    }
+
     pub async fn run_expiration_loop(&self) {
         const CHECK_INTERVAL_SECS: u64 = 10;
 
@@ -646,6 +1166,124 @@ impl WorkspaceService {
                 ));
             }
         }
+    }
+
+    /// Loop que verifica presença de membros baseado em `owner_last_seen` dos mirrors.
+    ///
+    /// Para cada mirror local com `owner_last_seen` mais antigo que 30s, emite
+    /// `MemberPresenceChanged { is_online: false }`. Quando o `last_seen` é atualizado
+    /// (via sync), emite `is_online: true`.
+    pub async fn run_presence_watcher(&self) {
+        const CHECK_INTERVAL_SECS: u64 = 5;
+        const OFFLINE_THRESHOLD_SECS: i64 = 30;
+
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(CHECK_INTERVAL_SECS)).await;
+
+            let workspaces = match self.store.load_all().await {
+                Ok(ws) => ws,
+                Err(e) => {
+                    warn!(?e, "presence_watcher: failed to load workspaces");
+                    continue;
+                }
+            };
+
+            let now = time::OffsetDateTime::now_utc();
+            let mut state = self.member_online_state.lock().await;
+
+            for ws in &workspaces {
+                if let winx_domain::workspace::OwnershipMode::Mirror {
+                    owner_last_seen, ..
+                } = &ws.ownership_mode
+                {
+                    let age = (now - *owner_last_seen).whole_seconds();
+                    let is_online = age < OFFLINE_THRESHOLD_SECS;
+                    let key = (ws.id, ws.owner_device_id);
+                    let prev = state.get(&key).copied();
+                    if prev != Some(is_online) {
+                        state.insert(key, is_online);
+                        self.bus
+                            .publish(DomainEvent::WorkspaceMemberPresenceChanged(
+                                winx_domain::workspace::events::MemberPresenceChanged {
+                                    workspace_id: ws.id,
+                                    device_id: ws.owner_device_id,
+                                    is_online,
+                                },
+                            ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn apply_patch_local(ws: &mut Workspace, patch: WorkspacePatch) -> Result<(), DomainError> {
+    let map_err = |e: String| {
+        if e == "workspace.mirror_immutable" {
+            DomainError::new(DomainErrorCode::WorkspaceMirrorImmutable, e)
+        } else {
+            DomainError::new(DomainErrorCode::InternalError, e)
+        }
+    };
+    match patch {
+        WorkspacePatch::Rename { new_name } => ws.rename(new_name).map_err(map_err),
+        WorkspacePatch::AddMember {
+            device_id,
+            public_key,
+            username,
+        } => {
+            let member = WorkspaceMember::new(device_id, public_key, username);
+            ws.add_member(member).map_err(map_err)
+        }
+        WorkspacePatch::RemoveMember { device_id } => ws.remove_member(device_id).map_err(map_err),
+        WorkspacePatch::UpdateLayout { device_id, layout } => {
+            ws.update_layout(device_id, layout).map_err(map_err)
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkspaceGlobalCursor for WorkspaceService {
+    async fn publish_local_cursor(&self, x: i32, y: i32) {
+        self.publish_global_cursor(x, y).await;
+    }
+
+    async fn restore_cursor_on_focus(&self) -> Option<(i32, i32)> {
+        let workspace_id = self.active_workspace.read().await.clone()?;
+        let ws = self.load_workspace_for_cursor(workspace_id).await?;
+        Some((ws.global_cursor.x, ws.global_cursor.y))
+    }
+}
+
+fn build_snapshot_payload(ws: &Workspace) -> WorkspaceSnapshotPayload {
+    let members_snapshot: Vec<MemberSnapshotPayload> = ws
+        .members
+        .iter()
+        .map(|m| MemberSnapshotPayload {
+            device_id: m.device_id.as_uuid(),
+            public_key: *m.public_key.as_bytes(),
+            username: m.username_cache.clone(),
+            joined_at_rfc3339: m
+                .joined_at
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default(),
+        })
+        .collect();
+
+    let owner_username = ws
+        .members
+        .iter()
+        .find(|m| m.device_id == ws.owner_device_id)
+        .map(|m| m.username_cache.clone())
+        .unwrap_or_else(|| "Unknown".to_string());
+
+    WorkspaceSnapshotPayload {
+        id: ws.id.as_uuid(),
+        name: ws.name.clone(),
+        owner_device_id: ws.owner_device_id.as_uuid(),
+        owner_username,
+        version: ws.version.as_u64(),
+        members: members_snapshot,
     }
 }
 
@@ -948,6 +1586,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_workspace_rename_increments_version_and_persists() {
+        let (svc, store, transport, _) = make_service();
+        let ws = svc
+            .create_workspace("Old Name".to_string(), vec![])
+            .await
+            .unwrap();
+        let v0 = ws.version.as_u64();
+
+        let updated = svc
+            .update_workspace(
+                ws.id,
+                WorkspacePatch::Rename {
+                    new_name: "New Name".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(updated.name, "New Name");
+        assert_eq!(updated.version.as_u64(), v0 + 1);
+
+        let loaded = store.load_all().await.unwrap();
+        assert_eq!(loaded[0].name, "New Name");
+
+        // Solo workspace (apenas owner) — não há membros remotos pra enviar Sync
+        assert!(transport.sent.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn update_mirror_returns_mirror_immutable_error() {
+        let (svc, store, _, _) = make_service();
+        let owner_member = WorkspaceMember::new(
+            DeviceId::from_uuid(Uuid::new_v4()),
+            PublicKey::new([1u8; 32]),
+            "Other".to_string(),
+        );
+        let snapshot = winx_domain::workspace::WorkspaceSnapshot {
+            id: WorkspaceId::new(),
+            name: "Mirror".to_string(),
+            owner_device_id: owner_member.device_id,
+            version: winx_domain::workspace::WorkspaceVersion::initial(),
+            ownership_mode: winx_domain::workspace::OwnershipMode::Original,
+            members: vec![owner_member],
+            layout: winx_domain::workspace::WorkspaceLayout::empty(),
+        };
+        let mirror = Workspace::create_mirror(snapshot, "Other");
+        let mirror_id = mirror.id;
+        store.save(&mirror).await.unwrap();
+
+        let err = svc
+            .update_workspace(
+                mirror_id,
+                WorkspacePatch::Rename {
+                    new_name: "x".into(),
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.code, DomainErrorCode::WorkspaceMirrorImmutable);
+    }
+
+    #[tokio::test]
+    async fn update_workspace_broadcasts_sync_to_remote_members() {
+        let remote_uuid = Uuid::new_v4();
+        let remote_device = DeviceId::from_uuid(remote_uuid);
+        let peer_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
+
+        let (svc, store, transport, _) =
+            make_service_with_peer_addr(Some(remote_device), Some(peer_addr));
+
+        let mut ws = svc
+            .create_workspace("WS".to_string(), vec![])
+            .await
+            .unwrap();
+        let remote_member = WorkspaceMember::new(
+            remote_device,
+            PublicKey::new([8u8; 32]),
+            "Remote".to_string(),
+        );
+        ws.add_member(remote_member).unwrap();
+        store.save(&ws).await.unwrap();
+
+        svc.update_workspace(
+            ws.id,
+            WorkspacePatch::Rename {
+                new_name: "Renamed".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        for _ in 0..20 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+            if !transport.sent.lock().unwrap().is_empty() {
+                break;
+            }
+        }
+
+        let sent = transport.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        let (_, msg) = &sent[0];
+        assert!(matches!(msg, WorkspaceInviteMessage::Sync(_)));
+    }
+
+    #[tokio::test]
     async fn reject_invite_removes_from_pending_and_emits_event() {
         let (svc, _, _, _) = make_service();
 
@@ -1010,5 +1754,392 @@ mod tests {
         svc.connect_to_workspace(w).await.unwrap();
         svc.disconnect_from_workspace().await.unwrap();
         assert_eq!(svc.active_workspace_id().await, None);
+    }
+
+    #[tokio::test]
+    async fn delete_mirror_returns_not_owner_error() {
+        let (svc, store, _, _) = make_service();
+        let owner_member = WorkspaceMember::new(
+            DeviceId::from_uuid(Uuid::new_v4()),
+            PublicKey::new([1u8; 32]),
+            "Other".to_string(),
+        );
+        let snapshot = winx_domain::workspace::WorkspaceSnapshot {
+            id: WorkspaceId::new(),
+            name: "Mirror".to_string(),
+            owner_device_id: owner_member.device_id,
+            version: winx_domain::workspace::WorkspaceVersion::initial(),
+            ownership_mode: winx_domain::workspace::OwnershipMode::Original,
+            members: vec![owner_member],
+            layout: winx_domain::workspace::WorkspaceLayout::empty(),
+        };
+        let mirror = Workspace::create_mirror(snapshot, "Other");
+        let mirror_id = mirror.id;
+        store.save(&mirror).await.unwrap();
+
+        let err = svc.delete_workspace(mirror_id).await.unwrap_err();
+        assert_eq!(err.code, DomainErrorCode::WorkspaceNotOwner);
+    }
+
+    #[tokio::test]
+    async fn forget_workspace_removes_mirror_locally() {
+        let (svc, store, _, _) = make_service();
+        let owner_member = WorkspaceMember::new(
+            DeviceId::from_uuid(Uuid::new_v4()),
+            PublicKey::new([1u8; 32]),
+            "Other".to_string(),
+        );
+        let snapshot = winx_domain::workspace::WorkspaceSnapshot {
+            id: WorkspaceId::new(),
+            name: "Mirror".to_string(),
+            owner_device_id: owner_member.device_id,
+            version: winx_domain::workspace::WorkspaceVersion::initial(),
+            ownership_mode: winx_domain::workspace::OwnershipMode::Original,
+            members: vec![owner_member],
+            layout: winx_domain::workspace::WorkspaceLayout::empty(),
+        };
+        let mirror = Workspace::create_mirror(snapshot, "Other");
+        let mirror_id = mirror.id;
+        store.save(&mirror).await.unwrap();
+
+        svc.forget_workspace(mirror_id).await.unwrap();
+        assert!(store.load_all().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn forget_workspace_on_original_returns_error() {
+        let (svc, _, _, _) = make_service();
+        let ws = svc
+            .create_workspace("Mine".to_string(), vec![])
+            .await
+            .unwrap();
+        let err = svc.forget_workspace(ws.id).await.unwrap_err();
+        assert_eq!(err.code, DomainErrorCode::WorkspaceMirrorImmutable);
+    }
+
+    #[tokio::test]
+    async fn publish_throttles_broadcast() {
+        let remote_uuid = Uuid::new_v4();
+        let remote_device = DeviceId::from_uuid(remote_uuid);
+        let remote_addr: SocketAddr = "127.0.0.1:9001".parse().unwrap();
+        let (svc, store, transport, _) =
+            make_service_with_peer_addr(Some(remote_device), Some(remote_addr));
+
+        let mut ws = svc
+            .create_workspace("WS".to_string(), vec![])
+            .await
+            .unwrap();
+        ws.add_member(WorkspaceMember::new(
+            remote_device,
+            PublicKey::new([7u8; 32]),
+            "Remote".to_string(),
+        ))
+        .unwrap();
+        store.save(&ws).await.unwrap();
+        svc.connect_to_workspace(ws.id).await.unwrap();
+
+        svc.publish_global_cursor(100, 200).await;
+        svc.publish_global_cursor(101, 201).await;
+
+        for _ in 0..20 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+            if !transport.sent.lock().unwrap().is_empty() {
+                break;
+            }
+        }
+
+        let sent = transport.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1, "second publish should be throttled");
+        assert!(matches!(sent[0].1, WorkspaceInviteMessage::GlobalCursor(_)));
+    }
+
+    #[tokio::test]
+    async fn handle_global_cursor_applies_higher_seq() {
+        let (svc, store, _, _) = make_service();
+        let mut ws = svc
+            .create_workspace("Cursor".to_string(), vec![])
+            .await
+            .unwrap();
+        ws.global_cursor.monotonic_seq = 10;
+        let remote_id = DeviceId::from_uuid(Uuid::new_v4());
+        ws.add_member(WorkspaceMember::new(
+            remote_id,
+            PublicKey::new([3u8; 32]),
+            "Remote".to_string(),
+        ))
+        .unwrap();
+        store.save(&ws).await.unwrap();
+
+        let payload = winx_protocol::workspace::GlobalCursorPayload {
+            workspace_id: ws.id.as_uuid(),
+            x: 640,
+            y: 480,
+            active_device_id: remote_id.as_uuid(),
+            monotonic_seq: 11,
+            sender_device_id: remote_id.as_uuid(),
+            sender_pubkey: [3u8; 32],
+        };
+
+        svc.handle_global_cursor(&payload).await;
+
+        let pending = svc.cursor_pending.lock().await;
+        let applied = pending
+            .get(&ws.id)
+            .expect("cursor should be staged for persist");
+        assert_eq!(applied.global_cursor.x, 640);
+        assert_eq!(applied.global_cursor.y, 480);
+        assert_eq!(applied.global_cursor.monotonic_seq, 11);
+    }
+
+    #[tokio::test]
+    async fn handle_global_cursor_rejects_stale_seq() {
+        let (svc, store, _, _) = make_service();
+        let mut ws = svc
+            .create_workspace("Cursor".to_string(), vec![])
+            .await
+            .unwrap();
+        ws.global_cursor.monotonic_seq = 10;
+        ws.global_cursor.x = 50;
+        ws.global_cursor.y = 60;
+        let remote_id = DeviceId::from_uuid(Uuid::new_v4());
+        ws.add_member(WorkspaceMember::new(
+            remote_id,
+            PublicKey::new([4u8; 32]),
+            "Remote".to_string(),
+        ))
+        .unwrap();
+        store.save(&ws).await.unwrap();
+
+        let payload = winx_protocol::workspace::GlobalCursorPayload {
+            workspace_id: ws.id.as_uuid(),
+            x: 999,
+            y: 888,
+            active_device_id: remote_id.as_uuid(),
+            monotonic_seq: 10,
+            sender_device_id: remote_id.as_uuid(),
+            sender_pubkey: [4u8; 32],
+        };
+
+        svc.handle_global_cursor(&payload).await;
+
+        let pending = svc.cursor_pending.lock().await;
+        assert!(
+            pending.get(&ws.id).is_none(),
+            "stale cursor update must not be staged"
+        );
+    }
+
+    #[tokio::test]
+    async fn cursor_position_restored_after_remote_apply() {
+        let (svc, store, _, _) = make_service();
+        let mut ws = svc
+            .create_workspace("CursorRestore".to_string(), vec![])
+            .await
+            .unwrap();
+        ws.global_cursor.monotonic_seq = 5;
+        ws.global_cursor.x = 10;
+        ws.global_cursor.y = 20;
+        let remote_id = DeviceId::from_uuid(Uuid::new_v4());
+        ws.add_member(WorkspaceMember::new(
+            remote_id,
+            PublicKey::new([5u8; 32]),
+            "Remote".to_string(),
+        ))
+        .unwrap();
+        store.save(&ws).await.unwrap();
+        svc.connect_to_workspace(ws.id).await.unwrap();
+
+        let payload = winx_protocol::workspace::GlobalCursorPayload {
+            workspace_id: ws.id.as_uuid(),
+            x: 640,
+            y: 480,
+            active_device_id: remote_id.as_uuid(),
+            monotonic_seq: 6,
+            sender_device_id: remote_id.as_uuid(),
+            sender_pubkey: [5u8; 32],
+        };
+
+        svc.handle_global_cursor(&payload).await;
+
+        let restored = svc.restore_cursor_on_focus().await;
+        assert_eq!(restored, Some((640, 480)));
+    }
+
+    #[tokio::test]
+    async fn split_brain_lww_resolves_to_higher_version() {
+        let (svc, store, _, _) = make_service();
+        let owner_device_id = DeviceId::from_uuid(Uuid::new_v4());
+        let owner_member = WorkspaceMember::new(
+            owner_device_id,
+            PublicKey::new([1u8; 32]),
+            "Owner".to_string(),
+        );
+        let snapshot = winx_domain::workspace::WorkspaceSnapshot {
+            id: WorkspaceId::new(),
+            name: "SplitBrain".to_string(),
+            owner_device_id,
+            version: winx_domain::workspace::WorkspaceVersion::from_u64(5),
+            ownership_mode: winx_domain::workspace::OwnershipMode::Original,
+            members: vec![owner_member.clone()],
+            layout: winx_domain::workspace::WorkspaceLayout::empty(),
+        };
+        let mirror = Workspace::create_mirror(snapshot, "Owner");
+        let workspace_id = mirror.id;
+        store.save(&mirror).await.unwrap();
+
+        let make_sync = |name: &str, version: u64| WorkspaceSyncPayload {
+            workspace_id: workspace_id.as_uuid(),
+            snapshot: WorkspaceSnapshotPayload {
+                id: workspace_id.as_uuid(),
+                name: name.to_string(),
+                owner_device_id: owner_device_id.as_uuid(),
+                owner_username: "Owner".to_string(),
+                version,
+                members: vec![MemberSnapshotPayload {
+                    device_id: owner_device_id.as_uuid(),
+                    public_key: [1u8; 32],
+                    username: "Owner".to_string(),
+                    joined_at_rfc3339: "2026-01-01T00:00:00Z".to_string(),
+                }],
+            },
+            sender_device_id: owner_device_id.as_uuid(),
+            sender_pubkey: [1u8; 32],
+        };
+
+        svc.handle_workspace_sync(&make_sync("Winner", 8)).await;
+        svc.handle_workspace_sync(&make_sync("Stale", 6)).await;
+
+        let loaded = store.find_by_id(workspace_id).await.unwrap().unwrap();
+        assert_eq!(loaded.name, "Winner");
+        assert_eq!(loaded.version.as_u64(), 8);
+    }
+
+    #[tokio::test]
+    async fn handle_workspace_sync_applies_when_incoming_version_higher() {
+        let (svc, store, _, _) = make_service();
+        let owner_device_id = DeviceId::from_uuid(Uuid::new_v4());
+        let owner_member = WorkspaceMember::new(
+            owner_device_id,
+            PublicKey::new([1u8; 32]),
+            "Owner".to_string(),
+        );
+        let initial_snapshot = winx_domain::workspace::WorkspaceSnapshot {
+            id: WorkspaceId::new(),
+            name: "Original".to_string(),
+            owner_device_id,
+            version: winx_domain::workspace::WorkspaceVersion::initial(),
+            ownership_mode: winx_domain::workspace::OwnershipMode::Original,
+            members: vec![owner_member.clone()],
+            layout: winx_domain::workspace::WorkspaceLayout::empty(),
+        };
+        let mirror = Workspace::create_mirror(initial_snapshot.clone(), "Owner");
+        let workspace_id = mirror.id;
+        store.save(&mirror).await.unwrap();
+
+        let sync_payload = winx_protocol::workspace::WorkspaceSyncPayload {
+            workspace_id: workspace_id.as_uuid(),
+            snapshot: winx_protocol::workspace::WorkspaceSnapshotPayload {
+                id: workspace_id.as_uuid(),
+                name: "Renamed".to_string(),
+                owner_device_id: owner_device_id.as_uuid(),
+                owner_username: "Owner".to_string(),
+                version: 5,
+                members: vec![MemberSnapshotPayload {
+                    device_id: owner_device_id.as_uuid(),
+                    public_key: [1u8; 32],
+                    username: "Owner".to_string(),
+                    joined_at_rfc3339: "2026-01-01T00:00:00Z".to_string(),
+                }],
+            },
+            sender_device_id: owner_device_id.as_uuid(),
+            sender_pubkey: [1u8; 32],
+        };
+
+        svc.handle_workspace_sync(&sync_payload).await;
+
+        let loaded = store.find_by_id(workspace_id).await.unwrap().unwrap();
+        assert_eq!(loaded.name, "Renamed");
+        assert_eq!(loaded.version.as_u64(), 5);
+    }
+
+    #[tokio::test]
+    async fn handle_workspace_sync_discards_when_incoming_version_lower() {
+        let (svc, store, _, _) = make_service();
+        let owner_device_id = DeviceId::from_uuid(Uuid::new_v4());
+        let owner_member = WorkspaceMember::new(
+            owner_device_id,
+            PublicKey::new([1u8; 32]),
+            "Owner".to_string(),
+        );
+        let snapshot = winx_domain::workspace::WorkspaceSnapshot {
+            id: WorkspaceId::new(),
+            name: "Local".to_string(),
+            owner_device_id,
+            version: winx_domain::workspace::WorkspaceVersion::from_u64(10),
+            ownership_mode: winx_domain::workspace::OwnershipMode::Original,
+            members: vec![owner_member],
+            layout: winx_domain::workspace::WorkspaceLayout::empty(),
+        };
+        let mirror = Workspace::create_mirror(snapshot, "Owner");
+        let workspace_id = mirror.id;
+        store.save(&mirror).await.unwrap();
+
+        let sync_payload = winx_protocol::workspace::WorkspaceSyncPayload {
+            workspace_id: workspace_id.as_uuid(),
+            snapshot: winx_protocol::workspace::WorkspaceSnapshotPayload {
+                id: workspace_id.as_uuid(),
+                name: "Stale".to_string(),
+                owner_device_id: owner_device_id.as_uuid(),
+                owner_username: "Owner".to_string(),
+                version: 3,
+                members: vec![],
+            },
+            sender_device_id: owner_device_id.as_uuid(),
+            sender_pubkey: [1u8; 32],
+        };
+
+        svc.handle_workspace_sync(&sync_payload).await;
+        let loaded = store.find_by_id(workspace_id).await.unwrap().unwrap();
+        assert_eq!(loaded.name, "Local");
+        assert_eq!(loaded.version.as_u64(), 10);
+    }
+
+    #[tokio::test]
+    async fn handle_workspace_delete_marks_mirror_orphan() {
+        let (svc, store, _, _) = make_service();
+        let owner_device_id = DeviceId::from_uuid(Uuid::new_v4());
+        let owner_member = WorkspaceMember::new(
+            owner_device_id,
+            PublicKey::new([1u8; 32]),
+            "Owner".to_string(),
+        );
+        let snapshot = winx_domain::workspace::WorkspaceSnapshot {
+            id: WorkspaceId::new(),
+            name: "Mirror".to_string(),
+            owner_device_id,
+            version: winx_domain::workspace::WorkspaceVersion::initial(),
+            ownership_mode: winx_domain::workspace::OwnershipMode::Original,
+            members: vec![owner_member],
+            layout: winx_domain::workspace::WorkspaceLayout::empty(),
+        };
+        let mirror = Workspace::create_mirror(snapshot, "Owner");
+        let workspace_id = mirror.id;
+        store.save(&mirror).await.unwrap();
+
+        let delete_payload = winx_protocol::workspace::WorkspaceDeletePayload {
+            workspace_id: workspace_id.as_uuid(),
+            sender_device_id: owner_device_id.as_uuid(),
+            sender_pubkey: [1u8; 32],
+        };
+
+        svc.handle_workspace_delete(&delete_payload).await;
+
+        let loaded = store.find_by_id(workspace_id).await.unwrap().unwrap();
+        match loaded.ownership_mode {
+            winx_domain::workspace::OwnershipMode::Mirror { is_orphan, .. } => {
+                assert!(is_orphan);
+            }
+            _ => panic!("expected mirror"),
+        }
     }
 }

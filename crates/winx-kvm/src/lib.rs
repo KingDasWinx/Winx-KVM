@@ -23,8 +23,8 @@ use tokio::sync::Mutex;
 use tracing::{error, info};
 use winx_application::{
     ports::{
-        IdentityStore, MonitorBackend, SecretStore, WorkspaceStore, WINX_KVM_PORT,
-        WORKSPACE_INVITE_PORT,
+        IdentityStore, MonitorBackend, SecretStore, WorkspaceGlobalCursor, WorkspaceStore,
+        WINX_KVM_PORT, WORKSPACE_INVITE_PORT,
     },
     ClipboardService, ConnectionLabService, DiscoveryService, EnsureDevice, InputControlService,
     PairingService, TransportService, WorkspaceService,
@@ -187,6 +187,11 @@ fn init_services(
         bus.clone(),
     ));
 
+    rt.block_on(
+        input_control
+            .attach_workspace_cursor(Arc::clone(&workspace) as Arc<dyn WorkspaceGlobalCursor>),
+    );
+
     Ok(InitializedServices {
         ensure_device,
         identity_store: Arc::clone(&identity_store) as Arc<dyn IdentityStore>,
@@ -334,6 +339,11 @@ pub fn run() {
         workspace_expiration.run_expiration_loop().await;
     });
 
+    let workspace_presence = Arc::clone(&services.workspace);
+    rt.spawn(async move {
+        workspace_presence.run_presence_watcher().await;
+    });
+
     // Spawnar network watcher task se disponível
     if let Some(net_rx) = net_events_rx {
         let discovery_bg = Arc::clone(&services.discovery);
@@ -475,6 +485,13 @@ pub fn run() {
             commands::disconnect_from_workspace,
             commands::force_disconnect_and_connect,
             commands::delete_workspace,
+            commands::rename_workspace,
+            commands::add_workspace_member,
+            commands::remove_workspace_member,
+            commands::forget_workspace,
+            commands::list_workspace_members,
+            commands::get_workspace_layout,
+            commands::update_workspace_layout,
             commands::get_firewall_status,
             commands::reconfigure_firewall,
             commands::export_diagnostics,

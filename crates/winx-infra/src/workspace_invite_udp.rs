@@ -94,6 +94,9 @@ impl UdpWorkspaceInviteTransport {
         let sender_pubkey = match &msg {
             WorkspaceInviteMessage::Invite(p) => p.sender_pubkey,
             WorkspaceInviteMessage::Response(p) => p.responder_pubkey,
+            WorkspaceInviteMessage::Sync(p) => p.sender_pubkey,
+            WorkspaceInviteMessage::Delete(p) => p.sender_pubkey,
+            WorkspaceInviteMessage::GlobalCursor(p) => p.sender_pubkey,
             WorkspaceInviteMessage::Cancel(_) => {
                 return Err(anyhow!("Cancel message has no pubkey"));
             }
@@ -163,7 +166,7 @@ mod tests {
     use super::*;
     use rand::rngs::OsRng;
     use uuid::Uuid;
-    use winx_protocol::workspace::WorkspaceInviteCancelPayload;
+    use winx_protocol::workspace::{WorkspaceInviteCancelPayload, WorkspaceSnapshotPayload};
 
     fn make_test_signing_key() -> SigningKey {
         SigningKey::generate(&mut OsRng)
@@ -224,6 +227,77 @@ mod tests {
 
         let result = UdpWorkspaceInviteTransport::decode_and_verify_datagram(&datagram);
         assert!(result.is_err(), "wrong pubkey should fail verification");
+    }
+
+    #[test]
+    fn roundtrip_signed_sync() {
+        let signing_key = make_test_signing_key();
+        let pubkey = signing_key.verifying_key().to_bytes();
+        let snapshot = WorkspaceSnapshotPayload {
+            id: Uuid::new_v4(),
+            name: "WS".to_string(),
+            owner_device_id: Uuid::new_v4(),
+            owner_username: "Owner".to_string(),
+            version: 5,
+            members: vec![],
+        };
+        let msg = WorkspaceInviteMessage::Sync(winx_protocol::workspace::WorkspaceSyncPayload {
+            workspace_id: snapshot.id,
+            snapshot,
+            sender_device_id: Uuid::new_v4(),
+            sender_pubkey: pubkey,
+        });
+        let datagram =
+            UdpWorkspaceInviteTransport::encode_signed_datagram(&msg, &signing_key).unwrap();
+        let (decoded, decoded_pubkey) =
+            UdpWorkspaceInviteTransport::decode_and_verify_datagram(&datagram).unwrap();
+        assert_eq!(decoded_pubkey, pubkey);
+        assert!(matches!(decoded, WorkspaceInviteMessage::Sync(_)));
+    }
+
+    #[test]
+    fn roundtrip_signed_delete() {
+        let signing_key = make_test_signing_key();
+        let pubkey = signing_key.verifying_key().to_bytes();
+        let msg =
+            WorkspaceInviteMessage::Delete(winx_protocol::workspace::WorkspaceDeletePayload {
+                workspace_id: Uuid::new_v4(),
+                sender_device_id: Uuid::new_v4(),
+                sender_pubkey: pubkey,
+            });
+        let datagram =
+            UdpWorkspaceInviteTransport::encode_signed_datagram(&msg, &signing_key).unwrap();
+        let (decoded, _) =
+            UdpWorkspaceInviteTransport::decode_and_verify_datagram(&datagram).unwrap();
+        assert!(matches!(decoded, WorkspaceInviteMessage::Delete(_)));
+    }
+
+    #[test]
+    fn roundtrip_signed_global_cursor() {
+        let signing_key = make_test_signing_key();
+        let pubkey = signing_key.verifying_key().to_bytes();
+        let msg =
+            WorkspaceInviteMessage::GlobalCursor(winx_protocol::workspace::GlobalCursorPayload {
+                workspace_id: Uuid::new_v4(),
+                x: 100,
+                y: 200,
+                active_device_id: Uuid::new_v4(),
+                monotonic_seq: 42,
+                sender_device_id: Uuid::new_v4(),
+                sender_pubkey: pubkey,
+            });
+        let datagram =
+            UdpWorkspaceInviteTransport::encode_signed_datagram(&msg, &signing_key).unwrap();
+        let (decoded, decoded_pubkey) =
+            UdpWorkspaceInviteTransport::decode_and_verify_datagram(&datagram).unwrap();
+        assert_eq!(decoded_pubkey, pubkey);
+        if let WorkspaceInviteMessage::GlobalCursor(p) = decoded {
+            assert_eq!(p.x, 100);
+            assert_eq!(p.y, 200);
+            assert_eq!(p.monotonic_seq, 42);
+        } else {
+            panic!("expected GlobalCursor variant");
+        }
     }
 
     #[test]

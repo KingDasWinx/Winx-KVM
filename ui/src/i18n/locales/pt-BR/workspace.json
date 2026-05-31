@@ -9,7 +9,12 @@
     "memberCount_other": "{{count}} membros",
     "connectButton": "Conectar",
     "disconnectButton": "Desconectar",
-    "deleteButton": "Deletar"
+    "deleteButton": "Deletar",
+    "available": "Disponível",
+    "unavailable": "Indisponível",
+    "orphanBadge": "Órfão",
+    "orphanTooltip": "O owner deletou esse workspace. Você pode manter a cópia ou esquecer.",
+    "forgetButton": "Esquecer"
   },
   "createModal": {
     "title": "Criar workspace",
@@ -49,5 +54,57 @@
     "inviteExpired": "Este convite expirou",
     "peerNotDiscovered": "Peer não está mais na rede",
     "ownerCannotLeave": "O proprietário não pode deixar o workspace"
+  },
+  "detail": {
+    "renamePlaceholder": "Novo nome do workspace",
+    "renameButton": "Renomear",
+    "deleteButton": "Deletar workspace",
+    "forgetButton": "Esquecer workspace",
+    "leaveButton": "Sair do workspace",
+    "renameErrorTitle": "Falha ao renomear",
+    "renameErrorMessage": "Não foi possível renomear o workspace"
+  },
+  "layoutEditor": {
+    "title": "Layout de monitores",
+    "hint": "Arraste o monitor remoto para reposicioná-lo na área de trabalho virtual.",
+    "localLabel": "Local",
+    "remoteLabel": "Remoto",
+    "saveButton": "Salvar layout",
+    "loading": "Carregando layout…",
+    "noRemoteMember": "Adicione um membro remoto para configurar o layout.",
+    "loadErrorTitle": "Falha ao carregar layout",
+    "loadErrorMessage": "Não foi possível carregar o layout do workspace",
+    "saveErrorTitle": "Falha ao salvar layout",
+    "saveErrorMessage": "Não foi possível salvar o layout do workspace",
+    "saveSuccessTitle": "Layout salvo",
+    "saveSuccessMessage": "Layout de monitores atualizado",
+    "cursorDebug": "cursor ({{x}}, {{y}}) #{{seq}}"
+  },
+  "hotkeyHint": "Dica: pressione Ctrl+Alt+W para ir aos workspaces.",
+  "members": {
+    "title": "Membros",
+    "inviteButton": "Convidar",
+    "removeButton": "Remover",
+    "ownerLabel": "Owner",
+    "online": "Online",
+    "offline": "Offline"
+  },
+  "invitePeer": {
+    "title": "Convidar peers",
+    "noPeers": "Nenhum peer descoberto na rede",
+    "inviteButton_zero": "Convidar",
+    "inviteButton_one": "Convidar 1 peer",
+    "inviteButton_other": "Convidar {{count}} peers"
+  },
+  "toast": {
+    "syncApplied": {
+      "title": "Workspace atualizado",
+      "message": "{{name}} foi atualizado",
+      "unknownName": "Workspace"
+    },
+    "refreshError": {
+      "title": "Falha ao atualizar",
+      "message": "Não foi possível recarregar os workspaces"
+    }
   }
 }

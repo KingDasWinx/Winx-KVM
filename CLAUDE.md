@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Status
 
 **Implementação ativa.** Sprints 1–9 do MVP (v0.1) concluídos exceto F9.3 (smoke test em VM limpa).
-Sprint W1–W4 da feature **Workspaces** documentado em [Workspace-TODO.md](Workspace-TODO.md), aguardando início.
+Sprints W1–W4 da feature **Workspaces** concluídos (ver [Workspace-TODO.md](Workspace-TODO.md)); pendente apenas W4.13 (smoke físico 30min).
 Leia [README.md](README.md) (visão, arquitetura, decisões) e [docs/PLANNING.md](docs/PLANNING.md) (backlog).
 
 **Usuário se comunica em português brasileiro** (mantenha docs e respostas em pt-BR), mas a **UI do app é em inglês como padrão**, com pt-BR como tradução completa (i18n via `react-i18next`).

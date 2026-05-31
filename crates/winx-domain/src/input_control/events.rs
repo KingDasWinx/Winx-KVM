@@ -9,6 +9,7 @@ pub enum HotkeyAction {
     PanicLocal,
     ToggleLock,
     ForceReset,
+    OpenActiveWorkspace,
 }
 
 impl HotkeyAction {

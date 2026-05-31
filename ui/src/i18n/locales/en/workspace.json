@@ -9,7 +9,12 @@
     "memberCount_other": "{{count}} members",
     "connectButton": "Connect",
     "disconnectButton": "Disconnect",
-    "deleteButton": "Delete"
+    "deleteButton": "Delete",
+    "available": "Available",
+    "unavailable": "Unavailable",
+    "orphanBadge": "Orphan",
+    "orphanTooltip": "Owner deleted this workspace. You can keep your copy or forget it.",
+    "forgetButton": "Forget"
   },
   "createModal": {
     "title": "Create workspace",
@@ -49,5 +54,57 @@
     "inviteExpired": "This invitation has expired",
     "peerNotDiscovered": "Peer is no longer on the network",
     "ownerCannotLeave": "The owner cannot leave the workspace"
+  },
+  "detail": {
+    "renamePlaceholder": "New workspace name",
+    "renameButton": "Rename",
+    "deleteButton": "Delete workspace",
+    "forgetButton": "Forget workspace",
+    "leaveButton": "Leave workspace",
+    "renameErrorTitle": "Rename failed",
+    "renameErrorMessage": "Could not rename the workspace"
+  },
+  "layoutEditor": {
+    "title": "Monitor layout",
+    "hint": "Drag the remote monitor to reposition it in the virtual desktop.",
+    "localLabel": "Local",
+    "remoteLabel": "Remote",
+    "saveButton": "Save layout",
+    "loading": "Loading layout…",
+    "noRemoteMember": "Add a remote member to configure layout.",
+    "loadErrorTitle": "Layout load failed",
+    "loadErrorMessage": "Could not load workspace layout",
+    "saveErrorTitle": "Layout save failed",
+    "saveErrorMessage": "Could not save workspace layout",
+    "saveSuccessTitle": "Layout saved",
+    "saveSuccessMessage": "Monitor layout updated",
+    "cursorDebug": "cursor ({{x}}, {{y}}) #{{seq}}"
+  },
+  "hotkeyHint": "Tip: press Ctrl+Alt+W to jump to workspaces.",
+  "members": {
+    "title": "Members",
+    "inviteButton": "Invite",
+    "removeButton": "Remove",
+    "ownerLabel": "Owner",
+    "online": "Online",
+    "offline": "Offline"
+  },
+  "invitePeer": {
+    "title": "Invite peers",
+    "noPeers": "No peers discovered on the network",
+    "inviteButton_zero": "Invite",
+    "inviteButton_one": "Invite 1 peer",
+    "inviteButton_other": "Invite {{count}} peers"
+  },
+  "toast": {
+    "syncApplied": {
+      "title": "Workspace updated",
+      "message": "{{name}} was updated",
+      "unknownName": "Workspace"
+    },
+    "refreshError": {
+      "title": "Refresh failed",
+      "message": "Could not reload workspaces"
+    }
   }
 }

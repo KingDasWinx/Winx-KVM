@@ -28,6 +28,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
     MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT,
     VK_CONTROL, VK_END, VK_HOME, VK_LCONTROL, VK_LMENU, VK_MENU, VK_RCONTROL, VK_RMENU, VK_SCROLL,
+    VK_W,
 };
 use windows::Win32::UI::Input::{
     GetRawInputData, RegisterRawInputDevices, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER, RAWMOUSE,
@@ -35,13 +36,14 @@ use windows::Win32::UI::Input::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, ClipCursor, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    GetMessageW, GetSystemMetrics, PeekMessageW, RegisterClassW, SetCursorPos, SetForegroundWindow,
+    GetSystemMetrics, PeekMessageW, RegisterClassW, SetCursorPos, SetForegroundWindow,
     SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, UnregisterClassW, WaitMessage,
     WindowFromPoint, CS_HREDRAW, CS_VREDRAW, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED,
     LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN, WH_KEYBOARD_LL,
     WH_MOUSE_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_HOTKEY, WM_INPUT, WM_KEYDOWN, WM_KEYUP,
     WM_MOUSEMOVE, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_POPUP,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 use winx_application::ports::{CaptureHandle, InputBackend};
 use winx_domain::input_control::{
@@ -216,6 +218,7 @@ enum HookMsg {
     HotkeyPanic,
     HotkeyLock,
     HotkeyForceReset,
+    HotkeyOpenWorkspace,
     Stop,
 }
 
@@ -289,6 +292,7 @@ impl InputBackend for Win32InputBackend {
                     HookMsg::HotkeyPanic => on_hotkey(HotkeyAction::PanicLocal),
                     HookMsg::HotkeyLock => on_hotkey(HotkeyAction::ToggleLock),
                     HookMsg::HotkeyForceReset => on_hotkey(HotkeyAction::force_reset()),
+                    HookMsg::HotkeyOpenWorkspace => on_hotkey(HotkeyAction::OpenActiveWorkspace),
                     HookMsg::Stop => break,
                 }
             }
@@ -446,15 +450,19 @@ impl InputBackend for Win32InputBackend {
 
     async fn warp_cursor_signed(&self, x: i32, y: i32) -> anyhow::Result<()> {
         tokio::task::spawn_blocking(move || unsafe {
-            let screen_width = GetSystemMetrics(SM_CXSCREEN);
-            let screen_height = GetSystemMetrics(SM_CYSCREEN);
+            let virtual_left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+            let virtual_top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+            let virtual_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+            let virtual_height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
-            if screen_width == 0 || screen_height == 0 {
-                anyhow::bail!("Dimensões de monitor inválidas");
+            if virtual_width == 0 || virtual_height == 0 {
+                anyhow::bail!("Dimensões do desktop virtual inválidas");
             }
 
-            let norm_x = ((x as i64) * 65535 / (screen_width as i64)) as i32;
-            let norm_y = ((y as i64) * 65535 / (screen_height as i64)) as i32;
+            let norm_x =
+                ((i64::from(x - virtual_left) * 65535) / i64::from(virtual_width)) as i32;
+            let norm_y =
+                ((i64::from(y - virtual_top) * 65535) / i64::from(virtual_height)) as i32;
 
             let input_packet = INPUT {
                 r#type: INPUT_MOUSE,
@@ -800,6 +808,8 @@ fn run_hook_loop(_hook_tx: &Sender<HookMsg>) -> anyhow::Result<()> {
             RegisterHotKey(None, 2, MOD_CONTROL | MOD_ALT, u32::from(VK_END.0)).is_ok();
         let hotkey_scroll_ok =
             RegisterHotKey(None, 3, MOD_NOREPEAT, u32::from(VK_SCROLL.0)).is_ok();
+        let hotkey_open_ws_ok =
+            RegisterHotKey(None, 4, MOD_CONTROL | MOD_ALT, u32::from(VK_W.0)).is_ok();
         if !hotkey_panic_ok {
             warn!("RegisterHotKey Ctrl+Alt+Home falhou — apenas hook inline ativo");
         }
@@ -808,6 +818,9 @@ fn run_hook_loop(_hook_tx: &Sender<HookMsg>) -> anyhow::Result<()> {
         }
         if !hotkey_scroll_ok {
             warn!("RegisterHotKey Scroll Lock falhou — apenas hook inline ativo");
+        }
+        if !hotkey_open_ws_ok {
+            warn!("RegisterHotKey Ctrl+Alt+W falhou — apenas hook inline ativo");
         }
 
         // Loop de mensagens para hooks LL (WH_KEYBOARD_LL, WH_MOUSE_LL).
@@ -841,6 +854,10 @@ fn run_hook_loop(_hook_tx: &Sender<HookMsg>) -> anyhow::Result<()> {
                                 let _ = tx.try_send(HookMsg::HotkeyLock);
                                 info!("hotkey via RegisterHotKey disparou: Scroll Lock");
                             }
+                            4 => {
+                                let _ = tx.try_send(HookMsg::HotkeyOpenWorkspace);
+                                info!("hotkey via RegisterHotKey disparou: Ctrl+Alt+W");
+                            }
                             _ => {}
                         }
                     }
@@ -862,6 +879,9 @@ fn run_hook_loop(_hook_tx: &Sender<HookMsg>) -> anyhow::Result<()> {
         }
         if hotkey_scroll_ok {
             let _ = UnregisterHotKey(None, 3);
+        }
+        if hotkey_open_ws_ok {
+            let _ = UnregisterHotKey(None, 4);
         }
         UnhookWindowsHookEx(mouse_hook)?;
         UnhookWindowsHookEx(kb_hook)?;
@@ -992,6 +1012,13 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
                 if let Some(tx) = HOOK_TX.get() {
                     let _ = tx.try_send(HookMsg::HotkeyForceReset);
                     info!("hotkey inline disparado: Ctrl+Alt+End");
+                }
+                return LRESULT(1);
+            }
+            if vk == VK_W.0 as u32 {
+                if let Some(tx) = HOOK_TX.get() {
+                    let _ = tx.try_send(HookMsg::HotkeyOpenWorkspace);
+                    info!("hotkey inline disparado: Ctrl+Alt+W");
                 }
                 return LRESULT(1);
             }

@@ -57,6 +57,18 @@ struct FrontendEvent {
     invite_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     other_workspace_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    new_version: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_online: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    x: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    y: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seq: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sync_from_remote: Option<bool>,
 }
 
 impl FrontendEvent {
@@ -84,6 +96,12 @@ impl FrontendEvent {
             workspace_name: None,
             invite_id: None,
             other_workspace_id: None,
+            new_version: None,
+            is_online: None,
+            x: None,
+            y: None,
+            seq: None,
+            sync_from_remote: None,
         }
     }
 }
@@ -106,6 +124,7 @@ fn hotkey_action_str(a: winx_domain::input_control::HotkeyAction) -> String {
         HotkeyAction::PanicLocal => "panic_local".to_string(),
         HotkeyAction::ToggleLock => "toggle_lock".to_string(),
         HotkeyAction::ForceReset => "force_reset".to_string(),
+        HotkeyAction::OpenActiveWorkspace => "open_active_workspace".to_string(),
     }
 }
 
@@ -247,6 +266,31 @@ impl From<&DomainEvent> for FrontendEvent {
                 kind: "workspaces-updated",
                 ..FrontendEvent::empty("workspaces-updated")
             },
+            DomainEvent::WorkspaceSyncApplied(e) => FrontendEvent {
+                kind: "workspaces-updated",
+                workspace_id: Some(e.workspace_id.to_string()),
+                workspace_name: Some(e.workspace_name.clone()),
+                new_version: Some(e.new_version),
+                sync_from_remote: Some(e.from_remote),
+                ..FrontendEvent::empty("workspaces-updated")
+            },
+            DomainEvent::WorkspaceSyncDiscarded(e) => FrontendEvent {
+                kind: "workspaces-updated",
+                workspace_id: Some(e.workspace_id.to_string()),
+                ..FrontendEvent::empty("workspaces-updated")
+            },
+            DomainEvent::WorkspaceMarkedOrphan(e) => FrontendEvent {
+                kind: "workspace-marked-orphan",
+                workspace_id: Some(e.workspace_id.to_string()),
+                ..FrontendEvent::empty("workspace-marked-orphan")
+            },
+            DomainEvent::WorkspaceMemberPresenceChanged(e) => FrontendEvent {
+                kind: "workspace-member-presence",
+                workspace_id: Some(e.workspace_id.to_string()),
+                peer_id: Some(e.device_id.to_string()),
+                is_online: Some(e.is_online),
+                ..FrontendEvent::empty("workspace-member-presence")
+            },
             DomainEvent::WorkspaceInviteAccepted(e) => FrontendEvent {
                 kind: "workspace-invite-accepted",
                 invite_id: Some(e.invite_id.to_string()),
@@ -261,6 +305,14 @@ impl From<&DomainEvent> for FrontendEvent {
                 kind: "workspace-invite-expired",
                 invite_id: Some(e.invite_id.to_string()),
                 ..FrontendEvent::empty("workspace-invite-expired")
+            },
+            DomainEvent::WorkspaceGlobalCursorMoved(e) => FrontendEvent {
+                kind: "workspace-global-cursor",
+                workspace_id: Some(e.workspace_id.to_string()),
+                x: Some(e.x),
+                y: Some(e.y),
+                seq: Some(e.seq),
+                ..FrontendEvent::empty("workspace-global-cursor")
             },
             _ => FrontendEvent::empty("unknown"),
         }

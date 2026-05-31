@@ -15,6 +15,7 @@ pub mod network;
 pub mod pairing;
 pub mod transport;
 pub mod workspace;
+pub mod workspace_cursor;
 pub mod workspace_transport;
 
 pub use clipboard::{ClipboardBackend, ClipboardWatcherHandle};
@@ -29,6 +30,7 @@ pub use pairing::{
 };
 pub use transport::TransportAdapter;
 pub use workspace::WorkspaceStore;
+pub use workspace_cursor::WorkspaceGlobalCursor;
 pub use workspace_transport::{
     DecodedWorkspaceInviteMessage, WorkspaceInviteTransport, WORKSPACE_INVITE_PORT,
 };

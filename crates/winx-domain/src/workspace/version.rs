@@ -26,6 +26,12 @@ impl WorkspaceVersion {
         self.0
     }
 
+    /// Constrói a partir de um valor inteiro.
+    #[must_use]
+    pub const fn from_u64(v: u64) -> Self {
+        Self(v)
+    }
+
     /// Verifica se esta versão é mais nova que outra.
     #[must_use]
     pub const fn is_newer_than(&self, other: WorkspaceVersion) -> bool {

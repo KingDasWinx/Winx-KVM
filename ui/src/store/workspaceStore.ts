@@ -11,12 +11,13 @@ export interface WorkspaceStoreState {
     targetName: string;
   } | null;
   activeWorkspaceId: string | null;
+  presence: Record<string, boolean>;
 
-  // Actions
   refresh: () => Promise<void>;
   setPendingInvite: (invite: ipc.PendingInviteDto | null) => void;
   setConflict: (conflict: WorkspaceStoreState['conflict']) => void;
   setActiveWorkspaceId: (id: string | null) => void;
+  setPresence: (workspaceId: string, deviceId: string, isOnline: boolean) => void;
 }
 
 export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
@@ -24,14 +25,11 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
   pendingInvite: null,
   conflict: null,
   activeWorkspaceId: null,
+  presence: {},
 
   refresh: async () => {
-    try {
-      const workspaces = await ipc.listWorkspaces();
-      set({ workspaces });
-    } catch (err) {
-      console.error('Failed to refresh workspaces:', err);
-    }
+    const workspaces = await ipc.listWorkspaces();
+    set({ workspaces });
   },
 
   setPendingInvite: (invite) => {
@@ -45,4 +43,9 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
   setActiveWorkspaceId: (id) => {
     set({ activeWorkspaceId: id });
   },
+
+  setPresence: (workspaceId, deviceId, isOnline) =>
+    set((state) => ({
+      presence: { ...state.presence, [`${workspaceId}:${deviceId}`]: isOnline },
+    })),
 }));

@@ -19,7 +19,7 @@ use winx_domain::{
 
 use crate::{
     bus::EventBus,
-    ports::{transport::StreamSender, InputBackend, MonitorBackend},
+    ports::{transport::StreamSender, InputBackend, MonitorBackend, WorkspaceGlobalCursor},
     protocol_convert::{encode_input_payload, input_event_from_dto},
     use_cases::{input_streams, mouse_coalesce::MouseCoalescer, TransportService},
 };
@@ -79,6 +79,7 @@ pub struct InputControlService {
     remote_inject_fail: Arc<AtomicU64>,
     mirror_deadline: Arc<Mutex<Option<Instant>>>,
     mouse_send: Arc<MouseSendState>,
+    workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
 }
 
 impl InputControlService {
@@ -114,7 +115,12 @@ impl InputControlService {
                 scale_q8: AtomicI32::new(256),
                 frames_sent: AtomicU64::new(0),
             }),
+            workspace_cursor: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub async fn attach_workspace_cursor(&self, bridge: Arc<dyn WorkspaceGlobalCursor>) {
+        *self.workspace_cursor.lock().await = Some(bridge);
     }
 
     pub async fn get_input_debug_stats(&self) -> InputDebugStats {
@@ -326,6 +332,7 @@ impl InputControlService {
         let service_mirror_hooked = Arc::clone(&self.mirror_keys_hooked);
         let service_mirror_send_errors = Arc::clone(&self.mirror_keys_send_errors);
         let service_mouse_send = Arc::clone(&self.mouse_send);
+        let service_workspace_cursor = Arc::clone(&self.workspace_cursor);
 
         let mouse_send_flush = Arc::clone(&self.mouse_send);
         let input_tx_flush = Arc::clone(&self.input_tx);
@@ -367,6 +374,7 @@ impl InputControlService {
                 let mirror_hooked = service_mirror_hooked.clone();
                 let mirror_send_errors = service_mirror_send_errors.clone();
                 let mouse_send = service_mouse_send.clone();
+                let workspace_cursor = service_workspace_cursor.clone();
                 let seq = Arc::clone(&service_seq);
                 runtime.spawn(async move {
                     if !*enabled.lock().await && !mirror.load(Ordering::SeqCst) {
@@ -388,6 +396,7 @@ impl InputControlService {
                         mirror_hooked,
                         mirror_send_errors,
                         mouse_send,
+                        workspace_cursor,
                     )
                     .await;
                 });
@@ -400,6 +409,7 @@ impl InputControlService {
         let bus_hk = self.bus.clone();
         let active_hk = Arc::clone(&self.active_peer);
         let input_tx_hk = Arc::clone(&self.input_tx);
+        let workspace_cursor_hk = Arc::clone(&self.workspace_cursor);
 
         self.input
             .start_capture(Box::new(on_event), {
@@ -411,8 +421,19 @@ impl InputControlService {
                     let bus = bus_hk.clone();
                     let active = active_hk.clone();
                     let input_tx = input_tx_hk.clone();
+                    let workspace_cursor = workspace_cursor_hk.clone();
                     runtime.spawn(async move {
-                        handle_hotkey(action, focus, layout, input, bus, active, input_tx).await;
+                        handle_hotkey(
+                            action,
+                            focus,
+                            layout,
+                            input,
+                            bus,
+                            active,
+                            input_tx,
+                            workspace_cursor,
+                        )
+                        .await;
                     });
                 })
             })
@@ -552,10 +573,20 @@ async fn handle_hotkey(
     bus: EventBus,
     active: Arc<Mutex<Option<PeerId>>>,
     input_tx: Arc<Mutex<Option<StreamSender>>>,
+    workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
 ) {
     match action {
         HotkeyAction::PanicLocal => {
-            panic_local(focus, layout, input, bus, active, input_tx).await;
+            panic_local(
+                focus,
+                layout,
+                input,
+                bus,
+                active,
+                input_tx,
+                workspace_cursor,
+            )
+            .await;
         }
         HotkeyAction::ToggleLock => {
             let mut f = focus.lock().await;
@@ -567,6 +598,11 @@ async fn handle_hotkey(
         HotkeyAction::ForceReset => {
             force_local_reset(focus, layout, input, bus).await;
         }
+        HotkeyAction::OpenActiveWorkspace => {
+            bus.publish(DomainEvent::HotkeyTriggered(HotkeyTriggered {
+                action: HotkeyAction::OpenActiveWorkspace,
+            }));
+        }
     }
 }
 
@@ -577,6 +613,7 @@ async fn panic_local(
     bus: EventBus,
     _active: Arc<Mutex<Option<PeerId>>>,
     _input_tx: Arc<Mutex<Option<StreamSender>>>,
+    workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
 ) {
     let from = focus.lock().await.target.clone();
     let input_warp = Arc::clone(&input);
@@ -588,6 +625,7 @@ async fn panic_local(
         Arc::clone(&layout),
         input,
         bus.clone(),
+        workspace_cursor,
     )
     .await;
     if let Some(layout) = layout_warp.lock().await.as_ref() {
@@ -699,6 +737,7 @@ async fn handle_local_input(
     mirror_keys_hooked: Arc<AtomicU64>,
     mirror_keys_send_errors: Arc<AtomicU64>,
     mouse_send: Arc<MouseSendState>,
+    workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
 ) {
     if keyboard_mirror.load(Ordering::SeqCst) {
         if let InputEvent::Key { code, pressed, .. } = &ev {
@@ -776,9 +815,13 @@ async fn handle_local_input(
                             active,
                             input_tx,
                             Arc::clone(&remote_cursor_x_est),
+                            workspace_cursor.clone(),
                         )
                         .await;
                     }
+                }
+                if let Some(bridge) = workspace_cursor.lock().await.as_ref() {
+                    bridge.publish_local_cursor(screen_x, screen_y).await;
                 }
             }
         }
@@ -812,6 +855,7 @@ async fn handle_local_input(
                             Arc::clone(&input),
                             bus.clone(),
                             Arc::clone(&active),
+                            workspace_cursor.clone(),
                         )
                         .await;
                         return;
@@ -861,6 +905,7 @@ async fn try_edge_switch(
     active: Arc<Mutex<Option<PeerId>>>,
     input_tx: Arc<Mutex<Option<StreamSender>>>,
     remote_cursor_x_est: Arc<AtomicI32>,
+    workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
 ) {
     let layout_guard = layout.lock().await;
     let Some(layout_data) = layout_guard.as_ref() else {
@@ -940,6 +985,7 @@ async fn try_edge_switch(
         Arc::clone(&layout),
         Arc::clone(&input),
         bus,
+        workspace_cursor,
     )
     .await;
 
@@ -964,6 +1010,7 @@ async fn try_switch_back_to_local(
     input: Arc<dyn InputBackend>,
     bus: EventBus,
     _active: Arc<Mutex<Option<PeerId>>>,
+    workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
 ) {
     let current = focus.lock().await.target.clone();
     let FocusTarget::Remote(_peer) = &current else {
@@ -1005,7 +1052,16 @@ async fn try_switch_back_to_local(
 
     info!("voltando para foco local via borda esquerda acumulada");
 
-    switch_focus(FocusTarget::Local, current, focus, layout, input, bus).await;
+    switch_focus(
+        FocusTarget::Local,
+        current,
+        focus,
+        layout,
+        input,
+        bus,
+        workspace_cursor,
+    )
+    .await;
 }
 
 async fn switch_focus(
@@ -1015,6 +1071,7 @@ async fn switch_focus(
     layout: Arc<Mutex<Option<MonitorLayout>>>,
     input: Arc<dyn InputBackend>,
     bus: EventBus,
+    workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
 ) {
     let transition = {
         let mut f = focus.lock().await;
@@ -1028,6 +1085,13 @@ async fn switch_focus(
             let _ = input.set_cursor_clipped(None).await;
             let _ = input.set_cursor_visible(true).await;
             input.reset_mouse_delta_baseline();
+            if let Some(bridge) = workspace_cursor.lock().await.as_ref() {
+                if let Some((x, y)) = bridge.restore_cursor_on_focus().await {
+                    if input.warp_cursor_signed(x, y).await.is_err() {
+                        warn!("falha ao restaurar cursor global do workspace");
+                    }
+                }
+            }
         }
         FocusTarget::Remote(_) => {
             input.set_pass_through(false);
@@ -1138,6 +1202,7 @@ mod tests {
             Arc::clone(&svc.active_peer),
             Arc::clone(&svc.input_tx),
             Arc::new(AtomicI32::new(0)),
+            Arc::clone(&svc.workspace_cursor),
         )
         .await;
 
@@ -1177,6 +1242,7 @@ mod tests {
             active,
             input_tx,
             Arc::new(AtomicI32::new(0)),
+            Arc::new(Mutex::new(None)),
         )
         .await;
 

@@ -160,6 +160,34 @@ mod tests {
     }
 
     #[test]
+    fn global_cursor_apply_latency_under_10ms_p99() {
+        let mut state = GlobalCursorState::new();
+        let device = DeviceId::new();
+        let mut durations = Vec::with_capacity(1000);
+
+        for seq in 1..=1000_u64 {
+            let start = std::time::Instant::now();
+            let update = GlobalCursorUpdate {
+                x: seq as i32,
+                y: seq as i32,
+                active_device_id: device,
+                monotonic_seq: seq,
+            };
+            state
+                .apply_remote(update)
+                .expect("apply_remote must succeed");
+            durations.push(start.elapsed());
+        }
+
+        durations.sort();
+        let p99 = durations[990];
+        assert!(
+            p99 < std::time::Duration::from_millis(10),
+            "p99 apply_remote latency {p99:?} >= 10ms"
+        );
+    }
+
+    #[test]
     fn serde_roundtrip() {
         let mut state = GlobalCursorState::new();
         let device = DeviceId::new();

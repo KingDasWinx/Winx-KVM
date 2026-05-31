@@ -127,6 +127,15 @@ Este documento complementa o [README](../README.md) com o **plano executável**:
 - [x] **F9.2** Ícones (1024px) processados via `tauri icon`
 - [ ] **F9.3** Smoke test em VM Windows limpa
 
+### Épico 10 — Workspaces
+
+> Detalhamento completo em [Workspace-TODO.md](../Workspace-TODO.md).
+
+- [x] **F10.1** Sprint W1 — Domain + storage (`workspace` bounded context, TOML persistência)
+- [x] **F10.2** Sprint W2 — Invite + TOFU + Conflict (UDP autenticado, UI modals)
+- [x] **F10.3** Sprint W3 — Sync LWW + mirrors órfãos + UI detalhe/membros
+- [x] **F10.4** Sprint W4 — Global cursor + layout editor + polish _(exceto W4.13 smoke físico manual)_
+
 ---
 
 ## Ordem recomendada
