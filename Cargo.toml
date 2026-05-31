@@ -38,7 +38,15 @@ winx-application = { path = "crates/winx-application" }
 winx-infra       = { path = "crates/winx-infra" }
 
 # Async / runtime
-tokio       = { version = "1.40", features = ["full"] }
+tokio = { version = "1.40", features = [
+  "rt-multi-thread",
+  "sync",
+  "time",
+  "net",
+  "fs",
+  "macros",
+  "io-util",
+] }
 async-trait = "0.1"
 futures     = "0.3"
 
@@ -99,8 +107,17 @@ strip         = true
 panic         = "abort"
 
 [profile.dev]
-opt-level = 1
+opt-level = 0
+debug = 1
+incremental = true
+codegen-units = 256
 
-# Build mais rápido das dependências mesmo em dev
+# Deps compiladas com otimização uma vez; só recompilam quando Cargo.lock muda
 [profile.dev.package."*"]
 opt-level = 3
+debug = false
+
+[profile.dev.build-override]
+opt-level = 0
+codegen-units = 256
+debug = false

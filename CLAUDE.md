@@ -61,8 +61,12 @@ Quando o workspace estiver scaffold (sprint 1 ainda não rodou):
 cargo fetch
 cd ui; pnpm install; cd ..
 
-# Dev (abre app com hot reload no front e watch no back)
+# Dev — fluxo único (Tauri + Vite)
 cargo tauri dev
+
+# Dev — split (UI instantânea; Rust só recompila ao mudar .rs)
+# Terminal 1: .\scripts\dev-frontend.ps1
+# Terminal 2: .\scripts\dev-backend.ps1   (requer: cargo install cargo-watch)
 
 # Build de produção (gera MSI em target/release/bundle/)
 cargo tauri build

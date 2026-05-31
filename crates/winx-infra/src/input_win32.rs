@@ -39,11 +39,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, PeekMessageW, RegisterClassW, SetCursorPos, SetForegroundWindow,
     SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, UnregisterClassW, WaitMessage,
     WindowFromPoint, CS_HREDRAW, CS_VREDRAW, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED,
-    LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN, WH_KEYBOARD_LL,
-    WH_MOUSE_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_HOTKEY, WM_INPUT, WM_KEYDOWN, WM_KEYUP,
-    WM_MOUSEMOVE, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_POPUP,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, PM_REMOVE, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN,
+    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WH_KEYBOARD_LL, WH_MOUSE_LL,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_HOTKEY, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_MOUSEMOVE,
+    WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 use winx_application::ports::{CaptureHandle, InputBackend};
 use winx_domain::input_control::{
@@ -459,10 +458,8 @@ impl InputBackend for Win32InputBackend {
                 anyhow::bail!("Dimensões do desktop virtual inválidas");
             }
 
-            let norm_x =
-                ((i64::from(x - virtual_left) * 65535) / i64::from(virtual_width)) as i32;
-            let norm_y =
-                ((i64::from(y - virtual_top) * 65535) / i64::from(virtual_height)) as i32;
+            let norm_x = ((i64::from(x - virtual_left) * 65535) / i64::from(virtual_width)) as i32;
+            let norm_y = ((i64::from(y - virtual_top) * 65535) / i64::from(virtual_height)) as i32;
 
             let input_packet = INPUT {
                 r#type: INPUT_MOUSE,

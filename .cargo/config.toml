@@ -1,0 +1,7 @@
+# Compartilhado no repo — Windows MSVC (host padrão do Winx-KVM).
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"
+
+# Dev local: incremental ativo (padrão). Não usar rustc-wrapper = "sccache" aqui —
+# sccache conflita com CARGO_INCREMENTAL e piora rebuilds incrementais em dev.
+# CI (futuro): CARGO_INCREMENTAL=0 + sccache no workflow.

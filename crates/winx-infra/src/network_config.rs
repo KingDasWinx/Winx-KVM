@@ -47,11 +47,31 @@ pub struct NetworkConfigStatus {
     pub has_private_or_domain_network: bool,
 }
 
+fn is_program_scoped_rule(name: &str) -> bool {
+    name.starts_with("Winx-KVM Program ")
+}
+
+fn program_path_is_stale(rule: &FirewallRule, exe_path: &str) -> bool {
+    let Some(prog) = &rule.program else {
+        return false;
+    };
+    if !is_program_scoped_rule(&rule.name) {
+        return false;
+    }
+    let prog_lower = prog.to_lowercase();
+    if prog_lower == "any" || prog_lower.is_empty() {
+        return false;
+    }
+    prog_lower != exe_path
+}
+
 impl NetworkConfigStatus {
     pub fn needs_fix(&self) -> bool {
         let expected_rules = vec![
             "Winx-KVM mDNS UDP In",
             "Winx-KVM QUIC UDP In",
+            "Winx-KVM Pairing UDP In",
+            "Winx-KVM Workspace UDP In",
             "Winx-KVM Program UDP In",
             "Winx-KVM Program UDP Out",
         ];
@@ -75,10 +95,8 @@ impl NetworkConfigStatus {
                 return true;
             }
 
-            if let Some(prog) = &rule.program {
-                if prog.to_lowercase() != exe_path {
-                    return true;
-                }
+            if program_path_is_stale(rule, &exe_path) {
+                return true;
             }
         }
 
@@ -90,6 +108,8 @@ impl NetworkConfigStatus {
         let expected_rules = vec![
             "Winx-KVM mDNS UDP In",
             "Winx-KVM QUIC UDP In",
+            "Winx-KVM Pairing UDP In",
+            "Winx-KVM Workspace UDP In",
             "Winx-KVM Program UDP In",
             "Winx-KVM Program UDP Out",
         ];
@@ -118,8 +138,8 @@ impl NetworkConfigStatus {
                 issues.push(format!("Rule '{}' is disabled", rule.name));
             }
 
-            if let Some(prog) = &rule.program {
-                if prog.to_lowercase() != exe_path {
+            if program_path_is_stale(rule, &exe_path) {
+                if let Some(prog) = &rule.program {
                     issues.push(format!(
                         "Rule '{}' has stale path: {} (current: {})",
                         rule.name, prog, exe_path
@@ -389,4 +409,82 @@ pub fn request_firewall_setup_via_uac() -> Result<i32> {
         .output()?;
 
     Ok(output.status.code().unwrap_or(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn make_status(rules: Vec<FirewallRule>, exe: &str) -> NetworkConfigStatus {
+        NetworkConfigStatus {
+            current_exe: PathBuf::from(exe),
+            firewall_rules: rules,
+            network_profiles: vec![],
+            has_private_or_domain_network: false,
+        }
+    }
+
+    fn port_rule(name: &str, program: Option<&str>) -> FirewallRule {
+        FirewallRule {
+            name: name.to_string(),
+            profile: "Any".to_string(),
+            protocol: "UDP".to_string(),
+            program: program.map(String::from),
+            enabled: "True".to_string(),
+            direction: "Inbound".to_string(),
+        }
+    }
+
+    fn all_expected_port_rules(program: Option<&str>) -> Vec<FirewallRule> {
+        vec![
+            port_rule("Winx-KVM mDNS UDP In", program),
+            port_rule("Winx-KVM QUIC UDP In", program),
+            port_rule("Winx-KVM Pairing UDP In", program),
+            port_rule("Winx-KVM Workspace UDP In", program),
+        ]
+    }
+
+    fn program_rule(name: &str, program: &str, direction: &str) -> FirewallRule {
+        FirewallRule {
+            name: name.to_string(),
+            profile: "Any".to_string(),
+            protocol: "UDP".to_string(),
+            program: Some(program.to_string()),
+            enabled: "True".to_string(),
+            direction: direction.to_string(),
+        }
+    }
+
+    #[test]
+    fn needs_fix_ignores_port_rules_with_program_any() {
+        let exe = r"C:\path\to\winx-kvm.exe";
+        let mut rules = all_expected_port_rules(Some("Any"));
+        rules.push(program_rule("Winx-KVM Program UDP In", exe, "Inbound"));
+        rules.push(program_rule("Winx-KVM Program UDP Out", exe, "Outbound"));
+
+        let status = make_status(rules, exe);
+        assert!(
+            !status.needs_fix(),
+            "port rules with Program=Any must not trigger needs_fix"
+        );
+    }
+
+    #[test]
+    fn needs_fix_flags_stale_program_rule() {
+        let exe = r"c:\path\to\winx-kvm.exe";
+        let mut rules = all_expected_port_rules(Some("Any"));
+        rules.push(program_rule(
+            "Winx-KVM Program UDP In",
+            r"C:\old\winx-kvm.exe",
+            "Inbound",
+        ));
+        rules.push(program_rule("Winx-KVM Program UDP Out", exe, "Outbound"));
+
+        let status = make_status(rules, exe);
+        assert!(
+            status.needs_fix(),
+            "stale Program UDP In path must trigger needs_fix"
+        );
+    }
 }

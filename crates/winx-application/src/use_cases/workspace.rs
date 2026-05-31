@@ -204,7 +204,8 @@ impl WorkspaceService {
             });
         }
 
-        self.refresh_member_presence(std::slice::from_ref(&ws)).await;
+        self.refresh_member_presence(std::slice::from_ref(&ws))
+            .await;
 
         Ok(ws)
     }
@@ -1193,9 +1194,7 @@ impl WorkspaceService {
                     true
                 } else {
                     matches!(
-                        self.discovery_query
-                            .resolve_address(member.device_id)
-                            .await,
+                        self.discovery_query.resolve_address(member.device_id).await,
                         Ok(Some(_))
                     )
                 };
@@ -1236,26 +1235,24 @@ impl WorkspaceService {
     }
 
     /// Reavalia presença imediatamente quando peers aparecem/somem no mDNS.
-    pub fn spawn_presence_on_discovery(self: Arc<Self>) {
+    pub async fn run_presence_on_discovery(&self) {
         let mut rx = self.bus.subscribe();
-        tokio::spawn(async move {
-            loop {
-                match rx.recv().await {
-                    Ok(
-                        DomainEvent::PeerAppeared(_)
-                        | DomainEvent::PeerDisappeared(_)
-                        | DomainEvent::PeerUpdated(_),
-                    ) => {
-                        if let Ok(workspaces) = self.store.load_all().await {
-                            self.refresh_member_presence(&workspaces).await;
-                        }
+        loop {
+            match rx.recv().await {
+                Ok(
+                    DomainEvent::PeerAppeared(_)
+                    | DomainEvent::PeerDisappeared(_)
+                    | DomainEvent::PeerUpdated(_),
+                ) => {
+                    if let Ok(workspaces) = self.store.load_all().await {
+                        self.refresh_member_presence(&workspaces).await;
                     }
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
-        });
+        }
     }
 }
 

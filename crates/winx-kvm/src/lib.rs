@@ -33,9 +33,8 @@ use winx_domain::{discovery::DiscoveryRegistry, shared::ids::PeerId};
 use winx_infra::{
     generate_or_load_quic_cert, network_config, network_watcher::NetworkWatcher,
     ArboardClipboardBackend, KeyringSecretStore, MdnsDiscoveryAdapter, QuicTransportAdapter,
-    TomlConfigStore, TomlIdentityStore, TomlWorkspaceStore, UdpPairingTransport,
-    UdpWorkspaceInviteTransport, Win32InputBackend, Win32MonitorBackend,
-    RegistryDiscoveryQuery,
+    RegistryDiscoveryQuery, TomlConfigStore, TomlIdentityStore, TomlWorkspaceStore,
+    UdpPairingTransport, UdpWorkspaceInviteTransport, Win32InputBackend, Win32MonitorBackend,
 };
 
 use app_state::{
@@ -345,7 +344,12 @@ pub fn run() {
         workspace_presence.run_presence_watcher().await;
     });
 
-    Arc::clone(&services.workspace).spawn_presence_on_discovery();
+    let workspace_discovery_presence = Arc::clone(&services.workspace);
+    rt.spawn(async move {
+        workspace_discovery_presence
+            .run_presence_on_discovery()
+            .await;
+    });
 
     // Spawnar network watcher task se disponível
     if let Some(net_rx) = net_events_rx {
