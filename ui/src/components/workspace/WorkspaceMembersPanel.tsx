@@ -36,9 +36,10 @@ export default function WorkspaceMembersPanel({ workspace, onInviteClick }: Prop
         )}
       </Group>
       {members.map((m) => {
+        const cachedOnline = presence[`${workspace.id}:${m.device_id}`];
         const isOnline =
-          presence[`${workspace.id}:${m.device_id}`] === true ||
-          (m.is_owner && !workspace.is_mirror);
+          cachedOnline === true ||
+          (cachedOnline !== false && m.is_owner && !workspace.is_mirror);
         return (
           <Group key={m.device_id} justify="space-between">
             <Group gap="xs">

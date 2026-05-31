@@ -345,6 +345,8 @@ pub fn run() {
         workspace_presence.run_presence_watcher().await;
     });
 
+    Arc::clone(&services.workspace).spawn_presence_on_discovery();
+
     // Spawnar network watcher task se disponível
     if let Some(net_rx) = net_events_rx {
         let discovery_bg = Arc::clone(&services.discovery);

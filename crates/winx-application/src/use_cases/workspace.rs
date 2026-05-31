@@ -204,6 +204,8 @@ impl WorkspaceService {
             });
         }
 
+        self.refresh_member_presence(std::slice::from_ref(&ws)).await;
+
         Ok(ws)
     }
 
@@ -410,6 +412,9 @@ impl WorkspaceService {
             },
         ));
 
+        self.refresh_member_presence(std::slice::from_ref(&mirror))
+            .await;
+
         Ok(mirror)
     }
 
@@ -474,6 +479,9 @@ impl WorkspaceService {
         self.bus.publish(DomainEvent::WorkspaceConnected(
             winx_domain::workspace::events::WorkspaceConnected { workspace_id },
         ));
+        if let Ok(workspaces) = self.store.load_all().await {
+            self.refresh_member_presence(&workspaces).await;
+        }
         info!(%workspace_id, "connected to workspace");
         Ok(())
     }
@@ -506,6 +514,9 @@ impl WorkspaceService {
         self.bus.publish(DomainEvent::WorkspaceConnected(
             winx_domain::workspace::events::WorkspaceConnected { workspace_id },
         ));
+        if let Ok(workspaces) = self.store.load_all().await {
+            self.refresh_member_presence(&workspaces).await;
+        }
         info!(%workspace_id, "connected to workspace (force switch)");
         Ok(())
     }
@@ -1168,14 +1179,46 @@ impl WorkspaceService {
         }
     }
 
-    /// Loop que verifica presença de membros baseado em `owner_last_seen` dos mirrors.
+    /// Atualiza presença de todos os membros via mDNS (registry compartilhado).
     ///
-    /// Para cada mirror local com `owner_last_seen` mais antigo que 30s, emite
-    /// `MemberPresenceChanged { is_online: false }`. Quando o `last_seen` é atualizado
-    /// (via sync), emite `is_online: true`.
+    /// Emite `MemberPresenceChanged` apenas quando o estado muda. O device local
+    /// é sempre considerado online.
+    async fn refresh_member_presence(&self, workspaces: &[Workspace]) {
+        let local_device_id = DeviceId::from_uuid(self.local_device_id);
+        let mut state = self.member_online_state.lock().await;
+
+        for ws in workspaces {
+            for member in &ws.members {
+                let is_online = if member.device_id == local_device_id {
+                    true
+                } else {
+                    matches!(
+                        self.discovery_query
+                            .resolve_address(member.device_id)
+                            .await,
+                        Ok(Some(_))
+                    )
+                };
+
+                let key = (ws.id, member.device_id);
+                if state.get(&key).copied() != Some(is_online) {
+                    state.insert(key, is_online);
+                    self.bus
+                        .publish(DomainEvent::WorkspaceMemberPresenceChanged(
+                            winx_domain::workspace::events::MemberPresenceChanged {
+                                workspace_id: ws.id,
+                                device_id: member.device_id,
+                                is_online,
+                            },
+                        ));
+                }
+            }
+        }
+    }
+
+    /// Loop periódico que republica presença de membros com base no mDNS.
     pub async fn run_presence_watcher(&self) {
         const CHECK_INTERVAL_SECS: u64 = 5;
-        const OFFLINE_THRESHOLD_SECS: i64 = 30;
 
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(CHECK_INTERVAL_SECS)).await;
@@ -1188,32 +1231,31 @@ impl WorkspaceService {
                 }
             };
 
-            let now = time::OffsetDateTime::now_utc();
-            let mut state = self.member_online_state.lock().await;
+            self.refresh_member_presence(&workspaces).await;
+        }
+    }
 
-            for ws in &workspaces {
-                if let winx_domain::workspace::OwnershipMode::Mirror {
-                    owner_last_seen, ..
-                } = &ws.ownership_mode
-                {
-                    let age = (now - *owner_last_seen).whole_seconds();
-                    let is_online = age < OFFLINE_THRESHOLD_SECS;
-                    let key = (ws.id, ws.owner_device_id);
-                    let prev = state.get(&key).copied();
-                    if prev != Some(is_online) {
-                        state.insert(key, is_online);
-                        self.bus
-                            .publish(DomainEvent::WorkspaceMemberPresenceChanged(
-                                winx_domain::workspace::events::MemberPresenceChanged {
-                                    workspace_id: ws.id,
-                                    device_id: ws.owner_device_id,
-                                    is_online,
-                                },
-                            ));
+    /// Reavalia presença imediatamente quando peers aparecem/somem no mDNS.
+    pub fn spawn_presence_on_discovery(self: Arc<Self>) {
+        let mut rx = self.bus.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(
+                        DomainEvent::PeerAppeared(_)
+                        | DomainEvent::PeerDisappeared(_)
+                        | DomainEvent::PeerUpdated(_),
+                    ) => {
+                        if let Ok(workspaces) = self.store.load_all().await {
+                            self.refresh_member_presence(&workspaces).await;
+                        }
                     }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
-        }
+        });
     }
 }
 
