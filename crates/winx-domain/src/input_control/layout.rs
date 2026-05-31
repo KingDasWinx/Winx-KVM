@@ -501,28 +501,65 @@ impl MonitorLayout {
         }
     }
 
+    /// Mapeia posição no monitor remoto de volta ao ponto de reentrada local
+    /// (mesma borda de saída, coordenada perpendicular preservada).
+    #[must_use]
+    pub fn map_return_point(&self, remote_x: i32, remote_y: i32) -> (i32, i32) {
+        const INSET: i32 = 4;
+        let local = self.exit_local_monitor();
+        let remote = self.placed_remote_bounds();
+
+        match self.edge.local_exit {
+            BorderSide::Right | BorderSide::Left => {
+                let remote_h = remote.height.max(1) as u64;
+                let local_h = local.height.max(1) as u64;
+                let remote_rel_y = remote_y.clamp(0, remote.height as i32 - 1).max(0) as u64;
+                let prop_y = ((remote_rel_y * local_h) / remote_h) as i32;
+                let local_y = (local.y + prop_y).clamp(local.y, local.bottom_edge().saturating_sub(1));
+
+                let local_x = match self.edge.local_exit {
+                    BorderSide::Right => self.local_exit_edge_coord().saturating_sub(INSET),
+                    BorderSide::Left => self.local_exit_edge_coord().saturating_add(INSET),
+                    BorderSide::Top | BorderSide::Bottom => local.x,
+                };
+                (local_x, local_y)
+            }
+            BorderSide::Top | BorderSide::Bottom => {
+                let remote_w = remote.width.max(1) as u64;
+                let local_w = local.width.max(1) as u64;
+                let remote_rel_x = remote_x.clamp(0, remote.width as i32 - 1).max(0) as u64;
+                let prop_x = ((remote_rel_x * local_w) / remote_w) as i32;
+                let local_x = (local.x + prop_x).clamp(local.x, local.right_edge().saturating_sub(1));
+
+                let local_y = match self.edge.local_exit {
+                    BorderSide::Bottom => self.local_exit_edge_coord().saturating_sub(INSET),
+                    BorderSide::Top => self.local_exit_edge_coord().saturating_add(INSET),
+                    BorderSide::Left | BorderSide::Right => local.y,
+                };
+                (local_x, local_y)
+            }
+        }
+    }
+
     /// Ponto de warp ao retornar do controle remoto para o desktop local.
     #[must_use]
     pub fn local_return_warp_point(&self) -> (i32, i32) {
-        let m = self.exit_local_monitor();
-        match self.edge.local_exit {
-            BorderSide::Right => (
-                self.local_return_edge_coord().saturating_sub(4),
-                m.y + i32::try_from(m.height).unwrap_or(1080) / 2,
+        let remote = self.placed_remote_bounds();
+        let (remote_x, remote_y) = match self.edge.local_exit {
+            BorderSide::Right | BorderSide::Left => (
+                remote.width as i32 / 2,
+                remote.height as i32 / 2,
             ),
-            BorderSide::Left => (
-                self.local_return_edge_coord().saturating_add(4),
-                m.y + i32::try_from(m.height).unwrap_or(1080) / 2,
+            BorderSide::Top | BorderSide::Bottom => (
+                remote.width as i32 / 2,
+                match self.edge.remote_entry {
+                    BorderSide::Top => REMOTE_ENTRY_INSET_PX,
+                    BorderSide::Bottom => remote.height as i32 - REMOTE_ENTRY_INSET_PX,
+                    BorderSide::Left | BorderSide::Right => remote.height as i32 / 2,
+                },
             ),
-            BorderSide::Bottom => (
-                m.x + i32::try_from(m.width).unwrap_or(1920) / 2,
-                self.local_return_edge_coord().saturating_sub(4),
-            ),
-            BorderSide::Top => (
-                m.x + i32::try_from(m.width).unwrap_or(1920) / 2,
-                self.local_return_edge_coord().saturating_add(4),
-            ),
-        }
+        };
+        self.map_return_point(remote_x, remote_y)
     }
 
     /// Retângulo de clip do monitor local enquanto controla o remoto.
@@ -629,6 +666,61 @@ mod tests {
         assert_eq!(mirrored.edge.local_exit, BorderSide::Left);
         assert_eq!(mirrored.edge.remote_entry, BorderSide::Right);
         assert!(mirrored.remote_virtual.x + mirrored.remote_virtual.width as i32 <= 0);
+    }
+
+    #[test]
+    fn map_return_point_bottom_exit_returns_to_bottom_not_top() {
+        let peer = PeerId::from_uuid(Uuid::new_v4());
+        let mut layout = MonitorLayout::default_side_by_side(
+            vec![MonitorRect {
+                id: MonitorId(1),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            }],
+            peer,
+        );
+        layout.remote_virtual.x = 0;
+        layout.remote_virtual.y = 1080;
+        layout.infer_edges_from_geometry();
+        assert_eq!(layout.edge.local_exit, BorderSide::Bottom);
+
+        let (entry_x, entry_y) = layout.map_crossing_point(960, 1079);
+        let (return_x, return_y) = layout.map_return_point(entry_x, entry_y);
+        assert!((960 - return_x).abs() <= 2, "X deve ser preservado");
+        assert!(
+            return_y >= layout.local_exit_edge_coord() - 8,
+            "deve retornar perto do bottom (exit), não do top: return_y={return_y}"
+        );
+        assert!(return_y > 500, "não deve warp para o topo do monitor local");
+    }
+
+    #[test]
+    fn map_return_roundtrips_crossing_x_for_bottom_layout() {
+        let peer = PeerId::from_uuid(Uuid::new_v4());
+        let mut layout = MonitorLayout::default_side_by_side(
+            vec![MonitorRect {
+                id: MonitorId(1),
+                x: 0,
+                y: 0,
+                width: 2560,
+                height: 1080,
+            }],
+            peer,
+        );
+        layout.remote_virtual.x = 0;
+        layout.remote_virtual.y = 1080;
+        layout.infer_edges_from_geometry();
+
+        for local_x in [400, 1280, 2200] {
+            let (rx, ry) = layout.map_crossing_point(local_x, 1079);
+            let (back_x, _) = layout.map_return_point(rx, ry);
+            assert!(
+                (local_x - back_x).abs() <= 2,
+                "roundtrip X: local_x={local_x} back_x={back_x}"
+            );
+        }
     }
 
     #[test]

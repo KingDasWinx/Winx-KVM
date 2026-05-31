@@ -1140,6 +1140,8 @@ async fn handle_local_input(
                     }
 
                     if go_back {
+                        let est_x = remote_cursor_x_est.load(Ordering::SeqCst);
+                        let est_y = remote_cursor_y_est.load(Ordering::SeqCst);
                         try_switch_back_to_local(
                             Arc::clone(&focus),
                             Arc::clone(&layout),
@@ -1149,6 +1151,8 @@ async fn handle_local_input(
                             workspace_cursor.clone(),
                             remote_switch_grace.clone(),
                             remote_return_armed.clone(),
+                            est_x,
+                            est_y,
                         )
                         .await;
                         return;
@@ -1301,6 +1305,8 @@ async fn try_switch_back_to_local(
     workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
     remote_switch_grace: Arc<Mutex<Option<Instant>>>,
     remote_return_armed: Arc<AtomicBool>,
+    remote_x: i32,
+    remote_y: i32,
 ) {
     let current = focus.lock().await.target.clone();
     let FocusTarget::Remote(_peer) = &current else {
@@ -1316,7 +1322,7 @@ async fn try_switch_back_to_local(
         return;
     };
 
-    let (warp_x, warp_y) = layout_data.local_return_warp_point();
+    let (warp_x, warp_y) = layout_data.map_return_point(remote_x, remote_y);
     drop(layout_guard);
 
     if let Err(err) = input.set_cursor_clipped(None).await {
