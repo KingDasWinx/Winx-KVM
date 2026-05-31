@@ -104,6 +104,13 @@ pub async fn update_kvm_layout(
 ) -> Result<(), String> {
     let pid = parse_peer_id(&input.peer_id)?;
     let layout = dto_to_layout(input.layout)?;
+
+    state
+        .input_control
+        .ensure_layout_sync_for_peer(pid)
+        .await
+        .map_err(map_err)?;
+
     state
         .input_control
         .save_kvm_layout(pid, layout)

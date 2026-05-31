@@ -64,14 +64,14 @@ export default function SingleKvmLayoutPanel({ peerId, peerUsername }: Props) {
       const { kind, peer_id: eventPeerId } = event.payload;
       if (eventPeerId !== peerId) return;
       if (kind !== 'peer-monitors-updated' && kind !== 'kvm-layout-updated') return;
-      if (open) void loadLayout();
+      void loadLayout();
     }).then((fn) => {
       unlisten = fn;
     });
     return () => {
       unlisten?.();
     };
-  }, [open, peerId, loadLayout]);
+  }, [peerId, loadLayout]);
 
   const handleSave = async (normalized: MonitorLayoutDto) => {
     setSaving(true);

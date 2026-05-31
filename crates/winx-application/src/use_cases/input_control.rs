@@ -239,6 +239,14 @@ impl InputControlService {
             .map_err(|e| internal_err(&e.to_string()))?;
         if let Some(ref mut saved) = layout {
             saved.finalize_for_runtime(local, peer_id);
+            if saved.remote_monitors.is_empty() {
+                if let Ok(Some(peer_mons)) = store.get_peer_monitors(peer_id).await {
+                    if !peer_mons.is_empty() {
+                        saved.remote_monitors = peer_mons;
+                        saved.infer_edges_from_geometry();
+                    }
+                }
+            }
         }
         Ok(layout)
     }
@@ -263,6 +271,14 @@ impl InputControlService {
 
         if *self.enabled.lock().await && *self.active_peer.lock().await == Some(peer_id) {
             self.apply_monitor_layout(layout.clone()).await;
+        }
+
+        if let Err(err) = self.ensure_layout_sync_for_peer(peer_id).await {
+            warn!(
+                ?err,
+                %peer_id,
+                "layout sync: falha ao garantir canal Data — broadcast pode falhar"
+            );
         }
 
         let layout_deps = self.layout_sync_deps.lock().await.clone();
@@ -727,6 +743,24 @@ impl InputControlService {
         *self.enabled.lock().await && *self.active_peer.lock().await == Some(peer_id)
     }
 
+    /// Garante stream Data aberto para broadcast de layout quando o peer está conectado.
+    pub async fn ensure_layout_sync_for_peer(&self, peer_id: PeerId) -> Result<(), DomainError> {
+        if !self.transport.is_peer_connected(peer_id).await {
+            return Ok(());
+        }
+        let Some(clipboard) = self.clipboard.lock().await.clone() else {
+            return Ok(());
+        };
+        if clipboard.is_data_stream_open().await {
+            return Ok(());
+        }
+        info!(
+            %peer_id,
+            "layout sync: stream Data fechado — reabilitando KVM para sync de layout"
+        );
+        super::single_connection::enable_kvm_for_peer(clipboard.as_ref(), self, peer_id).await
+    }
+
     /// Restaura cursor/foco local após desconexão (libera `ClipCursor`).
     pub async fn reset_after_disconnect(&self, peer_id: PeerId) {
         let was_active = {
@@ -767,11 +801,15 @@ impl InputControlService {
         let input_tx = Arc::clone(&self.input_tx);
         let enabled = Arc::clone(&self.enabled);
         let remote_dx = Arc::clone(&self.remote_cursor_x_est);
-        let layout = Arc::clone(&self.layout);
-        let kvm_layout_store = Arc::clone(&self.kvm_layout_store);
-        let monitors = Arc::clone(&self.monitors);
-        let mouse_send = Arc::clone(&self.mouse_send);
         let remote_return_armed = Arc::clone(&self.remote_return_armed);
+        let reload_enabled = Arc::clone(&self.enabled);
+        let reload_active = Arc::clone(&self.active_peer);
+        let reload_focus = Arc::clone(&self.focus);
+        let reload_layout = Arc::clone(&self.layout);
+        let reload_store = Arc::clone(&self.kvm_layout_store);
+        let reload_monitors = Arc::clone(&self.monitors);
+        let reload_mouse = Arc::clone(&self.mouse_send);
+        let reload_return_armed = Arc::clone(&self.remote_return_armed);
 
         tokio::spawn(async move {
             while let Ok(event) = rx.recv().await {
@@ -796,42 +834,88 @@ impl InputControlService {
                         }
                     }
                     DomainEvent::KvmLayoutUpdated(e) => {
-                        if !*enabled.lock().await {
+                        if !*reload_enabled.lock().await {
                             continue;
                         }
-                        if *active.lock().await != Some(e.peer_id) {
+                        if *reload_active.lock().await != Some(e.peer_id) {
                             continue;
                         }
-                        // Não recarregar layout durante foco remoto — evita flip de bordas mid-crossing.
-                        if matches!(focus.lock().await.target, FocusTarget::Remote(_)) {
-                            debug!(peer_id = %e.peer_id, "layout sync: KvmLayoutUpdated ignorado (foco remoto ativo)");
+                        if matches!(reload_focus.lock().await.target, FocusTarget::Remote(_)) {
+                            debug!(
+                                peer_id = %e.peer_id,
+                                "layout sync: KvmLayoutUpdated adiado (foco remoto ativo)"
+                            );
                             continue;
                         }
-                        let Some(store) = kvm_layout_store.lock().await.clone() else {
+                        apply_stored_layout_to_runtime(
+                            &reload_store,
+                            &reload_monitors,
+                            &reload_layout,
+                            &reload_mouse,
+                            &reload_return_armed,
+                            e.peer_id,
+                        )
+                        .await;
+                    }
+                    DomainEvent::FocusSwitched(e) => {
+                        if !matches!(e.to, FocusTarget::Local) {
+                            continue;
+                        }
+                        if !*reload_enabled.lock().await {
+                            continue;
+                        }
+                        let Some(peer_id) = *reload_active.lock().await else {
                             continue;
                         };
-                        let local = monitors
-                            .enumerate_local_monitors()
-                            .await
-                            .unwrap_or_default();
-                        if local.is_empty() {
-                            continue;
-                        }
-                        if let Ok(Some(mut saved)) = store.get(e.peer_id).await {
-                            saved.finalize_for_runtime(local, e.peer_id);
-                            let scale = saved.remote_mouse_scale();
-                            mouse_send
-                                .scale_q8
-                                .store((scale * 256.0).round() as i32, Ordering::SeqCst);
-                            *layout.lock().await = Some(saved);
-                            remote_return_armed.store(false, Ordering::SeqCst);
-                            info!(peer_id = %e.peer_id, "layout runtime atualizado via KvmLayoutUpdated");
-                        }
+                        apply_stored_layout_to_runtime(
+                            &reload_store,
+                            &reload_monitors,
+                            &reload_layout,
+                            &reload_mouse,
+                            &reload_return_armed,
+                            peer_id,
+                        )
+                        .await;
                     }
                     _ => {}
                 }
             }
         });
+    }
+}
+
+async fn apply_stored_layout_to_runtime(
+    kvm_layout_store: &Arc<Mutex<Option<Arc<dyn KvmLayoutStore>>>>,
+    monitors: &Arc<dyn MonitorBackend>,
+    layout: &Arc<Mutex<Option<MonitorLayout>>>,
+    mouse_send: &Arc<MouseSendState>,
+    remote_return_armed: &Arc<AtomicBool>,
+    peer_id: PeerId,
+) {
+    let Some(store) = kvm_layout_store.lock().await.clone() else {
+        return;
+    };
+    let local = monitors.enumerate_local_monitors().await.unwrap_or_default();
+    if local.is_empty() {
+        return;
+    }
+    if let Ok(Some(mut saved)) = store.get(peer_id).await {
+        saved.finalize_for_runtime(local, peer_id);
+        if saved.remote_monitors.is_empty() {
+            if let Ok(Some(peer_mons)) = store.get_peer_monitors(peer_id).await {
+                if !peer_mons.is_empty() {
+                    saved.remote_monitors = peer_mons;
+                    saved.infer_edges_from_geometry();
+                }
+            }
+        }
+        let scale = saved.remote_mouse_scale();
+        mouse_send
+            .scale_q8
+            .store((scale * 256.0).round() as i32, Ordering::SeqCst);
+        *layout.lock().await = Some(saved);
+        remote_return_armed.store(false, Ordering::SeqCst);
+        info!(%peer_id, "layout runtime recarregado do store");
     }
 }
 
