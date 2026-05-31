@@ -105,23 +105,13 @@ async fn activate_workspace_kvm(
         .await
         .map_err(map_err)?;
 
-    clipboard_state
-        .clipboard
-        .enable_for_peer(primary)
-        .await
-        .map_err(map_err)?;
-
-    input_state
-        .input_control
-        .enable_for_peer(primary)
-        .await
-        .map_err(map_err)?;
-
-    input_state
-        .input_control
-        .announce_layout_sync(primary)
-        .await
-        .map_err(map_err)?;
+    winx_application::use_cases::single_connection::enable_kvm_for_peer(
+        &clipboard_state.clipboard,
+        &input_state.input_control,
+        primary,
+    )
+    .await
+    .map_err(map_err)?;
 
     Ok(())
 }

@@ -89,23 +89,15 @@ pub async fn open_connection(
         .connect_peer(pid, None)
         .await
         .map_err(map_err)?;
-    info!(%pid, "open_connection: QUIC conectado — habilitando clipboard → input → layout announce");
-    clipboard
-        .clipboard
-        .enable_for_peer(pid)
-        .await
-        .map_err(map_err)?;
-    input
-        .input_control
-        .enable_for_peer(pid)
-        .await
-        .map_err(map_err)?;
-    input
-        .input_control
-        .announce_layout_sync(pid)
-        .await
-        .map_err(map_err)?;
-    info!(%pid, "open_connection: concluído (input + clipboard + layout sync)");
+    info!(%pid, "open_connection: QUIC conectado — habilitando KVM (outbound)");
+    winx_application::use_cases::single_connection::enable_kvm_for_peer(
+        &clipboard.clipboard,
+        &input.input_control,
+        pid,
+    )
+    .await
+    .map_err(map_err)?;
+    info!(%pid, "open_connection: concluído");
     Ok(())
 }
 

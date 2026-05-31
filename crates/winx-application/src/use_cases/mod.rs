@@ -9,6 +9,7 @@ pub mod input_streams;
 pub mod kvm_layout_sync;
 pub mod mouse_coalesce;
 pub mod pairing;
+pub mod single_connection;
 pub mod transport;
 pub mod update_device_profile;
 pub mod workspace;

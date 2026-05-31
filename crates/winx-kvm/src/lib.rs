@@ -205,6 +205,18 @@ fn init_services(
             .await;
     });
 
+    let inbound_auto_clipboard = Arc::clone(&clipboard);
+    let inbound_auto_input = Arc::clone(&input_control);
+    let inbound_auto_bus = bus.clone();
+    rt.spawn(async move {
+        winx_application::use_cases::single_connection::run_inbound_auto_enable(
+            inbound_auto_bus,
+            inbound_auto_clipboard,
+            inbound_auto_input,
+        )
+        .await;
+    });
+
     Ok(InitializedServices {
         ensure_device,
         identity_store: Arc::clone(&identity_store) as Arc<dyn IdentityStore>,

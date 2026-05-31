@@ -131,6 +131,14 @@ impl ClipboardService {
             ));
         }
 
+        if self.data_tx.lock().await.is_some() {
+            let active = *self.active_peer.lock().await;
+            if active == Some(peer_id) {
+                info!(%peer_id, "clipboard sync já habilitado — ignorando chamada duplicada");
+                return Ok(());
+            }
+        }
+
         *self.active_peer.lock().await = Some(peer_id);
 
         let outbound = self.transport.is_peer_outbound(peer_id).await;
