@@ -71,6 +71,8 @@ struct FrontendEvent {
     sync_from_remote: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     is_inbound: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    monitor_count: Option<usize>,
 }
 
 impl FrontendEvent {
@@ -105,6 +107,7 @@ impl FrontendEvent {
             seq: None,
             sync_from_remote: None,
             is_inbound: None,
+            monitor_count: None,
         }
     }
 }
@@ -227,6 +230,12 @@ impl From<&DomainEvent> for FrontendEvent {
                 peer_id: e.peer_id.map(|p| p.to_string()),
                 input_blocked: Some(e.blocked),
                 ..FrontendEvent::empty("input-blocked")
+            },
+            DomainEvent::PeerMonitorsUpdated(e) => FrontendEvent {
+                kind: "peer-monitors-updated",
+                peer_id: Some(e.peer_id.to_string()),
+                monitor_count: Some(e.monitor_count),
+                ..FrontendEvent::empty("peer-monitors-updated")
             },
             DomainEvent::ClipboardChanged(e) => FrontendEvent {
                 kind: "clipboard-changed",

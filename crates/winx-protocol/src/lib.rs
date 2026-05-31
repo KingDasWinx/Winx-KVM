@@ -14,6 +14,7 @@
 pub mod clipboard;
 pub mod diagnostics;
 pub mod input;
+pub mod layout;
 pub mod pairing;
 pub mod workspace;
 
@@ -22,6 +23,7 @@ use thiserror::Error;
 
 pub use clipboard::ClipboardPayload;
 pub use diagnostics::DiagPing;
+pub use layout::{MonitorLayoutPayload, MonitorRectPayload, PeerMonitorsPayload};
 pub use input::{InputEventDto, InputPayload};
 pub use pairing::{
     decode_pairing_datagram, encode_pairing_body, encode_pairing_datagram,
@@ -32,7 +34,8 @@ pub use pairing::{
 /// Versão atual do wire format. Incremente quando mudar `Payload` de forma
 /// incompatível.
 /// W2: bumped from 4 to 5 to add WorkspaceInviteMessage support.
-pub const PROTOCOL_VERSION: u16 = 5;
+/// W3: bumped to 6 for PeerMonitorsAnnounce / KvmLayoutShare (single connection layout sync).
+pub const PROTOCOL_VERSION: u16 = 6;
 
 /// Magic bytes para início de stream (identifica tipo de stream).
 /// Formato: [MAGIC 4 bytes (b"WXSK")][kind u8] = 5 bytes
@@ -74,6 +77,10 @@ pub enum Payload {
     FocusSwitch { target_peer: Option<uuid::Uuid> },
     /// Texto de clipboard no stream Data.
     Clipboard(clipboard::ClipboardPayload),
+    /// Monitores locais do peer (stream Data, single connection).
+    PeerMonitorsAnnounce(layout::PeerMonitorsPayload),
+    /// Layout KVM completo do ponto de vista do remetente (stream Data).
+    KvmLayoutShare(layout::MonitorLayoutPayload),
 }
 
 /// Erros ao serializar/desserializar frames.

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use winx_application::ports::KvmLayoutStore;
 use winx_domain::{
     input_control::MonitorLayout,
+    input_control::MonitorRect,
     shared::ids::PeerId,
 };
 
@@ -47,6 +48,9 @@ struct KvmLayoutsFile {
     schema_version: u32,
     #[serde(default)]
     layouts: BTreeMap<String, MonitorLayout>,
+    /// Monitores locais de cada peer (reportados via sync).
+    #[serde(default)]
+    peer_monitors: BTreeMap<String, Vec<MonitorRect>>,
 }
 
 impl Default for KvmLayoutsFile {
@@ -54,6 +58,7 @@ impl Default for KvmLayoutsFile {
         Self {
             schema_version: 1,
             layouts: BTreeMap::new(),
+            peer_monitors: BTreeMap::new(),
         }
     }
 }
@@ -80,6 +85,23 @@ impl KvmLayoutStore for TomlKvmLayoutStore {
     async fn delete(&self, peer_id: PeerId) -> Result<()> {
         let mut file = self.read_all().await?;
         file.layouts.remove(&peer_id.to_string());
+        file.peer_monitors.remove(&peer_id.to_string());
+        self.write_all(&file).await
+    }
+
+    async fn get_peer_monitors(&self, peer_id: PeerId) -> Result<Option<Vec<MonitorRect>>> {
+        let file = self.read_all().await?;
+        Ok(file.peer_monitors.get(&peer_id.to_string()).cloned())
+    }
+
+    async fn save_peer_monitors(
+        &self,
+        peer_id: PeerId,
+        monitors: &[MonitorRect],
+    ) -> Result<()> {
+        let mut file = self.read_all().await?;
+        file.peer_monitors
+            .insert(peer_id.to_string(), monitors.to_vec());
         self.write_all(&file).await
     }
 }

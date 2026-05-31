@@ -82,6 +82,7 @@ pub struct InputControlService {
     mouse_send: Arc<MouseSendState>,
     workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
     kvm_layout_store: Arc<Mutex<Option<Arc<dyn KvmLayoutStore>>>>,
+    remote_switch_grace: Arc<Mutex<Option<Instant>>>,
 }
 
 impl InputControlService {
@@ -120,6 +121,7 @@ impl InputControlService {
             }),
             workspace_cursor: Arc::new(Mutex::new(None)),
             kvm_layout_store: Arc::new(Mutex::new(None)),
+            remote_switch_grace: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -134,6 +136,17 @@ impl InputControlService {
             .enumerate_local_monitors()
             .await
             .map_err(|e| internal_err(&e.to_string()))
+    }
+
+    pub async fn get_peer_monitors(
+        &self,
+        peer_id: PeerId,
+    ) -> Result<Vec<winx_domain::input_control::MonitorRect>, DomainError> {
+        Ok(super::kvm_layout_sync::get_peer_monitors_from_store(
+            &self.kvm_layout_store,
+            peer_id,
+        )
+        .await)
     }
 
     pub async fn get_kvm_layout(
@@ -161,7 +174,7 @@ impl InputControlService {
         mut layout: MonitorLayout,
     ) -> Result<(), DomainError> {
         let local = self.list_local_monitors().await?;
-        layout.finalize_for_runtime(local, peer_id);
+        layout.finalize_for_runtime(local.clone(), peer_id);
         {
             let store = self.kvm_layout_store.lock().await;
             let Some(store) = store.as_ref() else {
@@ -174,8 +187,18 @@ impl InputControlService {
         }
 
         if *self.enabled.lock().await && *self.active_peer.lock().await == Some(peer_id) {
-            self.apply_monitor_layout(layout).await;
+            self.apply_monitor_layout(layout.clone()).await;
         }
+
+        super::kvm_layout_sync::broadcast_kvm_layout(
+            Arc::clone(&self.transport),
+            Arc::clone(&self.kvm_layout_store),
+            peer_id,
+            local.clone(),
+            &layout,
+        )
+        .await;
+
         Ok(())
     }
 
@@ -369,6 +392,14 @@ impl InputControlService {
         if let Some(store) = self.kvm_layout_store.lock().await.as_ref() {
             if let Ok(Some(mut saved)) = store.get(peer_id).await {
                 saved.finalize_for_runtime(local_monitors.to_vec(), peer_id);
+                if saved.remote_monitors.is_empty() {
+                    if let Ok(Some(peer_mons)) = store.get_peer_monitors(peer_id).await {
+                        if !peer_mons.is_empty() {
+                            saved.remote_monitors = peer_mons;
+                            saved.infer_edges_from_geometry();
+                        }
+                    }
+                }
                 return saved;
             }
         }
@@ -430,6 +461,7 @@ impl InputControlService {
         let service_mirror_send_errors = Arc::clone(&self.mirror_keys_send_errors);
         let service_mouse_send = Arc::clone(&self.mouse_send);
         let service_workspace_cursor = Arc::clone(&self.workspace_cursor);
+        let service_remote_switch_grace = Arc::clone(&self.remote_switch_grace);
 
         let mouse_send_flush = Arc::clone(&self.mouse_send);
         let input_tx_flush = Arc::clone(&self.input_tx);
@@ -473,6 +505,7 @@ impl InputControlService {
                 let mirror_send_errors = service_mirror_send_errors.clone();
                 let mouse_send = service_mouse_send.clone();
                 let workspace_cursor = service_workspace_cursor.clone();
+                let remote_switch_grace = service_remote_switch_grace.clone();
                 let seq = Arc::clone(&service_seq);
                 runtime.spawn(async move {
                     if !*enabled.lock().await && !mirror.load(Ordering::SeqCst) {
@@ -496,6 +529,7 @@ impl InputControlService {
                         mirror_send_errors,
                         mouse_send,
                         workspace_cursor,
+                        remote_switch_grace,
                     )
                     .await;
                 });
@@ -541,6 +575,20 @@ impl InputControlService {
 
         FIRST_INJECT.store(true, Ordering::SeqCst);
         self.remote_cursor_x_est.store(0, Ordering::SeqCst);
+        self.remote_cursor_y_est.store(0, Ordering::SeqCst);
+
+        let local_for_sync = local.clone();
+        tokio::spawn(super::kvm_layout_sync::start_kvm_layout_sync(
+            Arc::clone(&self.transport),
+            Arc::clone(&self.kvm_layout_store),
+            self.bus.clone(),
+            Arc::clone(&self.layout),
+            Arc::clone(&self.enabled),
+            Arc::clone(&self.active_peer),
+            Arc::clone(&self.mouse_send),
+            peer_id,
+            local_for_sync,
+        ));
 
         let inject_input = Arc::clone(&self.input);
         let remote_frames = Arc::clone(&self.remote_frames_received);
@@ -596,6 +644,10 @@ impl InputControlService {
 
     pub async fn get_focus_state(&self) -> FocusState {
         self.focus.lock().await.clone()
+    }
+
+    pub async fn is_active_for_peer(&self, peer_id: PeerId) -> bool {
+        *self.enabled.lock().await && *self.active_peer.lock().await == Some(peer_id)
     }
 
     /// Restaura cursor/foco local após desconexão (libera `ClipCursor`).
@@ -830,6 +882,7 @@ async fn handle_local_input(
     mirror_keys_send_errors: Arc<AtomicU64>,
     mouse_send: Arc<MouseSendState>,
     workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
+    remote_switch_grace: Arc<Mutex<Option<Instant>>>,
 ) {
     if keyboard_mirror.load(Ordering::SeqCst) {
         if let InputEvent::Key { code, pressed, .. } = &ev {
@@ -909,6 +962,7 @@ async fn handle_local_input(
                             Arc::clone(&remote_cursor_x_est),
                             Arc::clone(&remote_cursor_y_est),
                             workspace_cursor.clone(),
+                            remote_switch_grace.clone(),
                         )
                         .await;
                     }
@@ -949,7 +1003,11 @@ async fn handle_local_input(
                             false
                         }
                     };
-                    if go_back {
+                    let in_grace = remote_switch_grace
+                        .lock()
+                        .await
+                        .is_some_and(|t| t.elapsed() < Duration::from_millis(450));
+                    if go_back && !in_grace {
                         try_switch_back_to_local(
                             Arc::clone(&focus),
                             Arc::clone(&layout),
@@ -957,6 +1015,7 @@ async fn handle_local_input(
                             bus.clone(),
                             Arc::clone(&active),
                             workspace_cursor.clone(),
+                            remote_switch_grace.clone(),
                         )
                         .await;
                         return;
@@ -1008,6 +1067,7 @@ async fn try_edge_switch(
     remote_cursor_x_est: Arc<AtomicI32>,
     remote_cursor_y_est: Arc<AtomicI32>,
     workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
+    remote_switch_grace: Arc<Mutex<Option<Instant>>>,
 ) {
     let layout_guard = layout.lock().await;
     let Some(layout_data) = layout_guard.as_ref() else {
@@ -1075,6 +1135,8 @@ async fn try_edge_switch(
     )
     .await;
 
+    *remote_switch_grace.lock().await = Some(Instant::now());
+
     // 3. Enviar warp absoluto como primeiro frame para posicionar cursor no receiver
     if let Some(tx) = input_tx.lock().await.as_ref() {
         let warp_ev = InputEvent::MouseWarpAbsolute {
@@ -1097,6 +1159,7 @@ async fn try_switch_back_to_local(
     bus: EventBus,
     _active: Arc<Mutex<Option<PeerId>>>,
     workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
+    remote_switch_grace: Arc<Mutex<Option<Instant>>>,
 ) {
     let current = focus.lock().await.target.clone();
     let FocusTarget::Remote(_peer) = &current else {
@@ -1137,6 +1200,7 @@ async fn try_switch_back_to_local(
         workspace_cursor,
     )
     .await;
+    *remote_switch_grace.lock().await = None;
 }
 
 async fn switch_focus(

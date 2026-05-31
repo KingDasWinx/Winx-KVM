@@ -6,6 +6,7 @@ pub mod discovery;
 pub mod identity;
 pub mod input_control;
 pub mod input_streams;
+pub mod kvm_layout_sync;
 pub mod mouse_coalesce;
 pub mod pairing;
 pub mod transport;

@@ -50,6 +50,7 @@ pub async fn get_kvm_layout(
 
 #[tauri::command]
 pub async fn get_peer_monitors(
+    input_state: State<'_, InputControlState>,
     ws_state: State<'_, WorkspaceState>,
     peer_id: String,
     workspace_id: Option<String>,
@@ -78,7 +79,16 @@ pub async fn get_peer_monitors(
         }
     }
 
-    Ok(Vec::new())
+    let pid = parse_peer_id(&peer_id)?;
+    let monitors = input_state
+        .input_control
+        .get_peer_monitors(pid)
+        .await
+        .map_err(map_err)?;
+    Ok(monitors
+        .iter()
+        .map(super::monitor_layout_dto::rect_to_dto)
+        .collect())
 }
 
 #[derive(Debug, Deserialize)]
@@ -98,5 +108,11 @@ pub async fn update_kvm_layout(
         .input_control
         .save_kvm_layout(pid, layout)
         .await
-        .map_err(map_err)
+        .map_err(map_err)?;
+
+    if state.input_control.is_active_for_peer(pid).await {
+        let _ = state.input_control.enable_for_peer(pid).await;
+    }
+
+    Ok(())
 }

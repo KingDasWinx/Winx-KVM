@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Stack } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
+import { listen } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
 
 import MonitorLayoutModal from '../shared/MonitorLayoutModal';
@@ -56,6 +57,20 @@ export default function SingleKvmLayoutPanel({ peerId, peerUsername }: Props) {
   useEffect(() => {
     if (open) void loadLayout();
   }, [open, loadLayout]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{ kind: string; peer_id?: string }>('domain-event', (event) => {
+      if (event.payload.kind !== 'peer-monitors-updated') return;
+      if (event.payload.peer_id !== peerId) return;
+      if (open) void loadLayout();
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, [open, peerId, loadLayout]);
 
   const handleSave = async (normalized: MonitorLayoutDto) => {
     setSaving(true);

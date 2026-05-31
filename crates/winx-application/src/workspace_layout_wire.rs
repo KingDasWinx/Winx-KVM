@@ -66,6 +66,40 @@ fn monitor_layout_to_payload(layout: &MonitorLayout) -> MonitorLayoutPayload {
     }
 }
 
+pub fn monitor_layout_to_wire(layout: &MonitorLayout) -> MonitorLayoutPayload {
+    monitor_layout_to_payload(layout)
+}
+
+pub fn monitor_layout_from_wire(payload: &MonitorLayoutPayload) -> MonitorLayout {
+    monitor_layout_from_payload(payload)
+}
+
+pub fn rects_to_wire(rects: &[MonitorRect]) -> Vec<MonitorRectPayload> {
+    rects
+        .iter()
+        .map(|r| MonitorRectPayload {
+            id: r.id.0,
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+        })
+        .collect()
+}
+
+pub fn rects_from_wire(payload: &[MonitorRectPayload]) -> Vec<MonitorRect> {
+    payload
+        .iter()
+        .map(|r| MonitorRect {
+            id: MonitorId(r.id),
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+        })
+        .collect()
+}
+
 fn monitor_layout_from_payload(payload: &MonitorLayoutPayload) -> MonitorLayout {
     fn parse_border(s: &str) -> BorderSide {
         match s {

@@ -35,3 +35,9 @@ pub struct InputBlocked {
     pub blocked: bool,
     pub peer_id: Option<PeerId>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerMonitorsUpdated {
+    pub peer_id: PeerId,
+    pub monitor_count: usize,
+}
