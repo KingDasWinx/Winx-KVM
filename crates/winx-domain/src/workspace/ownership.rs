@@ -71,6 +71,12 @@ impl OwnershipMode {
             None
         }
     }
+
+    /// Retorna true se mirror foi marcado órfão pelo owner.
+    #[must_use]
+    pub fn is_orphan(&self) -> bool {
+        matches!(self, Self::Mirror { is_orphan: true, .. })
+    }
 }
 
 #[cfg(test)]

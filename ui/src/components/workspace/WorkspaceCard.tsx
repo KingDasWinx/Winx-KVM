@@ -11,7 +11,8 @@ interface Props {
 
 export default function WorkspaceCard({ workspace, onOpenDetail }: Props) {
   const { t } = useTranslation('workspace');
-  const { activeWorkspaceId, presence, setConflict } = useWorkspaceStore();
+  const { activeWorkspaceId, presence, setConflict, refresh, clearWorkspacePresence } =
+    useWorkspaceStore();
   const isActive = activeWorkspaceId === workspace.id;
 
   const presencePrefix = `${workspace.id}:`;
@@ -20,7 +21,7 @@ export default function WorkspaceCard({ workspace, onOpenDetail }: Props) {
   );
   const isAvailable =
     memberPresence.some(([, online]) => online) ||
-    (!workspace.is_mirror && memberPresence.length === 0);
+    memberPresence.length === 0;
 
   const borderColor = workspace.is_mirror ? 'var(--mantine-color-gray-4)' : undefined;
 
@@ -57,6 +58,8 @@ export default function WorkspaceCard({ workspace, onOpenDetail }: Props) {
 
   const handleForget = async () => {
     await ipc.forgetWorkspace(workspace.id).catch(console.error);
+    clearWorkspacePresence(workspace.id);
+    await refresh().catch(console.error);
   };
 
   return (

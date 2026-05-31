@@ -340,6 +340,7 @@ impl WorkspaceService {
 
         let workspace_id = data.session.workspace_id;
         let sender_device_id = data.session.sender_device_id;
+        let owner_device_id = DeviceId::from_uuid(snapshot.owner_device_id);
 
         // TOFU: save sender as trusted peer
         let peer = TrustedPeer::new(
@@ -397,6 +398,15 @@ impl WorkspaceService {
             members,
             layout: winx_domain::workspace::WorkspaceLayout::empty(),
         };
+
+        // Limpa mirrors órfãos antigos do mesmo owner e substitui mirror existente (re-convite).
+        self.purge_orphan_mirrors_for_owner(owner_device_id, workspace_id)
+            .await;
+        if self.store.find_by_id(workspace_id).await.ok().flatten().is_some() {
+            if let Err(e) = self.store.delete(workspace_id).await {
+                warn!(?e, %workspace_id, "failed to replace existing mirror on accept");
+            }
+        }
 
         // Create mirror workspace
         let mirror = Workspace::create_mirror(domain_snapshot, owner_username);
@@ -645,6 +655,8 @@ impl WorkspaceService {
             .delete(id)
             .await
             .map_err(|e| DomainError::new(DomainErrorCode::InternalError, e.to_string()))?;
+
+        self.clear_workspace_presence_cache(id).await;
 
         self.bus.publish(DomainEvent::WorkspaceDeleted(
             winx_domain::workspace::events::WorkspaceDeleted { workspace_id: id },
@@ -1357,7 +1369,16 @@ impl WorkspaceService {
                 };
 
                 let key = (ws.id, member.device_id);
-                if state.get(&key).copied() != Some(is_online) {
+                let prev = state.get(&key).copied();
+
+                // Não publicar "offline" na primeira avaliação (mDNS ainda aquecendo).
+                let should_publish = if is_online {
+                    prev != Some(true)
+                } else {
+                    prev == Some(true)
+                };
+
+                if should_publish {
                     state.insert(key, is_online);
                     self.bus
                         .publish(DomainEvent::WorkspaceMemberPresenceChanged(
@@ -1367,9 +1388,58 @@ impl WorkspaceService {
                                 is_online,
                             },
                         ));
+                } else if is_online {
+                    state.insert(key, true);
                 }
             }
         }
+    }
+
+    async fn clear_workspace_presence_cache(&self, workspace_id: WorkspaceId) {
+        let mut state = self.member_online_state.lock().await;
+        state.retain(|(ws_id, _), _| *ws_id != workspace_id);
+    }
+
+    /// Remove mirrors órfãos do mesmo owner antes de aceitar um novo convite.
+    async fn purge_orphan_mirrors_for_owner(
+        &self,
+        owner_device_id: DeviceId,
+        keep_workspace_id: WorkspaceId,
+    ) {
+        let workspaces = match self.store.load_all().await {
+            Ok(ws) => ws,
+            Err(e) => {
+                warn!(?e, "purge_orphan_mirrors: failed to load workspaces");
+                return;
+            }
+        };
+
+        for ws in workspaces {
+            if ws.id == keep_workspace_id || ws.owner_device_id != owner_device_id {
+                continue;
+            }
+            if !ws.ownership_mode.is_mirror() || !ws.ownership_mode.is_orphan() {
+                continue;
+            }
+            if let Err(e) = self.store.delete(ws.id).await {
+                warn!(?e, workspace_id = %ws.id, "failed to purge orphan mirror");
+                continue;
+            }
+            self.clear_workspace_presence_cache(ws.id).await;
+            info!(workspace_id = %ws.id, %owner_device_id, "orphan mirror purged before accept");
+        }
+    }
+
+    /// Avalia presença imediatamente (startup ou após refresh da UI).
+    pub async fn bootstrap_presence(&self) {
+        let workspaces = match self.store.load_all().await {
+            Ok(ws) => ws,
+            Err(e) => {
+                warn!(?e, "bootstrap_presence: failed to load workspaces");
+                return;
+            }
+        };
+        self.refresh_member_presence(&workspaces).await;
     }
 
     /// Loop periódico que republica presença de membros com base no mDNS.

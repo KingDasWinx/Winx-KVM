@@ -351,6 +351,12 @@ pub fn run() {
             .await;
     });
 
+    let workspace_bootstrap = Arc::clone(&services.workspace);
+    rt.spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        workspace_bootstrap.bootstrap_presence().await;
+    });
+
     // Spawnar network watcher task se disponível
     if let Some(net_rx) = net_events_rx {
         let discovery_bg = Arc::clone(&services.discovery);

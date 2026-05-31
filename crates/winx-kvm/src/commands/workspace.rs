@@ -254,6 +254,8 @@ fn ws_to_dto(ws: &winx_domain::workspace::Workspace) -> WorkspaceDto {
 pub async fn list_workspaces(
     state: State<'_, WorkspaceState>,
 ) -> Result<Vec<WorkspaceDto>, String> {
+    state.service.bootstrap_presence().await;
+
     let workspaces = state
         .service
         .list_workspaces()

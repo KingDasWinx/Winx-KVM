@@ -18,6 +18,7 @@ export interface WorkspaceStoreState {
   setConflict: (conflict: WorkspaceStoreState['conflict']) => void;
   setActiveWorkspaceId: (id: string | null) => void;
   setPresence: (workspaceId: string, deviceId: string, isOnline: boolean) => void;
+  clearWorkspacePresence: (workspaceId: string) => void;
 }
 
 export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
@@ -48,4 +49,13 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
     set((state) => ({
       presence: { ...state.presence, [`${workspaceId}:${deviceId}`]: isOnline },
     })),
+
+  clearWorkspacePresence: (workspaceId) =>
+    set((state) => {
+      const prefix = `${workspaceId}:`;
+      const presence = Object.fromEntries(
+        Object.entries(state.presence).filter(([key]) => !key.startsWith(prefix))
+      );
+      return { presence };
+    }),
 }));

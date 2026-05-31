@@ -6,6 +6,7 @@ import * as ipc from '../../ipc/commands';
 import WorkspaceMembersPanel from './WorkspaceMembersPanel';
 import InvitePeerModal from './InvitePeerModal';
 import WorkspaceLayoutEditor from './WorkspaceLayoutEditor';
+import { useWorkspaceStore } from '../../store/workspaceStore';
 import type { WorkspaceDto } from '../../ipc/commands';
 
 interface Props {
@@ -15,6 +16,7 @@ interface Props {
 
 export default function WorkspaceDetailDrawer({ workspace, onClose }: Props) {
   const { t } = useTranslation('workspace');
+  const { refresh, clearWorkspacePresence } = useWorkspaceStore();
   const [newName, setNewName] = useState('');
   const [inviteOpen, setInviteOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -46,6 +48,8 @@ export default function WorkspaceDetailDrawer({ workspace, onClose }: Props) {
 
   const handleForget = async () => {
     await ipc.forgetWorkspace(workspace.id).catch(console.error);
+    clearWorkspacePresence(workspace.id);
+    await refresh().catch(console.error);
     onClose();
   };
 
