@@ -6,7 +6,10 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 use winx_domain::{
-    input_control::{events::PeerMonitorsUpdated, MonitorLayout, MonitorRect},
+    input_control::{
+        events::{KvmLayoutUpdated, PeerMonitorsUpdated},
+        MonitorLayout, MonitorRect,
+    },
     shared::ids::PeerId,
     DomainEvent,
 };
@@ -14,7 +17,7 @@ use winx_protocol::{Payload, PeerMonitorsPayload};
 
 use crate::{
     bus::EventBus,
-    ports::KvmLayoutStore,
+    ports::{KvmLayoutStore, MonitorBackend},
     use_cases::clipboard::{ClipboardService, LayoutDataHandler},
     workspace_layout_wire::{monitor_layout_to_wire, rects_from_wire, rects_to_wire},
 };
@@ -58,6 +61,7 @@ pub struct KvmLayoutSyncDeps {
     pub enabled: Arc<Mutex<bool>>,
     pub active_peer: Arc<Mutex<Option<PeerId>>>,
     pub mouse_send: Arc<MouseSendState>,
+    pub monitors: Arc<dyn MonitorBackend>,
 }
 
 impl KvmLayoutSyncDeps {
@@ -211,17 +215,46 @@ async fn handle_layout_payload(deps: &KvmLayoutSyncDeps, peer_id: PeerId, payloa
                 )
                 .await;
             }
-            if *deps.enabled.lock().await && *deps.active_peer.lock().await == Some(peer_id) {
-                let mut current = deps.layout.lock().await;
-                if let Some(ref mut active) = *current {
-                    active.remote_monitors = received.local_monitors;
-                    active.infer_edges_from_geometry();
-                    let scale = active.remote_mouse_scale();
-                    deps.mouse_send
-                        .scale_q8
-                        .store((scale * 256.0).round() as i32, Ordering::SeqCst);
-                    info!(%peer_id, "layout sync: layout ativo atualizado via KvmLayoutShare");
+
+            let local_monitors = resolve_local_monitors_for_mirror(deps, peer_id).await;
+            if local_monitors.is_empty() {
+                warn!(
+                    %peer_id,
+                    "layout sync: KvmLayoutShare ignorado — monitores locais indisponíveis"
+                );
+                return;
+            }
+
+            let mirrored =
+                MonitorLayout::from_peer_share(&received, local_monitors, peer_id);
+
+            if let Some(s) = deps.store.lock().await.as_ref() {
+                match s.save(peer_id, &mirrored).await {
+                    Ok(()) => info!(
+                        %peer_id,
+                        exit = ?mirrored.edge.local_exit,
+                        remote_x = mirrored.remote_virtual.x,
+                        "layout sync: layout espelhado persistido"
+                    ),
+                    Err(err) => warn!(?err, %peer_id, "layout sync: falha ao persistir layout espelhado"),
                 }
+            }
+
+            deps.bus
+                .publish(DomainEvent::KvmLayoutUpdated(KvmLayoutUpdated { peer_id }));
+
+            if *deps.enabled.lock().await && *deps.active_peer.lock().await == Some(peer_id) {
+                let scale = mirrored.remote_mouse_scale();
+                deps.mouse_send
+                    .scale_q8
+                    .store((scale * 256.0).round() as i32, Ordering::SeqCst);
+                *deps.layout.lock().await = Some(mirrored);
+                info!(%peer_id, "layout sync: layout ativo substituído via KvmLayoutShare espelhado");
+            } else {
+                debug!(
+                    %peer_id,
+                    "layout sync: layout espelhado salvo; runtime inativo ou outro peer"
+                );
             }
         }
         other => {
@@ -232,6 +265,31 @@ async fn handle_layout_payload(deps: &KvmLayoutSyncDeps, peer_id: PeerId, payloa
             );
         }
     }
+}
+
+async fn resolve_local_monitors_for_mirror(
+    deps: &KvmLayoutSyncDeps,
+    peer_id: PeerId,
+) -> Vec<MonitorRect> {
+    {
+        let guard = deps.layout.lock().await;
+        if let Some(ref active) = *guard {
+            if !active.local_monitors.is_empty() {
+                return active.local_monitors.clone();
+            }
+        }
+    }
+    if let Some(s) = deps.store.lock().await.as_ref() {
+        if let Ok(Some(saved)) = s.get(peer_id).await {
+            if !saved.local_monitors.is_empty() {
+                return saved.local_monitors.clone();
+            }
+        }
+    }
+    deps.monitors
+        .enumerate_local_monitors()
+        .await
+        .unwrap_or_default()
 }
 
 pub async fn get_peer_monitors_from_store(
@@ -365,6 +423,23 @@ mod tests {
         ]
     }
 
+    use crate::ports::MonitorBackend;
+
+    struct MockMonitors;
+
+    #[async_trait::async_trait]
+    impl MonitorBackend for MockMonitors {
+        async fn enumerate_local_monitors(&self) -> anyhow::Result<Vec<MonitorRect>> {
+            Ok(vec![MonitorRect {
+                id: MonitorId(10),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            }])
+        }
+    }
+
     fn test_deps(
         peer_id: PeerId,
         mock: Arc<MockKvmLayoutStore>,
@@ -393,6 +468,7 @@ mod tests {
                 scale_q8: AtomicI32::new(256),
                 frames_sent: AtomicU64::new(0),
             }),
+            monitors: Arc::new(MockMonitors),
         }
     }
 
@@ -451,5 +527,48 @@ mod tests {
         expected.remote_monitors = monitors;
         expected.infer_edges_from_geometry();
         assert_eq!(active.edge, expected.edge);
+    }
+
+    #[tokio::test]
+    async fn kvm_layout_share_mirrors_persists_and_publishes_event() {
+        let peer_id = PeerId::from_uuid(Uuid::new_v4());
+        let mock = Arc::new(MockKvmLayoutStore::default());
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let deps = test_deps(peer_id, Arc::clone(&mock), bus);
+
+        let peer_layout = MonitorLayout::default_side_by_side(
+            vec![MonitorRect {
+                id: MonitorId(1),
+                x: 0,
+                y: 0,
+                width: 2560,
+                height: 1080,
+            }],
+            peer_id,
+        );
+
+        handle_layout_payload(
+            &deps,
+            peer_id,
+            Payload::KvmLayoutShare(monitor_layout_to_wire(&peer_layout)),
+        )
+        .await;
+
+        let saved = mock
+            .layouts
+            .lock()
+            .unwrap()
+            .get(&peer_id)
+            .cloned()
+            .expect("layout espelhado persistido");
+        assert_eq!(saved.edge.local_exit, winx_domain::input_control::BorderSide::Left);
+
+        loop {
+            let evt = rx.recv().await.unwrap();
+            if matches!(evt, DomainEvent::KvmLayoutUpdated(ref e) if e.peer_id == peer_id) {
+                break;
+            }
+        }
     }
 }

@@ -237,6 +237,11 @@ impl From<&DomainEvent> for FrontendEvent {
                 monitor_count: Some(e.monitor_count),
                 ..FrontendEvent::empty("peer-monitors-updated")
             },
+            DomainEvent::KvmLayoutUpdated(e) => FrontendEvent {
+                kind: "kvm-layout-updated",
+                peer_id: Some(e.peer_id.to_string()),
+                ..FrontendEvent::empty("kvm-layout-updated")
+            },
             DomainEvent::ClipboardChanged(e) => FrontendEvent {
                 kind: "clipboard-changed",
                 clipboard_hash: Some(content_hash_hex(&e.hash)),

@@ -9,9 +9,9 @@ use winx_domain::{
     input_control::{
         apply_focus_target,
         events::{FocusSwitched, HotkeyTriggered, InputBlocked},
-        should_return_to_local, should_switch_to_remote, toggle_lock_mode, EdgeDetectInput,
-        FocusState, FocusTarget, HotkeyAction, InputEvent, MonitorLayout, RemoteCursorEst,
-        MOUSE_COALESCE_FLUSH_MS, MOUSE_SEND_MIN_MANHATTAN,
+        should_return_to_local, should_switch_to_remote, toggle_lock_mode, remote_inland_px,
+        EdgeDetectInput, FocusState, FocusTarget, HotkeyAction, InputEvent, MonitorLayout,
+        RemoteCursorEst, MOUSE_COALESCE_FLUSH_MS, MOUSE_SEND_MIN_MANHATTAN, REMOTE_MIN_INLAND_PX,
     },
     shared::{ids::PeerId, DomainErrorCode},
     DomainError, DomainEvent,
@@ -34,6 +34,9 @@ pub struct MouseSendState {
 }
 
 static FIRST_INJECT: AtomicBool = AtomicBool::new(true);
+
+/// Período após cruzar para remoto em que retorno pela borda oposta fica desabilitado.
+const REMOTE_SWITCH_GRACE_MS: u64 = 700;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct KeyboardMirrorStatus {
@@ -83,6 +86,7 @@ pub struct InputControlService {
     workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
     kvm_layout_store: Arc<Mutex<Option<Arc<dyn KvmLayoutStore>>>>,
     remote_switch_grace: Arc<Mutex<Option<Instant>>>,
+    remote_return_armed: Arc<AtomicBool>,
     layout_sync_deps: Arc<Mutex<Option<Arc<super::kvm_layout_sync::KvmLayoutSyncDeps>>>>,
     clipboard: Arc<Mutex<Option<Arc<super::ClipboardService>>>>,
 }
@@ -124,6 +128,7 @@ impl InputControlService {
             workspace_cursor: Arc::new(Mutex::new(None)),
             kvm_layout_store: Arc::new(Mutex::new(None)),
             remote_switch_grace: Arc::new(Mutex::new(None)),
+            remote_return_armed: Arc::new(AtomicBool::new(false)),
             layout_sync_deps: Arc::new(Mutex::new(None)),
             clipboard: Arc::new(Mutex::new(None)),
         }
@@ -141,6 +146,7 @@ impl InputControlService {
             enabled: Arc::clone(&self.enabled),
             active_peer: Arc::clone(&self.active_peer),
             mouse_send: Arc::clone(&self.mouse_send),
+            monitors: Arc::clone(&self.monitors),
         });
         *self.layout_sync_deps.lock().await = Some(Arc::clone(&deps));
         deps.register_handler(clipboard.as_ref()).await;
@@ -536,6 +542,7 @@ impl InputControlService {
         let service_mouse_send = Arc::clone(&self.mouse_send);
         let service_workspace_cursor = Arc::clone(&self.workspace_cursor);
         let service_remote_switch_grace = Arc::clone(&self.remote_switch_grace);
+        let service_remote_return_armed = Arc::clone(&self.remote_return_armed);
 
         let mouse_send_flush = Arc::clone(&self.mouse_send);
         let input_tx_flush = Arc::clone(&self.input_tx);
@@ -580,6 +587,7 @@ impl InputControlService {
                 let mouse_send = service_mouse_send.clone();
                 let workspace_cursor = service_workspace_cursor.clone();
                 let remote_switch_grace = service_remote_switch_grace.clone();
+                let remote_return_armed = service_remote_return_armed.clone();
                 let seq = Arc::clone(&service_seq);
                 runtime.spawn(async move {
                     if !*enabled.lock().await && !mirror.load(Ordering::SeqCst) {
@@ -604,6 +612,7 @@ impl InputControlService {
                         mouse_send,
                         workspace_cursor,
                         remote_switch_grace,
+                        remote_return_armed,
                     )
                     .await;
                 });
@@ -751,26 +760,63 @@ impl InputControlService {
         let input_tx = Arc::clone(&self.input_tx);
         let enabled = Arc::clone(&self.enabled);
         let remote_dx = Arc::clone(&self.remote_cursor_x_est);
+        let layout = Arc::clone(&self.layout);
+        let kvm_layout_store = Arc::clone(&self.kvm_layout_store);
+        let monitors = Arc::clone(&self.monitors);
+        let mouse_send = Arc::clone(&self.mouse_send);
+        let remote_return_armed = Arc::clone(&self.remote_return_armed);
 
         tokio::spawn(async move {
             while let Ok(event) = rx.recv().await {
-                if let DomainEvent::ConnectionLost(e) = event {
-                    let guard = active.lock().await;
-                    if *guard == Some(e.peer_id) {
-                        drop(guard);
-                        *active.lock().await = None;
-                        *enabled.lock().await = false;
-                        *input_tx.lock().await = None;
-                        remote_dx.store(0, Ordering::SeqCst);
-                        let mut f = focus.lock().await;
-                        f.target = FocusTarget::Local;
-                        f.lock_mode = false;
-                        input.set_pass_through(true);
-                        let _ = input.set_cursor_clipped(None).await;
-                        input.reset_mouse_delta_baseline();
-                        FIRST_INJECT.store(true, Ordering::SeqCst);
-                        info!(peer_id = %e.peer_id, "foco e cursor restaurados (connection lost)");
+                match event {
+                    DomainEvent::ConnectionLost(e) => {
+                        let guard = active.lock().await;
+                        if *guard == Some(e.peer_id) {
+                            drop(guard);
+                            *active.lock().await = None;
+                            *enabled.lock().await = false;
+                            *input_tx.lock().await = None;
+                            remote_dx.store(0, Ordering::SeqCst);
+                            remote_return_armed.store(false, Ordering::SeqCst);
+                            let mut f = focus.lock().await;
+                            f.target = FocusTarget::Local;
+                            f.lock_mode = false;
+                            input.set_pass_through(true);
+                            let _ = input.set_cursor_clipped(None).await;
+                            input.reset_mouse_delta_baseline();
+                            FIRST_INJECT.store(true, Ordering::SeqCst);
+                            info!(peer_id = %e.peer_id, "foco e cursor restaurados (connection lost)");
+                        }
                     }
+                    DomainEvent::KvmLayoutUpdated(e) => {
+                        if !*enabled.lock().await {
+                            continue;
+                        }
+                        if *active.lock().await != Some(e.peer_id) {
+                            continue;
+                        }
+                        let Some(store) = kvm_layout_store.lock().await.clone() else {
+                            continue;
+                        };
+                        let local = monitors
+                            .enumerate_local_monitors()
+                            .await
+                            .unwrap_or_default();
+                        if local.is_empty() {
+                            continue;
+                        }
+                        if let Ok(Some(mut saved)) = store.get(e.peer_id).await {
+                            saved.finalize_for_runtime(local, e.peer_id);
+                            let scale = saved.remote_mouse_scale();
+                            mouse_send
+                                .scale_q8
+                                .store((scale * 256.0).round() as i32, Ordering::SeqCst);
+                            *layout.lock().await = Some(saved);
+                            remote_return_armed.store(false, Ordering::SeqCst);
+                            info!(peer_id = %e.peer_id, "layout runtime atualizado via KvmLayoutUpdated");
+                        }
+                    }
+                    _ => {}
                 }
             }
         });
@@ -944,6 +990,7 @@ async fn handle_local_input(
     mouse_send: Arc<MouseSendState>,
     workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
     remote_switch_grace: Arc<Mutex<Option<Instant>>>,
+    remote_return_armed: Arc<AtomicBool>,
 ) {
     if keyboard_mirror.load(Ordering::SeqCst) {
         if let InputEvent::Key { code, pressed, .. } = &ev {
@@ -1024,6 +1071,7 @@ async fn handle_local_input(
                             Arc::clone(&remote_cursor_y_est),
                             workspace_cursor.clone(),
                             remote_switch_grace.clone(),
+                            remote_return_armed.clone(),
                         )
                         .await;
                         if !matches!(focus.lock().await.target, FocusTarget::Local) {
@@ -1048,18 +1096,10 @@ async fn handle_local_input(
                     let scale_q8 = mouse_send.scale_q8.load(Ordering::SeqCst);
                     let scaled_dx = ((i64::from(*dx) * i64::from(scale_q8)) / 256) as i32;
                     let scaled_dy = ((i64::from(*dy) * i64::from(scale_q8)) / 256) as i32;
-                    let in_grace = remote_switch_grace
-                        .lock()
-                        .await
-                        .is_some_and(|t| t.elapsed() < Duration::from_millis(450));
-                    if in_grace {
-                        // Durante grace: envia movimento ao remoto, mas não estima posição
-                        // nem verifica retorno — evita bounce por delta residual da borda.
-                        let mut c = mouse_send.coalesce.lock().await;
-                        c.push(*dx, *dy);
-                        mouse_send.flush_notify.notify_one();
-                        return;
-                    }
+                    let in_grace = remote_switch_grace.lock().await.is_some_and(|t| {
+                        t.elapsed() < Duration::from_millis(REMOTE_SWITCH_GRACE_MS)
+                    });
+
                     let go_back = {
                         let layout_guard = layout.lock().await;
                         if let Some(layout_data) = layout_guard.as_ref() {
@@ -1074,14 +1114,31 @@ async fn handle_local_input(
                             let new_y = (old_y + scaled_dy).clamp(0, max_y);
                             remote_cursor_x_est.store(new_x, Ordering::SeqCst);
                             remote_cursor_y_est.store(new_y, Ordering::SeqCst);
-                            should_return_to_local(
-                                RemoteCursorEst { x: new_x, y: new_y },
-                                layout_data,
-                            )
+
+                            if in_grace {
+                                false
+                            } else {
+                                let est = RemoteCursorEst { x: new_x, y: new_y };
+                                if !remote_return_armed.load(Ordering::SeqCst) {
+                                    if remote_inland_px(est, layout_data) >= REMOTE_MIN_INLAND_PX {
+                                        remote_return_armed.store(true, Ordering::SeqCst);
+                                    }
+                                }
+                                remote_return_armed.load(Ordering::SeqCst)
+                                    && should_return_to_local(est, layout_data)
+                            }
                         } else {
                             false
                         }
                     };
+
+                    if in_grace {
+                        let mut c = mouse_send.coalesce.lock().await;
+                        c.push(*dx, *dy);
+                        mouse_send.flush_notify.notify_one();
+                        return;
+                    }
+
                     if go_back {
                         try_switch_back_to_local(
                             Arc::clone(&focus),
@@ -1091,6 +1148,7 @@ async fn handle_local_input(
                             Arc::clone(&active),
                             workspace_cursor.clone(),
                             remote_switch_grace.clone(),
+                            remote_return_armed.clone(),
                         )
                         .await;
                         return;
@@ -1143,6 +1201,7 @@ async fn try_edge_switch(
     remote_cursor_y_est: Arc<AtomicI32>,
     workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
     remote_switch_grace: Arc<Mutex<Option<Instant>>>,
+    remote_return_armed: Arc<AtomicBool>,
 ) {
     let layout_guard = layout.lock().await;
     let Some(layout_data) = layout_guard.as_ref() else {
@@ -1194,6 +1253,7 @@ async fn try_edge_switch(
     let clip_rect = (clip_x, clip_y, clip_w, clip_h);
 
     // Grace ANTES de trocar foco — evita race onde o 1º MouseMove remoto dispara go_back.
+    remote_return_armed.store(false, Ordering::SeqCst);
     *remote_switch_grace.lock().await = Some(Instant::now());
 
     if let Err(err) = input.transition_to_remote(safe_x, safe_y, clip_rect).await {
@@ -1240,11 +1300,16 @@ async fn try_switch_back_to_local(
     _active: Arc<Mutex<Option<PeerId>>>,
     workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
     remote_switch_grace: Arc<Mutex<Option<Instant>>>,
+    remote_return_armed: Arc<AtomicBool>,
 ) {
     let current = focus.lock().await.target.clone();
     let FocusTarget::Remote(_peer) = &current else {
         return;
     };
+
+    if !remote_return_armed.load(Ordering::SeqCst) {
+        return;
+    }
 
     let layout_guard = layout.lock().await;
     let Some(layout_data) = layout_guard.as_ref() else {
@@ -1281,6 +1346,7 @@ async fn try_switch_back_to_local(
     )
     .await;
     *remote_switch_grace.lock().await = None;
+    remote_return_armed.store(false, Ordering::SeqCst);
 }
 
 async fn switch_focus(
@@ -1425,6 +1491,7 @@ mod tests {
             Arc::new(AtomicI32::new(0)),
             Arc::clone(&svc.workspace_cursor),
             Arc::clone(&svc.remote_switch_grace),
+            Arc::clone(&svc.remote_return_armed),
         )
         .await;
 
@@ -1467,6 +1534,7 @@ mod tests {
             Arc::new(AtomicI32::new(0)),
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(None)),
+            Arc::new(AtomicBool::new(false)),
         )
         .await;
 

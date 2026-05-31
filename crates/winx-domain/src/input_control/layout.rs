@@ -409,6 +409,98 @@ impl MonitorLayout {
         self.infer_edges_from_geometry();
     }
 
+    /// Converte o layout compartilhado pelo peer (perspectiva dele) para o nosso desktop virtual.
+    #[must_use]
+    pub fn from_peer_share(
+        peer_share: &MonitorLayout,
+        local_monitors: Vec<MonitorRect>,
+        remote_peer: PeerId,
+    ) -> Self {
+        fn opposite(side: BorderSide) -> BorderSide {
+            match side {
+                BorderSide::Right => BorderSide::Left,
+                BorderSide::Left => BorderSide::Right,
+                BorderSide::Top => BorderSide::Bottom,
+                BorderSide::Bottom => BorderSide::Top,
+            }
+        }
+
+        let peer_local = peer_share.local_union_bounds();
+        let peer_remote = peer_share.placed_remote_bounds();
+        let our_local = Self::union_of_monitors(&local_monitors);
+        let peer_block = Self::union_of_monitors(&peer_share.local_monitors);
+        let pw = (peer_block.right_edge() - peer_block.x).max(1) as u32;
+        let ph = (peer_block.bottom_edge() - peer_block.y).max(1) as u32;
+
+        let (rv_x, rv_y) = match peer_share.edge.local_exit {
+            BorderSide::Right => (
+                our_local.x - pw as i32,
+                our_local.y + (peer_remote.y - peer_local.y),
+            ),
+            BorderSide::Left => (
+                our_local.right_edge(),
+                our_local.y + (peer_remote.y - peer_local.y),
+            ),
+            BorderSide::Bottom => (
+                our_local.x + (peer_remote.x - peer_local.x),
+                our_local.y - ph as i32,
+            ),
+            BorderSide::Top => (
+                our_local.x + (peer_remote.x - peer_local.x),
+                our_local.bottom_edge(),
+            ),
+        };
+
+        let mut layout = Self {
+            local_monitors,
+            remote_peer,
+            remote_virtual: MonitorRect {
+                id: MonitorId(0xFFFF),
+                x: rv_x,
+                y: rv_y,
+                width: pw,
+                height: ph,
+            },
+            remote_monitors: peer_share.local_monitors.clone(),
+            edge: EdgeConfig {
+                local_exit: opposite(peer_share.edge.remote_entry),
+                remote_entry: opposite(peer_share.edge.local_exit),
+                exit_local_monitor_id: None,
+            },
+        };
+        layout.infer_edges_from_geometry();
+        layout
+    }
+
+    fn union_of_monitors(monitors: &[MonitorRect]) -> MonitorRect {
+        let Some(first) = monitors.first() else {
+            return MonitorRect {
+                id: MonitorId(0),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            };
+        };
+        let mut min_x = first.x;
+        let mut min_y = first.y;
+        let mut max_r = first.right_edge();
+        let mut max_b = first.bottom_edge();
+        for m in monitors.iter().skip(1) {
+            min_x = min_x.min(m.x);
+            min_y = min_y.min(m.y);
+            max_r = max_r.max(m.right_edge());
+            max_b = max_b.max(m.bottom_edge());
+        }
+        MonitorRect {
+            id: MonitorId(0),
+            x: min_x,
+            y: min_y,
+            width: (max_r - min_x).max(1) as u32,
+            height: (max_b - min_y).max(1) as u32,
+        }
+    }
+
     /// Ponto de warp ao retornar do controle remoto para o desktop local.
     #[must_use]
     pub fn local_return_warp_point(&self) -> (i32, i32) {
@@ -511,6 +603,32 @@ mod tests {
         // Cruza em Y=540 (meio da tela local) → deve mapear para Y=1080 (meio da remota)
         let (_, y) = layout.map_crossing_point(1919, 540);
         assert_eq!(y, 1080);
+    }
+
+    #[test]
+    fn from_peer_share_mirrors_right_adjacency_to_left() {
+        let peer = PeerId::from_uuid(Uuid::new_v4());
+        let peer_layout = MonitorLayout::default_side_by_side(
+            vec![MonitorRect {
+                id: MonitorId(1),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            }],
+            peer,
+        );
+        let local = vec![MonitorRect {
+            id: MonitorId(2),
+            x: 0,
+            y: 0,
+            width: 2560,
+            height: 1080,
+        }];
+        let mirrored = MonitorLayout::from_peer_share(&peer_layout, local, peer);
+        assert_eq!(mirrored.edge.local_exit, BorderSide::Left);
+        assert_eq!(mirrored.edge.remote_entry, BorderSide::Right);
+        assert!(mirrored.remote_virtual.x + mirrored.remote_virtual.width as i32 <= 0);
     }
 
     #[test]

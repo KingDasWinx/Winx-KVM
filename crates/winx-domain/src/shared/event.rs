@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::data_exchange::events::{ClipboardChanged, ClipboardReceived};
 use crate::discovery::events::{PeerAppeared, PeerDisappeared, PeerUpdated};
 use crate::identity::events::{DeviceCreated, PeerForgotten};
-use crate::input_control::events::{FocusSwitched, HotkeyTriggered, InputBlocked, PeerMonitorsUpdated};
+use crate::input_control::events::{FocusSwitched, HotkeyTriggered, InputBlocked, KvmLayoutUpdated, PeerMonitorsUpdated};
 use crate::pairing::events::{
     PairingCancelled, PairingCompleted, PairingFailed, PairingIncoming, PairingRequested,
 };
@@ -52,6 +52,7 @@ pub enum DomainEvent {
     HotkeyTriggered(HotkeyTriggered),
     InputBlocked(InputBlocked),
     PeerMonitorsUpdated(PeerMonitorsUpdated),
+    KvmLayoutUpdated(KvmLayoutUpdated),
 
     // --- DataExchange (Sprint 6) ---
     ClipboardChanged(ClipboardChanged),

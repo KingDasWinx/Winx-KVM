@@ -41,3 +41,8 @@ pub struct PeerMonitorsUpdated {
     pub peer_id: PeerId,
     pub monitor_count: usize,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KvmLayoutUpdated {
+    pub peer_id: PeerId,
+}

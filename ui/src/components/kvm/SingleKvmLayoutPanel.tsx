@@ -61,8 +61,9 @@ export default function SingleKvmLayoutPanel({ peerId, peerUsername }: Props) {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void listen<{ kind: string; peer_id?: string }>('domain-event', (event) => {
-      if (event.payload.kind !== 'peer-monitors-updated') return;
-      if (event.payload.peer_id !== peerId) return;
+      const { kind, peer_id: eventPeerId } = event.payload;
+      if (eventPeerId !== peerId) return;
+      if (kind !== 'peer-monitors-updated' && kind !== 'kvm-layout-updated') return;
       if (open) void loadLayout();
     }).then((fn) => {
       unlisten = fn;

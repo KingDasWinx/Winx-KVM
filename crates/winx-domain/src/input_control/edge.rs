@@ -5,8 +5,25 @@ use super::layout::{BorderSide, MonitorLayout};
 /// Tolerância em pixels antes da borda de saída (`coord >= edge - tol`).
 pub const EDGE_TOLERANCE_PX: i32 = 2;
 
-/// Distância mínima (px) dentro do monitor remoto ao cruzar — evita retorno instantâneo na borda de entrada.
+/// Inset ao entrar no monitor remoto (evita cursor colado na borda).
 pub const REMOTE_ENTRY_INSET_PX: i32 = 20;
+
+/// Distância mínima (px) para dentro do remoto antes de permitir retorno pela borda oposta.
+pub const REMOTE_MIN_INLAND_PX: i32 = 48;
+
+/// Distância do cursor para "dentro" do monitor remoto, a partir da borda de entrada.
+#[must_use]
+pub fn remote_inland_px(est: RemoteCursorEst, layout: &MonitorLayout) -> i32 {
+    let remote = layout.placed_remote_bounds();
+    let w = remote.width as i32;
+    let h = remote.height as i32;
+    match layout.edge.remote_entry {
+        BorderSide::Top => est.y.saturating_sub(REMOTE_ENTRY_INSET_PX),
+        BorderSide::Bottom => (h - REMOTE_ENTRY_INSET_PX).saturating_sub(est.y),
+        BorderSide::Left => est.x.saturating_sub(REMOTE_ENTRY_INSET_PX),
+        BorderSide::Right => (w - REMOTE_ENTRY_INSET_PX).saturating_sub(est.x),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EdgeDetectInput {

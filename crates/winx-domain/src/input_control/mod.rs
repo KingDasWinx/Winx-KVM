@@ -17,10 +17,13 @@ pub mod monitor;
 pub mod mouse;
 
 pub use edge::{
-    should_return_to_local, should_switch_to_remote, EdgeDetectInput, RemoteCursorEst,
-    EDGE_TOLERANCE_PX, REMOTE_ENTRY_INSET_PX,
+    remote_inland_px, should_return_to_local, should_switch_to_remote, EdgeDetectInput,
+    RemoteCursorEst, EDGE_TOLERANCE_PX, REMOTE_ENTRY_INSET_PX, REMOTE_MIN_INLAND_PX,
 };
-pub use events::{FocusSwitched, HotkeyAction, HotkeyTriggered, InputBlocked, PeerMonitorsUpdated};
+pub use events::{
+    FocusSwitched, HotkeyAction, HotkeyTriggered, InputBlocked, KvmLayoutUpdated,
+    PeerMonitorsUpdated,
+};
 pub use focus::{FocusState, FocusTarget};
 pub use focus_policy::{
     apply_focus_target, force_local, input_should_be_swallowed, toggle_lock_mode, FocusTransition,
