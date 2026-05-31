@@ -18,7 +18,7 @@ pub mod mouse;
 
 pub use edge::{
     should_return_to_local, should_switch_to_remote, EdgeDetectInput, RemoteCursorEst,
-    EDGE_TOLERANCE_PX,
+    EDGE_TOLERANCE_PX, REMOTE_ENTRY_INSET_PX,
 };
 pub use events::{FocusSwitched, HotkeyAction, HotkeyTriggered, InputBlocked};
 pub use focus::{FocusState, FocusTarget};

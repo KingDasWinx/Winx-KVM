@@ -5,6 +5,9 @@ use super::layout::{BorderSide, MonitorLayout};
 /// Tolerância em pixels antes da borda de saída (`coord >= edge - tol`).
 pub const EDGE_TOLERANCE_PX: i32 = 2;
 
+/// Distância mínima (px) dentro do monitor remoto ao cruzar — evita retorno instantâneo na borda de entrada.
+pub const REMOTE_ENTRY_INSET_PX: i32 = 20;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EdgeDetectInput {
     pub screen_x: i32,
@@ -41,16 +44,17 @@ pub struct RemoteCursorEst {
     pub y: i32,
 }
 
-/// Retorna `true` quando a posição estimada do cursor remoto atingiu a borda de retorno.
+/// Retorna `true` quando a posição estimada do cursor remoto atingiu a borda de retorno
+/// (mesma borda por onde entrou no remoto).
 #[must_use]
 pub fn should_return_to_local(est: RemoteCursorEst, layout: &MonitorLayout) -> bool {
     let w = layout.remote_virtual.width as i32;
     let h = layout.remote_virtual.height as i32;
-    match layout.edge.local_exit {
-        BorderSide::Right => est.x <= EDGE_TOLERANCE_PX,
-        BorderSide::Left => est.x >= w.saturating_sub(EDGE_TOLERANCE_PX),
-        BorderSide::Bottom => est.y <= EDGE_TOLERANCE_PX,
-        BorderSide::Top => est.y >= h.saturating_sub(EDGE_TOLERANCE_PX),
+    match layout.edge.remote_entry {
+        BorderSide::Left => est.x <= EDGE_TOLERANCE_PX,
+        BorderSide::Right => est.x >= w.saturating_sub(EDGE_TOLERANCE_PX),
+        BorderSide::Top => est.y <= EDGE_TOLERANCE_PX,
+        BorderSide::Bottom => est.y >= h.saturating_sub(EDGE_TOLERANCE_PX),
     }
 }
 
@@ -121,6 +125,11 @@ mod tests {
         assert!(should_return_to_local(est(2), &layout));
         assert!(should_return_to_local(est(0), &layout));
         assert!(should_return_to_local(est(1), &layout));
+        // Posição típica após cruzamento (inset) — ainda dentro, sem retorno.
+        assert!(!should_return_to_local(
+            est(super::REMOTE_ENTRY_INSET_PX),
+            &layout
+        ));
     }
 
     #[test]
@@ -133,11 +142,39 @@ mod tests {
     }
 
     #[test]
-    fn return_triggers_at_right_edge_when_local_exit_is_left() {
+    fn return_triggers_at_top_edge_when_crossed_from_bottom() {
+        let peer = PeerId::from_uuid(Uuid::new_v4());
+        let mut layout = MonitorLayout::default_side_by_side(
+            vec![MonitorRect {
+                id: MonitorId(1),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            }],
+            peer,
+        );
+        layout.remote_virtual.x = 0;
+        layout.remote_virtual.y = 1080;
+        layout.infer_edges_from_geometry();
+        assert_eq!(layout.edge.local_exit, BorderSide::Bottom);
+        assert_eq!(layout.edge.remote_entry, BorderSide::Top);
+
+        let (_, entry_y) = layout.map_crossing_point(960, 1079);
+        assert_eq!(entry_y, REMOTE_ENTRY_INSET_PX);
+
+        let est = |y| RemoteCursorEst { x: 960, y };
+        assert!(!should_return_to_local(est(entry_y), &layout));
+        assert!(should_return_to_local(est(1), &layout));
+    }
+
+    #[test]
+    fn return_triggers_at_right_edge_when_remote_entry_is_right() {
         let mut layout = layout_1920();
         layout.remote_virtual.x = -1920;
         layout.infer_edges_from_geometry();
         assert_eq!(layout.edge.local_exit, BorderSide::Left);
+        assert_eq!(layout.edge.remote_entry, BorderSide::Right);
         let est = |x| RemoteCursorEst { x, y: 540 };
         assert!(should_return_to_local(est(1918), &layout));
         assert!(should_return_to_local(est(1920), &layout));

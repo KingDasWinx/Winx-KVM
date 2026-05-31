@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::shared::ids::PeerId;
 
 use super::monitor::{MonitorId, MonitorRect};
+use super::edge::REMOTE_ENTRY_INSET_PX;
 
 /// Qual borda de um monitor está sendo referenciada.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -319,8 +320,8 @@ impl MonitorLayout {
                 let prop_y = ((local_rel_y * remote_h) / local_h) as i32;
 
                 let entry_x = match self.edge.remote_entry {
-                    BorderSide::Left => 2,
-                    BorderSide::Right => remote.width as i32 - 2,
+                    BorderSide::Left => REMOTE_ENTRY_INSET_PX,
+                    BorderSide::Right => remote.width as i32 - REMOTE_ENTRY_INSET_PX,
                     BorderSide::Top | BorderSide::Bottom => remote.width as i32 / 2,
                 };
                 let entry_y = prop_y.clamp(0, remote.height as i32 - 1);
@@ -333,8 +334,8 @@ impl MonitorLayout {
                 let prop_x = ((local_rel_x * remote_w) / local_w) as i32;
 
                 let entry_y = match self.edge.remote_entry {
-                    BorderSide::Top => 2,
-                    BorderSide::Bottom => remote.height as i32 - 2,
+                    BorderSide::Top => REMOTE_ENTRY_INSET_PX,
+                    BorderSide::Bottom => remote.height as i32 - REMOTE_ENTRY_INSET_PX,
                     BorderSide::Left | BorderSide::Right => remote.height as i32 / 2,
                 };
                 let entry_x = prop_x.clamp(0, remote.width as i32 - 1);
@@ -488,7 +489,7 @@ mod tests {
         let layout = layout_1920x1080_remote_same();
         // Cruza pela borda direita em Y=300
         let (x, y) = layout.map_crossing_point(1919, 300);
-        assert_eq!(x, 2); // entra 2px da borda esquerda da tela do receiver (coord local = 0)
+        assert_eq!(x, REMOTE_ENTRY_INSET_PX); // entra REMOTE_ENTRY_INSET da borda esquerda do receiver
         assert_eq!(y, 300); // Y preservado (mesma altura)
     }
 
