@@ -8,7 +8,7 @@ use tracing::{debug, info, warn};
 use winx_domain::{
     input_control::{
         events::{KvmLayoutUpdated, PeerMonitorsUpdated},
-        MonitorLayout, MonitorRect,
+        FocusState, FocusTarget, MonitorLayout, MonitorRect,
     },
     shared::ids::PeerId,
     DomainEvent,
@@ -62,6 +62,7 @@ pub struct KvmLayoutSyncDeps {
     pub active_peer: Arc<Mutex<Option<PeerId>>>,
     pub mouse_send: Arc<MouseSendState>,
     pub monitors: Arc<dyn MonitorBackend>,
+    pub focus: Arc<Mutex<FocusState>>,
 }
 
 impl KvmLayoutSyncDeps {
@@ -243,13 +244,25 @@ async fn handle_layout_payload(deps: &KvmLayoutSyncDeps, peer_id: PeerId, payloa
             deps.bus
                 .publish(DomainEvent::KvmLayoutUpdated(KvmLayoutUpdated { peer_id }));
 
-            if *deps.enabled.lock().await && *deps.active_peer.lock().await == Some(peer_id) {
+            let session_active = *deps.enabled.lock().await
+                && *deps.active_peer.lock().await == Some(peer_id);
+            let focus_on_remote = matches!(
+                deps.focus.lock().await.target,
+                FocusTarget::Remote(p) if p == peer_id
+            );
+
+            if session_active && !focus_on_remote {
                 let scale = mirrored.remote_mouse_scale();
                 deps.mouse_send
                     .scale_q8
                     .store((scale * 256.0).round() as i32, Ordering::SeqCst);
                 *deps.layout.lock().await = Some(mirrored);
                 info!(%peer_id, "layout sync: layout ativo substituído via KvmLayoutShare espelhado");
+            } else if session_active && focus_on_remote {
+                debug!(
+                    %peer_id,
+                    "layout sync: layout espelhado persistido; runtime adiado (foco remoto ativo)"
+                );
             } else {
                 debug!(
                     %peer_id,
@@ -345,7 +358,7 @@ mod tests {
 
     use tokio::sync::{Mutex, Notify};
     use uuid::Uuid;
-    use winx_domain::input_control::MonitorId;
+    use winx_domain::input_control::{FocusState, MonitorId};
     use winx_protocol::PeerMonitorsPayload;
 
     use crate::use_cases::{input_control::MouseSendState, mouse_coalesce::MouseCoalescer};
@@ -469,6 +482,7 @@ mod tests {
                 frames_sent: AtomicU64::new(0),
             }),
             monitors: Arc::new(MockMonitors),
+            focus: Arc::new(Mutex::new(FocusState::default())),
         }
     }
 

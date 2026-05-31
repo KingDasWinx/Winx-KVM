@@ -60,6 +60,7 @@ fn workspace_layout_to_dto(layout: &WorkspaceLayout) -> WorkspaceLayoutDto {
 }
 
 #[derive(Debug, Serialize)]
+#[allow(dead_code)]
 pub struct PendingInviteDto {
     pub invite_id: String,
     pub workspace_id: String,

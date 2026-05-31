@@ -27,7 +27,6 @@ pub use identity::*;
 pub use kvm_layout::*;
 pub use input_control::*;
 pub use lab::*;
-pub use monitor_layout_dto::{layout_to_dto, MonitorLayoutDto};
 pub use pairing::*;
 pub use settings::*;
 pub use transport::*;

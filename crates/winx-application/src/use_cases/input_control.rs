@@ -36,7 +36,7 @@ pub struct MouseSendState {
 static FIRST_INJECT: AtomicBool = AtomicBool::new(true);
 
 /// Período após cruzar para remoto em que retorno pela borda oposta fica desabilitado.
-const REMOTE_SWITCH_GRACE_MS: u64 = 700;
+const REMOTE_SWITCH_GRACE_MS: u64 = 500;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct KeyboardMirrorStatus {
@@ -87,6 +87,8 @@ pub struct InputControlService {
     kvm_layout_store: Arc<Mutex<Option<Arc<dyn KvmLayoutStore>>>>,
     remote_switch_grace: Arc<Mutex<Option<Instant>>>,
     remote_return_armed: Arc<AtomicBool>,
+    /// Serializa ida/volta local↔remoto — evita transições duplicadas por eventos de mouse paralelos.
+    focus_transition: Arc<Mutex<()>>,
     layout_sync_deps: Arc<Mutex<Option<Arc<super::kvm_layout_sync::KvmLayoutSyncDeps>>>>,
     clipboard: Arc<Mutex<Option<Arc<super::ClipboardService>>>>,
 }
@@ -129,6 +131,7 @@ impl InputControlService {
             kvm_layout_store: Arc::new(Mutex::new(None)),
             remote_switch_grace: Arc::new(Mutex::new(None)),
             remote_return_armed: Arc::new(AtomicBool::new(false)),
+            focus_transition: Arc::new(Mutex::new(())),
             layout_sync_deps: Arc::new(Mutex::new(None)),
             clipboard: Arc::new(Mutex::new(None)),
         }
@@ -147,6 +150,7 @@ impl InputControlService {
             active_peer: Arc::clone(&self.active_peer),
             mouse_send: Arc::clone(&self.mouse_send),
             monitors: Arc::clone(&self.monitors),
+            focus: Arc::clone(&self.focus),
         });
         *self.layout_sync_deps.lock().await = Some(Arc::clone(&deps));
         deps.register_handler(clipboard.as_ref()).await;
@@ -543,6 +547,7 @@ impl InputControlService {
         let service_workspace_cursor = Arc::clone(&self.workspace_cursor);
         let service_remote_switch_grace = Arc::clone(&self.remote_switch_grace);
         let service_remote_return_armed = Arc::clone(&self.remote_return_armed);
+        let service_focus_transition = Arc::clone(&self.focus_transition);
 
         let mouse_send_flush = Arc::clone(&self.mouse_send);
         let input_tx_flush = Arc::clone(&self.input_tx);
@@ -588,6 +593,7 @@ impl InputControlService {
                 let workspace_cursor = service_workspace_cursor.clone();
                 let remote_switch_grace = service_remote_switch_grace.clone();
                 let remote_return_armed = service_remote_return_armed.clone();
+                let focus_transition = service_focus_transition.clone();
                 let seq = Arc::clone(&service_seq);
                 runtime.spawn(async move {
                     if !*enabled.lock().await && !mirror.load(Ordering::SeqCst) {
@@ -613,6 +619,7 @@ impl InputControlService {
                         workspace_cursor,
                         remote_switch_grace,
                         remote_return_armed,
+                        focus_transition,
                     )
                     .await;
                 });
@@ -793,6 +800,11 @@ impl InputControlService {
                             continue;
                         }
                         if *active.lock().await != Some(e.peer_id) {
+                            continue;
+                        }
+                        // Não recarregar layout durante foco remoto — evita flip de bordas mid-crossing.
+                        if matches!(focus.lock().await.target, FocusTarget::Remote(_)) {
+                            debug!(peer_id = %e.peer_id, "layout sync: KvmLayoutUpdated ignorado (foco remoto ativo)");
                             continue;
                         }
                         let Some(store) = kvm_layout_store.lock().await.clone() else {
@@ -991,6 +1003,7 @@ async fn handle_local_input(
     workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
     remote_switch_grace: Arc<Mutex<Option<Instant>>>,
     remote_return_armed: Arc<AtomicBool>,
+    focus_transition: Arc<Mutex<()>>,
 ) {
     if keyboard_mirror.load(Ordering::SeqCst) {
         if let InputEvent::Key { code, pressed, .. } = &ev {
@@ -1072,6 +1085,7 @@ async fn handle_local_input(
                             workspace_cursor.clone(),
                             remote_switch_grace.clone(),
                             remote_return_armed.clone(),
+                            focus_transition.clone(),
                         )
                         .await;
                         if !matches!(focus.lock().await.target, FocusTarget::Local) {
@@ -1153,6 +1167,7 @@ async fn handle_local_input(
                             remote_return_armed.clone(),
                             est_x,
                             est_y,
+                            focus_transition.clone(),
                         )
                         .await;
                         return;
@@ -1206,7 +1221,13 @@ async fn try_edge_switch(
     workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
     remote_switch_grace: Arc<Mutex<Option<Instant>>>,
     remote_return_armed: Arc<AtomicBool>,
+    focus_transition: Arc<Mutex<()>>,
 ) {
+    let Ok(_transition_guard) = focus_transition.try_lock() else {
+        debug!("transição local→remoto já em andamento — ignorando");
+        return;
+    };
+
     let layout_guard = layout.lock().await;
     let Some(layout_data) = layout_guard.as_ref() else {
         return;
@@ -1307,15 +1328,21 @@ async fn try_switch_back_to_local(
     remote_return_armed: Arc<AtomicBool>,
     remote_x: i32,
     remote_y: i32,
+    focus_transition: Arc<Mutex<()>>,
 ) {
+    if !remote_return_armed.swap(false, Ordering::SeqCst) {
+        return;
+    }
+
+    let Ok(_transition_guard) = focus_transition.try_lock() else {
+        remote_return_armed.store(true, Ordering::SeqCst);
+        return;
+    };
+
     let current = focus.lock().await.target.clone();
     let FocusTarget::Remote(_peer) = &current else {
         return;
     };
-
-    if !remote_return_armed.load(Ordering::SeqCst) {
-        return;
-    }
 
     let layout_guard = layout.lock().await;
     let Some(layout_data) = layout_guard.as_ref() else {
@@ -1498,6 +1525,7 @@ mod tests {
             Arc::clone(&svc.workspace_cursor),
             Arc::clone(&svc.remote_switch_grace),
             Arc::clone(&svc.remote_return_armed),
+            Arc::clone(&svc.focus_transition),
         )
         .await;
 
@@ -1541,6 +1569,7 @@ mod tests {
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(None)),
             Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(())),
         )
         .await;
 
