@@ -70,9 +70,9 @@ export function placedRemoteBounds(layout: MonitorLayoutDto): MonitorRectDto {
   };
 }
 
-function findAdjacentEdge(
+function findAdjacentEdgePair(
   locals: MonitorRectDto[],
-  remote: MonitorRectDto,
+  remotes: MonitorRectDto[],
 ): { exitId: number; local_exit: string; remote_entry: string } {
   type Cand = { exitId: number; local_exit: string; remote_entry: string; score: number };
   let best: Cand | null = null;
@@ -92,28 +92,36 @@ function findAdjacentEdge(
   };
 
   for (const local of locals) {
-    const localB = local.y + local.height;
-    const localR = local.x + local.width;
-    const remoteB = remote.y + remote.height;
-    const remoteR = remote.x + remote.width;
-    const overlapY = overlap1d(local.y, localB, remote.y, remoteB);
-    consider(local.id, 'Right', 'Left', remote.x - localR, overlapY);
-    consider(local.id, 'Left', 'Right', local.x - remoteR, overlapY);
-    const overlapX = overlap1d(local.x, localR, remote.x, remoteR);
-    consider(local.id, 'Bottom', 'Top', remote.y - localB, overlapX);
-    consider(local.id, 'Top', 'Bottom', local.y - remoteB, overlapX);
+    for (const remote of remotes) {
+      const localB = local.y + local.height;
+      const localR = local.x + local.width;
+      const remoteB = remote.y + remote.height;
+      const remoteR = remote.x + remote.width;
+      const overlapY = overlap1d(local.y, localB, remote.y, remoteB);
+      consider(local.id, 'Right', 'Left', remote.x - localR, overlapY);
+      consider(local.id, 'Left', 'Right', local.x - remoteR, overlapY);
+      const overlapX = overlap1d(local.x, localR, remote.x, remoteR);
+      consider(local.id, 'Bottom', 'Top', remote.y - localB, overlapX);
+      consider(local.id, 'Top', 'Bottom', local.y - remoteB, overlapX);
+    }
   }
 
   const fallbackId = locals[0]?.id ?? 1;
   return best ?? { exitId: fallbackId, local_exit: 'Right', remote_entry: 'Left' };
 }
 
+function findAdjacentEdge(
+  locals: MonitorRectDto[],
+  remote: MonitorRectDto,
+): { exitId: number; local_exit: string; remote_entry: string } {
+  return findAdjacentEdgePair(locals, [remote]);
+}
+
 export function inferEdgesFromGeometry(layout: MonitorLayoutDto): MonitorLayoutDto {
-  const remote = placedRemoteBounds(layout);
-  const { exitId, local_exit, remote_entry } = findAdjacentEdge(
-    layout.local_monitors,
-    remote,
-  );
+  const remotes = placedRemoteMonitors(layout);
+  const { exitId, local_exit, remote_entry } = remotes.length > 0
+    ? findAdjacentEdgePair(layout.local_monitors, remotes)
+    : findAdjacentEdge(layout.local_monitors, placedRemoteBounds(layout));
   return {
     ...layout,
     edge: {

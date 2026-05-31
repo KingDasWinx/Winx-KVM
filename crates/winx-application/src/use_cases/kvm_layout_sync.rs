@@ -178,7 +178,15 @@ async fn apply_session_to_runtime(
         Some(id) => id,
         None => return,
     };
-    let runtime = session.derive_runtime_layout(local_device, peer_id);
+    let local_os = deps
+        .monitors
+        .enumerate_local_monitors()
+        .await
+        .unwrap_or_default();
+    if local_os.is_empty() {
+        return;
+    }
+    let runtime = session.derive_runtime_layout(local_device, peer_id, &local_os);
     let scale = runtime.remote_mouse_scale();
     deps.mouse_send
         .scale_q8

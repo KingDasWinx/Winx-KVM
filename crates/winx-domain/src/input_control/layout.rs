@@ -159,10 +159,10 @@ impl MonitorLayout {
         (a1.min(b1) - a0.max(b0)).max(0)
     }
 
-    /// Encontra o par monitor-local ↔ borda com melhor adjacência ao bloco remoto.
-    fn find_adjacent_edge(
+    /// Encontra o par monitor-local ↔ monitor-remoto com melhor adjacência.
+    fn find_adjacent_edge_pair(
         locals: &[MonitorRect],
-        remote: MonitorRect,
+        remotes: &[MonitorRect],
     ) -> (MonitorId, BorderSide, BorderSide) {
         let mut best: Option<(MonitorId, BorderSide, BorderSide, i32)> = None;
 
@@ -178,7 +178,6 @@ impl MonitorLayout {
             if gap.abs() > ADJACENCY_GAP_PX {
                 return;
             }
-            // Menor gap e maior overlap ganham.
             let score = gap.abs() * 10_000 - overlap;
             if best.map_or(true, |(_, _, _, s)| score < s) {
                 *best = Some((id, local_exit, remote_entry, score));
@@ -186,53 +185,53 @@ impl MonitorLayout {
         };
 
         for local in locals {
-            let overlap_y =
-                Self::overlap_1d(local.y, local.bottom_edge(), remote.y, remote.bottom_edge());
-            let gap_right = remote.x - local.right_edge();
-            consider(
-                &mut best,
-                local.id,
-                BorderSide::Right,
-                BorderSide::Left,
-                gap_right,
-                overlap_y,
-            );
+            for remote in remotes {
+                let overlap_y = Self::overlap_1d(
+                    local.y,
+                    local.bottom_edge(),
+                    remote.y,
+                    remote.bottom_edge(),
+                );
+                consider(
+                    &mut best,
+                    local.id,
+                    BorderSide::Right,
+                    BorderSide::Left,
+                    remote.x - local.right_edge(),
+                    overlap_y,
+                );
+                consider(
+                    &mut best,
+                    local.id,
+                    BorderSide::Left,
+                    BorderSide::Right,
+                    local.x - remote.right_edge(),
+                    overlap_y,
+                );
 
-            let gap_left = local.x - remote.right_edge();
-            consider(
-                &mut best,
-                local.id,
-                BorderSide::Left,
-                BorderSide::Right,
-                gap_left,
-                overlap_y,
-            );
-
-            let overlap_x = Self::overlap_1d(
-                local.x,
-                local.right_edge(),
-                remote.x,
-                remote.right_edge(),
-            );
-            let gap_bottom = remote.y - local.bottom_edge();
-            consider(
-                &mut best,
-                local.id,
-                BorderSide::Bottom,
-                BorderSide::Top,
-                gap_bottom,
-                overlap_x,
-            );
-
-            let gap_top = local.y - remote.bottom_edge();
-            consider(
-                &mut best,
-                local.id,
-                BorderSide::Top,
-                BorderSide::Bottom,
-                gap_top,
-                overlap_x,
-            );
+                let overlap_x = Self::overlap_1d(
+                    local.x,
+                    local.right_edge(),
+                    remote.x,
+                    remote.right_edge(),
+                );
+                consider(
+                    &mut best,
+                    local.id,
+                    BorderSide::Bottom,
+                    BorderSide::Top,
+                    remote.y - local.bottom_edge(),
+                    overlap_x,
+                );
+                consider(
+                    &mut best,
+                    local.id,
+                    BorderSide::Top,
+                    BorderSide::Bottom,
+                    local.y - remote.bottom_edge(),
+                    overlap_x,
+                );
+            }
         }
 
         best.map(|(id, le, re, _)| (id, le, re)).unwrap_or((
@@ -243,6 +242,14 @@ impl MonitorLayout {
             BorderSide::Right,
             BorderSide::Left,
         ))
+    }
+
+    /// Encontra o par monitor-local ↔ borda com melhor adjacência ao bloco remoto.
+    fn find_adjacent_edge(
+        locals: &[MonitorRect],
+        remote: MonitorRect,
+    ) -> (MonitorId, BorderSide, BorderSide) {
+        Self::find_adjacent_edge_pair(locals, std::slice::from_ref(&remote))
     }
 
     /// Fator de escala sugerido para mouse remoto (clamp 0.5–2.0).
@@ -390,11 +397,14 @@ impl MonitorLayout {
             .unwrap_or_else(|| self.local_union_bounds())
     }
 
-    /// Infere bordas a partir da adjacência real entre monitores locais e o bloco remoto.
+    /// Infere bordas a partir da adjacência real entre monitores locais e remotos posicionados.
     pub fn infer_edges_from_geometry(&mut self) {
-        let remote = self.placed_remote_bounds();
-        let (id, local_exit, remote_entry) =
-            Self::find_adjacent_edge(&self.local_monitors, remote);
+        let remotes = self.placed_remote_monitors();
+        let (id, local_exit, remote_entry) = if remotes.is_empty() {
+            Self::find_adjacent_edge(&self.local_monitors, self.placed_remote_bounds())
+        } else {
+            Self::find_adjacent_edge_pair(&self.local_monitors, &remotes)
+        };
         self.edge = EdgeConfig {
             local_exit,
             remote_entry,

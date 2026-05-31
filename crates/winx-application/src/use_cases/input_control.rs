@@ -317,7 +317,7 @@ impl InputControlService {
                 .map_err(|e| internal_err(&e.to_string()))?;
         }
 
-        let runtime = session.derive_runtime_layout(local_device, peer_id);
+        let runtime = session.derive_runtime_layout(local_device, peer_id, &local);
         if *self.enabled.lock().await && *self.active_peer.lock().await == Some(peer_id) {
             self.apply_monitor_layout(runtime).await;
         }
@@ -361,8 +361,9 @@ impl InputControlService {
                 return self.get_kvm_layout_legacy(peer_id).await;
             }
         };
+        let local = self.list_local_monitors().await?;
         if let Some(session) = self.get_kvm_session_layout(peer_id).await? {
-            return Ok(Some(session.derive_runtime_layout(local_device, peer_id)));
+            return Ok(Some(session.derive_runtime_layout(local_device, peer_id, &local)));
         }
         self.get_kvm_layout_legacy(peer_id).await
     }
@@ -646,7 +647,11 @@ impl InputControlService {
             if let Some(local_device) = *local_device {
                 if let Ok(Some(session)) = store.get_session(peer_id).await {
                     if !session.per_device.is_empty() {
-                        return session.derive_runtime_layout(local_device, peer_id);
+                        return session.derive_runtime_layout(
+                            local_device,
+                            peer_id,
+                            local_monitors,
+                        );
                     }
                 }
             }
@@ -1098,7 +1103,7 @@ async fn apply_stored_layout_to_runtime(
 
     if let Ok(Some(session)) = store.get_session(peer_id).await {
         if !session.per_device.is_empty() {
-            let runtime = session.derive_runtime_layout(local_device, peer_id);
+            let runtime = session.derive_runtime_layout(local_device, peer_id, &local);
             let scale = runtime.remote_mouse_scale();
             mouse_send
                 .scale_q8
