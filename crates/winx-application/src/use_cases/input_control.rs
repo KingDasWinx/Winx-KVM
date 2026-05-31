@@ -10,8 +10,8 @@ use winx_domain::{
         apply_focus_target,
         events::{FocusSwitched, HotkeyTriggered, InputBlocked},
         should_return_to_local, should_switch_to_remote, toggle_lock_mode, EdgeDetectInput,
-        FocusState, FocusTarget, HotkeyAction, InputEvent, MonitorLayout, MOUSE_COALESCE_FLUSH_MS,
-        MOUSE_SEND_MIN_MANHATTAN,
+        FocusState, FocusTarget, HotkeyAction, InputEvent, MonitorLayout, RemoteCursorEst,
+        MOUSE_COALESCE_FLUSH_MS, MOUSE_SEND_MIN_MANHATTAN,
     },
     shared::{ids::PeerId, DomainErrorCode},
     DomainError, DomainEvent,
@@ -19,7 +19,7 @@ use winx_domain::{
 
 use crate::{
     bus::EventBus,
-    ports::{transport::StreamSender, InputBackend, MonitorBackend, WorkspaceGlobalCursor},
+    ports::{transport::StreamSender, InputBackend, KvmLayoutStore, MonitorBackend, WorkspaceGlobalCursor},
     protocol_convert::{encode_input_payload, input_event_from_dto},
     use_cases::{input_streams, mouse_coalesce::MouseCoalescer, TransportService},
 };
@@ -70,6 +70,7 @@ pub struct InputControlService {
     seq: Arc<AtomicU64>,
     enabled: Arc<Mutex<bool>>,
     remote_cursor_x_est: Arc<AtomicI32>,
+    remote_cursor_y_est: Arc<AtomicI32>,
     keyboard_mirror: Arc<AtomicBool>,
     mirror_keys_sent: Arc<AtomicU64>,
     mirror_keys_hooked: Arc<AtomicU64>,
@@ -80,6 +81,7 @@ pub struct InputControlService {
     mirror_deadline: Arc<Mutex<Option<Instant>>>,
     mouse_send: Arc<MouseSendState>,
     workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
+    kvm_layout_store: Arc<Mutex<Option<Arc<dyn KvmLayoutStore>>>>,
 }
 
 impl InputControlService {
@@ -101,6 +103,7 @@ impl InputControlService {
             seq: Arc::new(AtomicU64::new(0)),
             enabled: Arc::new(Mutex::new(false)),
             remote_cursor_x_est: Arc::new(AtomicI32::new(0)),
+            remote_cursor_y_est: Arc::new(AtomicI32::new(0)),
             keyboard_mirror: Arc::new(AtomicBool::new(false)),
             mirror_keys_sent: Arc::new(AtomicU64::new(0)),
             mirror_keys_hooked: Arc::new(AtomicU64::new(0)),
@@ -116,7 +119,64 @@ impl InputControlService {
                 frames_sent: AtomicU64::new(0),
             }),
             workspace_cursor: Arc::new(Mutex::new(None)),
+            kvm_layout_store: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub async fn attach_kvm_layout_store(&self, store: Arc<dyn KvmLayoutStore>) {
+        *self.kvm_layout_store.lock().await = Some(store);
+    }
+
+    pub async fn list_local_monitors(
+        &self,
+    ) -> Result<Vec<winx_domain::input_control::MonitorRect>, DomainError> {
+        self.monitors
+            .enumerate_local_monitors()
+            .await
+            .map_err(|e| internal_err(&e.to_string()))
+    }
+
+    pub async fn get_kvm_layout(
+        &self,
+        peer_id: PeerId,
+    ) -> Result<Option<MonitorLayout>, DomainError> {
+        let local = self.list_local_monitors().await?;
+        let store = self.kvm_layout_store.lock().await;
+        let Some(store) = store.as_ref() else {
+            return Ok(None);
+        };
+        let mut layout = store
+            .get(peer_id)
+            .await
+            .map_err(|e| internal_err(&e.to_string()))?;
+        if let Some(ref mut saved) = layout {
+            saved.finalize_for_runtime(local, peer_id);
+        }
+        Ok(layout)
+    }
+
+    pub async fn save_kvm_layout(
+        &self,
+        peer_id: PeerId,
+        mut layout: MonitorLayout,
+    ) -> Result<(), DomainError> {
+        let local = self.list_local_monitors().await?;
+        layout.finalize_for_runtime(local, peer_id);
+        {
+            let store = self.kvm_layout_store.lock().await;
+            let Some(store) = store.as_ref() else {
+                return Err(internal_err("kvm layout store não configurado"));
+            };
+            store
+                .save(peer_id, &layout)
+                .await
+                .map_err(|e| internal_err(&e.to_string()))?;
+        }
+
+        if *self.enabled.lock().await && *self.active_peer.lock().await == Some(peer_id) {
+            self.apply_monitor_layout(layout).await;
+        }
+        Ok(())
     }
 
     pub async fn attach_workspace_cursor(&self, bridge: Arc<dyn WorkspaceGlobalCursor>) {
@@ -306,7 +366,16 @@ impl InputControlService {
                 return layout;
             }
         }
-        MonitorLayout::default_side_by_side(local_monitors.to_vec(), peer_id)
+        if let Some(store) = self.kvm_layout_store.lock().await.as_ref() {
+            if let Ok(Some(mut saved)) = store.get(peer_id).await {
+                saved.finalize_for_runtime(local_monitors.to_vec(), peer_id);
+                return saved;
+            }
+        }
+        let mut layout =
+            MonitorLayout::default_side_by_side(local_monitors.to_vec(), peer_id);
+        layout.infer_edges_from_geometry();
+        layout
     }
 
     #[allow(clippy::too_many_lines)]
@@ -354,6 +423,7 @@ impl InputControlService {
         let service_self_input = Arc::clone(&self.input);
         let service_enabled = Arc::clone(&self.enabled);
         let service_remote_dx = Arc::clone(&self.remote_cursor_x_est);
+        let service_remote_dy = Arc::clone(&self.remote_cursor_y_est);
         let service_mirror = Arc::clone(&self.keyboard_mirror);
         let service_mirror_keys = Arc::clone(&self.mirror_keys_sent);
         let service_mirror_hooked = Arc::clone(&self.mirror_keys_hooked);
@@ -396,6 +466,7 @@ impl InputControlService {
                 let input_be = service_self_input.clone();
                 let enabled = service_enabled.clone();
                 let remote_dx = service_remote_dx.clone();
+                let remote_dy = service_remote_dy.clone();
                 let mirror = service_mirror.clone();
                 let mirror_keys = service_mirror_keys.clone();
                 let mirror_hooked = service_mirror_hooked.clone();
@@ -418,6 +489,7 @@ impl InputControlService {
                         input_be,
                         &seq,
                         remote_dx,
+                        remote_dy,
                         mirror,
                         mirror_keys,
                         mirror_hooked,
@@ -656,11 +728,7 @@ async fn panic_local(
     )
     .await;
     if let Some(layout) = layout_warp.lock().await.as_ref() {
-        let x = layout.local_right_edge_x().saturating_sub(8);
-        let y = layout
-            .local_monitors
-            .first()
-            .map_or(540, |m| m.y + i32::try_from(m.height).unwrap_or(1080) / 2);
+        let (x, y) = layout.local_return_warp_point();
         if input_warp.warp_cursor(x, y).await.is_err() {
             warn!("falha ao reposicionar cursor no panic local");
         }
@@ -690,11 +758,7 @@ async fn force_local_reset(
     input.reset_mouse_delta_baseline();
 
     if let Some(layout) = layout.lock().await.as_ref() {
-        let x = layout.local_right_edge_x().saturating_sub(8);
-        let y = layout
-            .local_monitors
-            .first()
-            .map_or(540, |m| m.y + i32::try_from(m.height).unwrap_or(1080) / 2);
+        let (x, y) = layout.local_return_warp_point();
         let _ = input.warp_cursor(x, y).await;
     }
 
@@ -759,6 +823,7 @@ async fn handle_local_input(
     input: Arc<dyn InputBackend>,
     seq: &Arc<AtomicU64>,
     remote_cursor_x_est: Arc<AtomicI32>,
+    remote_cursor_y_est: Arc<AtomicI32>,
     keyboard_mirror: Arc<AtomicBool>,
     mirror_keys_sent: Arc<AtomicU64>,
     mirror_keys_hooked: Arc<AtomicU64>,
@@ -842,6 +907,7 @@ async fn handle_local_input(
                             active,
                             input_tx,
                             Arc::clone(&remote_cursor_x_est),
+                            Arc::clone(&remote_cursor_y_est),
                             workspace_cursor.clone(),
                         )
                         .await;
@@ -863,14 +929,22 @@ async fn handle_local_input(
                     // scaled_dx usa a mesma escala aplicada ao delta enviado ao peer.
                     let scale_q8 = mouse_send.scale_q8.load(Ordering::SeqCst);
                     let scaled_dx = ((i64::from(*dx) * i64::from(scale_q8)) / 256) as i32;
+                    let scaled_dy = ((i64::from(*dy) * i64::from(scale_q8)) / 256) as i32;
                     let go_back = {
                         let layout_guard = layout.lock().await;
                         if let Some(layout_data) = layout_guard.as_ref() {
                             let remote_w = layout_data.remote_virtual.width as i32;
+                            let remote_h = layout_data.remote_virtual.height as i32;
                             let old_x = remote_cursor_x_est.load(Ordering::SeqCst);
+                            let old_y = remote_cursor_y_est.load(Ordering::SeqCst);
                             let new_x = (old_x + scaled_dx).clamp(0, remote_w);
+                            let new_y = (old_y + scaled_dy).clamp(0, remote_h);
                             remote_cursor_x_est.store(new_x, Ordering::SeqCst);
-                            should_return_to_local(new_x, layout_data)
+                            remote_cursor_y_est.store(new_y, Ordering::SeqCst);
+                            should_return_to_local(
+                                RemoteCursorEst { x: new_x, y: new_y },
+                                layout_data,
+                            )
                         } else {
                             false
                         }
@@ -932,6 +1006,7 @@ async fn try_edge_switch(
     active: Arc<Mutex<Option<PeerId>>>,
     input_tx: Arc<Mutex<Option<StreamSender>>>,
     remote_cursor_x_est: Arc<AtomicI32>,
+    remote_cursor_y_est: Arc<AtomicI32>,
     workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
 ) {
     let layout_guard = layout.lock().await;
@@ -958,26 +1033,15 @@ async fn try_edge_switch(
     }
 
     let edge_x = layout_data.local_exit_edge_coord();
-    let primary = layout_data
-        .local_monitors
-        .first()
-        .copied()
-        .unwrap_or_else(|| {
-            use winx_domain::input_control::MonitorRect;
-            MonitorRect {
-                id: winx_domain::input_control::MonitorId(0),
-                x: 0,
-                y: 0,
-                width: 1920,
-                height: 1080,
-            }
-        });
+    let (clip_x, clip_y, clip_w, clip_h) = layout_data.local_clip_rect_while_remote();
+    let safe_x = clip_x + i32::try_from(clip_w).unwrap_or(1920) / 2;
+    let safe_y = clip_y + i32::try_from(clip_h).unwrap_or(1080) / 2;
 
-    // Ponto de entrada no monitor remoto (Y proporcional preservado)
+    // Ponto de entrada no monitor remoto (proporção preservada no eixo perpendicular)
     let remote_entry = layout_data.map_crossing_point(screen_x, screen_y);
 
-    // Inicializar rastreador de posição X estimada com o ponto de entrada
     remote_cursor_x_est.store(remote_entry.0, Ordering::SeqCst);
+    remote_cursor_y_est.store(remote_entry.1, Ordering::SeqCst);
 
     drop(layout_guard);
 
@@ -992,12 +1056,7 @@ async fn try_edge_switch(
     );
 
     let from = current;
-    // Cursor local fica preso no centro do monitor local enquanto controla o remoto
-    let safe_x = primary.x + i32::try_from(primary.width).unwrap_or(1920) / 2;
-    let safe_y = primary.y + i32::try_from(primary.height).unwrap_or(1080) / 2;
-
-    // 1. Transição FÍSICA de cursor PRIMEIRO (Hide → Warp → Clip)
-    let clip_rect = (primary.x, primary.y, primary.width, primary.height);
+    let clip_rect = (clip_x, clip_y, clip_w, clip_h);
     if let Err(err) = input.transition_to_remote(safe_x, safe_y, clip_rect).await {
         error!(?err, "falha na transição para remoto — mantendo foco local");
         let _ = input.set_cursor_clipped(None).await;
@@ -1049,35 +1108,24 @@ async fn try_switch_back_to_local(
         return;
     };
 
-    let edge_x = layout_data.local_right_edge_x();
-    let primary = layout_data
-        .local_monitors
-        .first()
-        .copied()
-        .unwrap_or_else(|| {
-            use winx_domain::input_control::MonitorRect;
-            MonitorRect {
-                id: winx_domain::input_control::MonitorId(0),
-                x: 0,
-                y: 0,
-                width: 1920,
-                height: 1080,
-            }
-        });
-    let primary_center_x = primary.x + i32::try_from(primary.width).unwrap_or(1920) / 2;
-    let primary_center_y = primary.y + i32::try_from(primary.height).unwrap_or(1080) / 2;
-
+    let (warp_x, warp_y) = layout_data.local_return_warp_point();
     drop(layout_guard);
 
-    if let Err(err) = input
-        .transition_to_local(edge_x, primary_center_x, primary_center_y)
-        .await
-    {
-        warn!(?err, "falha ao retornar para local via borda esquerda");
+    if let Err(err) = input.set_cursor_clipped(None).await {
+        warn!(?err, "falha ao liberar clip ao retornar para local");
         return;
     }
+    if let Err(err) = input.restore_cursor_system().await {
+        warn!(?err, "falha ao restaurar cursor ao retornar para local");
+        return;
+    }
+    if let Err(err) = input.warp_cursor(warp_x, warp_y).await {
+        warn!(?err, "falha ao reposicionar cursor ao retornar para local");
+        return;
+    }
+    input.reset_mouse_delta_baseline();
 
-    info!("voltando para foco local via borda esquerda acumulada");
+    info!(warp_x, warp_y, "voltando para foco local via borda oposta");
 
     switch_focus(
         FocusTarget::Local,
@@ -1229,6 +1277,7 @@ mod tests {
             Arc::clone(&svc.active_peer),
             Arc::clone(&svc.input_tx),
             Arc::new(AtomicI32::new(0)),
+            Arc::new(AtomicI32::new(0)),
             Arc::clone(&svc.workspace_cursor),
         )
         .await;
@@ -1268,6 +1317,7 @@ mod tests {
             bus,
             active,
             input_tx,
+            Arc::new(AtomicI32::new(0)),
             Arc::new(AtomicI32::new(0)),
             Arc::new(Mutex::new(None)),
         )

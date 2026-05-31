@@ -708,15 +708,13 @@ impl WorkspaceService {
 
         if let Some(saved) = ws.layout.get(local_device_id) {
             let mut layout = saved.clone();
-            layout.local_monitors = local_monitors;
-            layout.remote_peer = remote_peer;
+            layout.finalize_for_runtime(local_monitors, remote_peer);
             return Some(layout);
         }
 
-        Some(MonitorLayout::default_side_by_side(
-            local_monitors,
-            remote_peer,
-        ))
+        let mut layout = MonitorLayout::default_side_by_side(local_monitors, remote_peer);
+        layout.infer_edges_from_geometry();
+        Some(layout)
     }
 
     async fn load_workspace_for_cursor(&self, workspace_id: WorkspaceId) -> Option<Workspace> {

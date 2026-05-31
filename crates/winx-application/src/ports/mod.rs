@@ -10,6 +10,7 @@ pub mod discovery;
 pub mod discovery_query;
 pub mod identity;
 pub mod input;
+pub mod kvm_layout;
 pub mod monitor;
 pub mod network;
 pub mod pairing;
@@ -23,6 +24,7 @@ pub use discovery::{AnnounceInfo, DiscoveryAdapter, DiscoveryEvent, WINX_KVM_POR
 pub use discovery_query::DiscoveryQuery;
 pub use identity::{IdentityStore, SecretStore};
 pub use input::{CaptureHandle, InputBackend};
+pub use kvm_layout::KvmLayoutStore;
 pub use monitor::MonitorBackend;
 pub use network::NetworkInterfacesProvider;
 pub use pairing::{

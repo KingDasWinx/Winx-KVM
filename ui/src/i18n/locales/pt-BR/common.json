@@ -70,6 +70,9 @@
     "rtt_label": "Latência: {{ms}}ms",
     "stats_label": "↑{{tx}} ↓{{rx}}"
   },
+  "kvm": {
+    "layout_panel_title": "Layout de monitores"
+  },
   "pairing": {
     "pair_button": "Parear",
     "modal_title_initiator": "Parear com {{username}}",

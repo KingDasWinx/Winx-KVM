@@ -155,29 +155,18 @@ impl MonitorLayout {
 
     /// Mapeia o ponto de cruzamento local para coordenadas de entrada no monitor remoto,
     /// preservando a posição proporcional no eixo perpendicular à borda cruzada.
-    ///
-    /// Ex: saiu pela borda Right em Y=300 numa tela 1080p → entra pela Left do remoto
-    /// em Y proporcional (se remoto for 2160p, entra em Y≈600).
     #[must_use]
     pub fn map_crossing_point(&self, screen_x: i32, screen_y: i32) -> (i32, i32) {
-        let local = self.local_monitors.first().copied().unwrap_or(MonitorRect {
-            id: MonitorId(0),
-            x: 0,
-            y: 0,
-            width: 1920,
-            height: 1080,
-        });
+        let local = self.local_monitor_at(screen_x, screen_y);
         let remote = &self.remote_virtual;
 
         match self.edge.local_exit {
             BorderSide::Right | BorderSide::Left => {
-                // Eixo perpendicular é Y: preservar posição Y proporcional
                 let local_rel_y = (screen_y - local.y).max(0) as u64;
                 let local_h = local.height.max(1) as u64;
                 let remote_h = remote.height as u64;
                 let prop_y = ((local_rel_y * remote_h) / local_h) as i32;
 
-                // Coordenadas relativas à tela do receiver (começa em 0,0)
                 let entry_x = match self.edge.remote_entry {
                     BorderSide::Left => 2,
                     BorderSide::Right => remote.width as i32 - 2,
@@ -187,13 +176,11 @@ impl MonitorLayout {
                 (entry_x, entry_y)
             }
             BorderSide::Top | BorderSide::Bottom => {
-                // Eixo perpendicular é X: preservar posição X proporcional
                 let local_rel_x = (screen_x - local.x).max(0) as u64;
                 let local_w = local.width.max(1) as u64;
                 let remote_w = remote.width as u64;
                 let prop_x = ((local_rel_x * remote_w) / local_w) as i32;
 
-                // Coordenadas relativas à tela do receiver (começa em 0,0)
                 let entry_y = match self.edge.remote_entry {
                     BorderSide::Top => 2,
                     BorderSide::Bottom => remote.height as i32 - 2,
@@ -203,6 +190,132 @@ impl MonitorLayout {
                 (entry_x, entry_y)
             }
         }
+    }
+
+    /// Retângulo envolvente de todos os monitores locais.
+    #[must_use]
+    pub fn local_union_bounds(&self) -> MonitorRect {
+        let Some(first) = self.local_monitors.first() else {
+            return MonitorRect {
+                id: MonitorId(0),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            };
+        };
+        let mut min_x = first.x;
+        let mut min_y = first.y;
+        let mut max_r = first.right_edge();
+        let mut max_b = first.bottom_edge();
+        for m in self.local_monitors.iter().skip(1) {
+            min_x = min_x.min(m.x);
+            min_y = min_y.min(m.y);
+            max_r = max_r.max(m.right_edge());
+            max_b = max_b.max(m.bottom_edge());
+        }
+        MonitorRect {
+            id: MonitorId(0),
+            x: min_x,
+            y: min_y,
+            width: (max_r - min_x).max(1) as u32,
+            height: (max_b - min_y).max(1) as u32,
+        }
+    }
+
+    /// Monitor local sob o ponto do cursor (fallback: envolvente).
+    #[must_use]
+    pub fn local_monitor_at(&self, screen_x: i32, screen_y: i32) -> MonitorRect {
+        self.local_monitors
+            .iter()
+            .copied()
+            .find(|m| {
+                screen_x >= m.x
+                    && screen_x < m.right_edge()
+                    && screen_y >= m.y
+                    && screen_y < m.bottom_edge()
+            })
+            .unwrap_or_else(|| self.local_union_bounds())
+    }
+
+    /// Infere `edge` a partir da posição de `remote_virtual` em relação aos monitores locais.
+    pub fn infer_edges_from_geometry(&mut self) {
+        let bounds = self.local_union_bounds();
+        let local_l = bounds.x;
+        let local_t = bounds.y;
+        let rv = &self.remote_virtual;
+        let remote_cx = rv.x + i32::try_from(rv.width).unwrap_or(0) / 2;
+        let remote_cy = rv.y + i32::try_from(rv.height).unwrap_or(0) / 2;
+        let local_cx = local_l + i32::try_from(bounds.width).unwrap_or(0) / 2;
+        let local_cy = local_t + i32::try_from(bounds.height).unwrap_or(0) / 2;
+
+        let dx = remote_cx - local_cx;
+        let dy = remote_cy - local_cy;
+
+        self.edge = if dx.abs() >= dy.abs() {
+            if dx >= 0 {
+                EdgeConfig {
+                    local_exit: BorderSide::Right,
+                    remote_entry: BorderSide::Left,
+                }
+            } else {
+                EdgeConfig {
+                    local_exit: BorderSide::Left,
+                    remote_entry: BorderSide::Right,
+                }
+            }
+        } else if dy >= 0 {
+            EdgeConfig {
+                local_exit: BorderSide::Bottom,
+                remote_entry: BorderSide::Top,
+            }
+        } else {
+            EdgeConfig {
+                local_exit: BorderSide::Top,
+                remote_entry: BorderSide::Bottom,
+            }
+        };
+    }
+
+    /// Atualiza monitores locais reais e recalcula bordas de cruzamento.
+    pub fn finalize_for_runtime(&mut self, local_monitors: Vec<MonitorRect>, remote_peer: PeerId) {
+        self.local_monitors = local_monitors;
+        self.remote_peer = remote_peer;
+        self.infer_edges_from_geometry();
+    }
+
+    /// Ponto de warp ao retornar do controle remoto para o desktop local.
+    #[must_use]
+    pub fn local_return_warp_point(&self) -> (i32, i32) {
+        let bounds = self.local_union_bounds();
+        match self.edge.local_exit {
+            BorderSide::Right => (
+                self.local_return_edge_coord().saturating_sub(4),
+                bounds.y + i32::try_from(bounds.height).unwrap_or(1080) / 2,
+            ),
+            BorderSide::Left => (
+                self.local_return_edge_coord().saturating_add(4),
+                bounds.y + i32::try_from(bounds.height).unwrap_or(1080) / 2,
+            ),
+            BorderSide::Bottom => (
+                bounds.x + i32::try_from(bounds.width).unwrap_or(1920) / 2,
+                self.local_return_edge_coord().saturating_sub(4),
+            ),
+            BorderSide::Top => (
+                bounds.x + i32::try_from(bounds.width).unwrap_or(1920) / 2,
+                self.local_return_edge_coord().saturating_add(4),
+            ),
+        }
+    }
+
+    /// Retângulo de clip do monitor local enquanto controla o remoto.
+    #[must_use]
+    pub fn local_clip_rect_while_remote(&self) -> (i32, i32, u32, u32) {
+        let m = self.local_monitor_at(
+            self.local_return_edge_coord(),
+            self.local_union_bounds().y,
+        );
+        (m.x, m.y, m.width, m.height)
     }
 }
 
@@ -293,5 +406,31 @@ mod tests {
     fn local_exit_edge_coord_right() {
         let layout = layout_1920x1080_remote_same();
         assert_eq!(layout.local_exit_edge_coord(), 1920);
+    }
+
+    #[test]
+    fn infer_edges_places_remote_left_of_local() {
+        let peer = PeerId::from_uuid(Uuid::new_v4());
+        let mut layout = MonitorLayout {
+            local_monitors: vec![MonitorRect {
+                id: MonitorId(1),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            }],
+            remote_peer: peer,
+            remote_virtual: MonitorRect {
+                id: MonitorId(0xFFFF),
+                x: -1920,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+            edge: EdgeConfig::default(),
+        };
+        layout.infer_edges_from_geometry();
+        assert_eq!(layout.edge.local_exit, BorderSide::Left);
+        assert_eq!(layout.edge.remote_entry, BorderSide::Right);
     }
 }

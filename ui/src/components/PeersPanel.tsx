@@ -25,6 +25,7 @@ import {
 import { onWinxEvent } from '../ipc/events';
 import { notifyDomainError } from '../lib/parseDomainError';
 import { ConnectionStatus, type ConnectionUiState } from './ConnectionStatus';
+import SingleKvmLayoutPanel from './kvm/SingleKvmLayoutPanel';
 
 function mapDtoStatus(
   status: ConnectionStateDto['status'],
@@ -182,6 +183,10 @@ function PeerCard({ peer, connection, focus, onPair, onConnect, onDisconnect }: 
               {peer.addresses.length > 1 && ` +${peer.addresses.length - 1}`}
             </Text>
           </Tooltip>
+        )}
+
+        {peer.is_paired && (
+          <SingleKvmLayoutPanel peerId={peer.id} />
         )}
       </Stack>
     </Card>

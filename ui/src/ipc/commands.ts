@@ -359,3 +359,23 @@ export async function updateWorkspaceLayout(input: {
     },
   });
 }
+
+export async function listLocalMonitors(): Promise<MonitorRectDto[]> {
+  return invoke('list_local_monitors');
+}
+
+export async function getKvmLayout(peerId: string): Promise<MonitorLayoutDto | null> {
+  return invoke('get_kvm_layout', { peerId });
+}
+
+export async function updateKvmLayout(input: {
+  peerId: string;
+  layout: MonitorLayoutDto;
+}): Promise<void> {
+  return invoke('update_kvm_layout', {
+    input: {
+      peer_id: input.peerId,
+      layout: input.layout,
+    },
+  });
+}

@@ -33,7 +33,8 @@ use winx_domain::{discovery::DiscoveryRegistry, shared::ids::PeerId};
 use winx_infra::{
     generate_or_load_quic_cert, network_config, network_watcher::NetworkWatcher,
     ArboardClipboardBackend, KeyringSecretStore, MdnsDiscoveryAdapter, QuicTransportAdapter,
-    RegistryDiscoveryQuery, TomlConfigStore, TomlIdentityStore, TomlWorkspaceStore,
+    RegistryDiscoveryQuery, TomlConfigStore, TomlIdentityStore, TomlKvmLayoutStore,
+    TomlWorkspaceStore,
     UdpPairingTransport, UdpWorkspaceInviteTransport, Win32InputBackend, Win32MonitorBackend,
 };
 
@@ -190,6 +191,12 @@ fn init_services(
     rt.block_on(
         input_control
             .attach_workspace_cursor(Arc::clone(&workspace) as Arc<dyn WorkspaceGlobalCursor>),
+    );
+
+    let kvm_layout_store: Arc<dyn winx_application::ports::KvmLayoutStore> =
+        Arc::new(TomlKvmLayoutStore::new(data_dir.clone()));
+    rt.block_on(
+        input_control.attach_kvm_layout_store(Arc::clone(&kvm_layout_store)),
     );
 
     Ok(InitializedServices {
@@ -481,6 +488,9 @@ pub fn run() {
             commands::list_connection_states,
             commands::get_focus_state,
             commands::enable_input_control,
+            commands::list_local_monitors,
+            commands::get_kvm_layout,
+            commands::update_kvm_layout,
             commands::run_connectivity_suite,
             commands::start_keyboard_mirror_test,
             commands::get_keyboard_mirror_status,

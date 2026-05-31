@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
-use winx_domain::input_control::layout::MonitorLayout;
 use winx_domain::shared::ids::DeviceId;
 use winx_domain::shared::DomainErrorCode;
 use winx_domain::workspace::{OwnershipMode, WorkspaceId, WorkspaceLayout};
 
 use crate::app_state::{ClipboardState, InputControlState, TransportState, WorkspaceState};
+use super::monitor_layout_dto::{dto_to_layout, layout_to_dto, MonitorLayoutDto};
 
 #[derive(Debug, Serialize)]
 pub struct WorkspaceDto {
@@ -40,107 +40,11 @@ pub struct WorkspaceLayoutDto {
     pub per_device: std::collections::BTreeMap<String, MonitorLayoutDto>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MonitorLayoutDto {
-    pub local_monitors: Vec<MonitorRectDto>,
-    pub remote_peer: String,
-    pub remote_virtual: MonitorRectDto,
-    pub edge: EdgeConfigDto,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MonitorRectDto {
-    pub id: u32,
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EdgeConfigDto {
-    pub local_exit: String,
-    pub remote_entry: String,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct UpdateWorkspaceLayoutInput {
     pub workspace_id: String,
     pub device_id: String,
     pub layout: MonitorLayoutDto,
-}
-
-fn layout_to_dto(layout: &MonitorLayout) -> MonitorLayoutDto {
-    use winx_domain::input_control::layout::BorderSide;
-
-    fn border_str(side: BorderSide) -> String {
-        match side {
-            BorderSide::Right => "Right".to_string(),
-            BorderSide::Left => "Left".to_string(),
-            BorderSide::Top => "Top".to_string(),
-            BorderSide::Bottom => "Bottom".to_string(),
-        }
-    }
-
-    fn rect_to_dto(r: &winx_domain::input_control::MonitorRect) -> MonitorRectDto {
-        MonitorRectDto {
-            id: r.id.0,
-            x: r.x,
-            y: r.y,
-            width: r.width,
-            height: r.height,
-        }
-    }
-
-    MonitorLayoutDto {
-        local_monitors: layout.local_monitors.iter().map(rect_to_dto).collect(),
-        remote_peer: layout.remote_peer.to_string(),
-        remote_virtual: rect_to_dto(&layout.remote_virtual),
-        edge: EdgeConfigDto {
-            local_exit: border_str(layout.edge.local_exit),
-            remote_entry: border_str(layout.edge.remote_entry),
-        },
-    }
-}
-
-fn dto_to_layout(dto: MonitorLayoutDto) -> Result<MonitorLayout, String> {
-    use winx_domain::input_control::layout::{BorderSide, EdgeConfig};
-    use winx_domain::input_control::{MonitorId, MonitorRect};
-    use winx_domain::shared::ids::PeerId;
-
-    fn parse_border(s: &str) -> Result<BorderSide, String> {
-        match s {
-            "Right" => Ok(BorderSide::Right),
-            "Left" => Ok(BorderSide::Left),
-            "Top" => Ok(BorderSide::Top),
-            "Bottom" => Ok(BorderSide::Bottom),
-            other => Err(format!("border side inválido: {other}")),
-        }
-    }
-
-    fn rect_from_dto(r: MonitorRectDto) -> MonitorRect {
-        MonitorRect {
-            id: MonitorId(r.id),
-            x: r.x,
-            y: r.y,
-            width: r.width,
-            height: r.height,
-        }
-    }
-
-    let remote_peer = uuid::Uuid::parse_str(&dto.remote_peer)
-        .map(PeerId::from_uuid)
-        .map_err(|e| format!("remote_peer inválido: {e}"))?;
-
-    Ok(MonitorLayout {
-        local_monitors: dto.local_monitors.into_iter().map(rect_from_dto).collect(),
-        remote_peer,
-        remote_virtual: rect_from_dto(dto.remote_virtual),
-        edge: EdgeConfig {
-            local_exit: parse_border(&dto.edge.local_exit)?,
-            remote_entry: parse_border(&dto.edge.remote_entry)?,
-        },
-    })
 }
 
 fn workspace_layout_to_dto(layout: &WorkspaceLayout) -> WorkspaceLayoutDto {
@@ -546,7 +450,13 @@ pub async fn update_workspace_layout(
 ) -> Result<WorkspaceDto, String> {
     let ws_id = parse_workspace_id(&input.workspace_id)?;
     let device_uuid = parse_device_id(&input.device_id)?;
-    let layout = dto_to_layout(input.layout)?;
+    let mut layout = dto_to_layout(input.layout)?;
+    let local = input_state
+        .input_control
+        .list_local_monitors()
+        .await
+        .map_err(map_err)?;
+    layout.finalize_for_runtime(local, layout.remote_peer);
 
     let ws = ws_state
         .service

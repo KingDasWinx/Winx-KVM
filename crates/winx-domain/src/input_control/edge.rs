@@ -26,16 +26,23 @@ pub fn should_switch_to_remote(input: EdgeDetectInput, layout: &MonitorLayout) -
     }
 }
 
-/// Retorna `true` quando a posição X estimada do cursor remoto atingiu a borda de retorno.
-///
-/// `remote_cursor_x_est` é mantido pelo use case em coordenadas locais ao monitor remoto (0..width).
-/// O retorno ocorre pela borda oposta à saída: saiu pela Right → volta pela Left (x ≤ tol).
+/// Posição estimada do cursor no monitor remoto (coordenadas 0..width/height).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoteCursorEst {
+    pub x: i32,
+    pub y: i32,
+}
+
+/// Retorna `true` quando a posição estimada do cursor remoto atingiu a borda de retorno.
 #[must_use]
-pub fn should_return_to_local(remote_cursor_x_est: i32, layout: &MonitorLayout) -> bool {
+pub fn should_return_to_local(est: RemoteCursorEst, layout: &MonitorLayout) -> bool {
+    let w = layout.remote_virtual.width as i32;
+    let h = layout.remote_virtual.height as i32;
     match layout.edge.local_exit {
-        BorderSide::Right | BorderSide::Left => remote_cursor_x_est <= EDGE_TOLERANCE_PX,
-        // Bordas verticais: implementar quando layout configurável estiver disponível.
-        BorderSide::Top | BorderSide::Bottom => false,
+        BorderSide::Right => est.x <= EDGE_TOLERANCE_PX,
+        BorderSide::Left => est.x >= w.saturating_sub(EDGE_TOLERANCE_PX),
+        BorderSide::Bottom => est.y <= EDGE_TOLERANCE_PX,
+        BorderSide::Top => est.y >= h.saturating_sub(EDGE_TOLERANCE_PX),
     }
 }
 
@@ -102,18 +109,30 @@ mod tests {
     #[test]
     fn return_triggers_at_left_edge() {
         let layout = layout_1920();
-        // Na borda esquerda (x=2 = EDGE_TOLERANCE_PX) → deve retornar
-        assert!(should_return_to_local(2, &layout));
-        assert!(should_return_to_local(0, &layout));
-        assert!(should_return_to_local(1, &layout));
+        let est = |x| RemoteCursorEst { x, y: 540 };
+        assert!(should_return_to_local(est(2), &layout));
+        assert!(should_return_to_local(est(0), &layout));
+        assert!(should_return_to_local(est(1), &layout));
     }
 
     #[test]
     fn return_does_not_trigger_far_from_edge() {
         let layout = layout_1920();
-        // No centro da tela ou à direita → não deve retornar
-        assert!(!should_return_to_local(3, &layout));
-        assert!(!should_return_to_local(100, &layout));
-        assert!(!should_return_to_local(960, &layout));
+        let est = |x| RemoteCursorEst { x, y: 540 };
+        assert!(!should_return_to_local(est(3), &layout));
+        assert!(!should_return_to_local(est(100), &layout));
+        assert!(!should_return_to_local(est(960), &layout));
+    }
+
+    #[test]
+    fn return_triggers_at_right_edge_when_local_exit_is_left() {
+        let mut layout = layout_1920();
+        layout.remote_virtual.x = -1920;
+        layout.infer_edges_from_geometry();
+        assert_eq!(layout.edge.local_exit, BorderSide::Left);
+        let est = |x| RemoteCursorEst { x, y: 540 };
+        assert!(should_return_to_local(est(1918), &layout));
+        assert!(should_return_to_local(est(1920), &layout));
+        assert!(!should_return_to_local(est(100), &layout));
     }
 }

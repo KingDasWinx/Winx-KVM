@@ -70,6 +70,9 @@
     "rtt_label": "Latency: {{ms}}ms",
     "stats_label": "↑{{tx}} ↓{{rx}}"
   },
+  "kvm": {
+    "layout_panel_title": "Monitor layout"
+  },
   "pairing": {
     "pair_button": "Pair",
     "modal_title_initiator": "Pair with {{username}}",
