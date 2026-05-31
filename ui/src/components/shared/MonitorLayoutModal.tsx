@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Box, Button, Group, Modal, ScrollArea, Stack, Text } from '@mantine/core';
+import { ActionIcon, Box, Button, Group, Modal, Stack, Text, Tooltip } from '@mantine/core';
 import { useTranslation } from 'react-i18next';
 
 import {
-  computeCanvasScale,
   formatResolution,
   placedRemoteMonitors,
   withInferredEdges,
@@ -11,7 +10,13 @@ import {
 import type { MonitorLayoutDto, MonitorRectDto } from '../../ipc/commands';
 import classes from './monitorLayout.module.css';
 
+/** Mundo virtual fixo (estilo Figma) — não redimensiona ao arrastar monitores. */
+const WORLD_W = 24_000;
+const WORLD_H = 18_000;
+const DISPLAY_SCALE = 0.12;
 const GRID_STEP = 40;
+const ZOOM_MIN = 0.06;
+const ZOOM_MAX = 0.45;
 
 interface Props {
   opened: boolean;
@@ -24,17 +29,67 @@ interface Props {
   remoteLabel?: string;
 }
 
-function toCanvas(rect: MonitorRectDto, scale: number) {
-  return {
-    left: rect.x * scale,
-    top: rect.y * scale,
-    width: rect.width * scale,
-    height: rect.height * scale,
-  };
+interface ViewTransform {
+  panX: number;
+  panY: number;
+  zoom: number;
+}
+
+interface WorldShift {
+  x: number;
+  y: number;
 }
 
 function snap(value: number) {
   return Math.round(value / GRID_STEP) * GRID_STEP;
+}
+
+function toScreen(
+  rect: MonitorRectDto,
+  shift: WorldShift,
+): { left: number; top: number; width: number; height: number } {
+  return {
+    left: (rect.x + shift.x) * DISPLAY_SCALE,
+    top: (rect.y + shift.y) * DISPLAY_SCALE,
+    width: rect.width * DISPLAY_SCALE,
+    height: rect.height * DISPLAY_SCALE,
+  };
+}
+
+function computeWorldShift(layout: MonitorLayoutDto): WorldShift {
+  const placed = placedRemoteMonitors(layout);
+  const all = [...layout.local_monitors, ...placed];
+  if (all.length === 0) {
+    return { x: WORLD_W / DISPLAY_SCALE / 2, y: WORLD_H / DISPLAY_SCALE / 2 };
+  }
+  const minX = Math.min(...all.map((m) => m.x));
+  const minY = Math.min(...all.map((m) => m.y));
+  const maxR = Math.max(...all.map((m) => m.x + m.width));
+  const maxB = Math.max(...all.map((m) => m.y + m.height));
+  const contentW = maxR - minX;
+  const contentH = maxB - minY;
+  return {
+    x: (WORLD_W / DISPLAY_SCALE - contentW) / 2 - minX,
+    y: (WORLD_H / DISPLAY_SCALE - contentH) / 2 - minY,
+  };
+}
+
+function contentScreenBounds(
+  layout: MonitorLayoutDto,
+  shift: WorldShift,
+): { minX: number; minY: number; maxX: number; maxY: number } {
+  const placed = placedRemoteMonitors(layout);
+  const all = [...layout.local_monitors, ...placed];
+  const xs = all.map((m) => (m.x + shift.x) * DISPLAY_SCALE);
+  const ys = all.map((m) => (m.y + shift.y) * DISPLAY_SCALE);
+  const rs = all.map((m) => (m.x + shift.x + m.width) * DISPLAY_SCALE);
+  const bs = all.map((m) => (m.y + shift.y + m.height) * DISPLAY_SCALE);
+  return {
+    minX: Math.min(...xs),
+    minY: Math.min(...ys),
+    maxX: Math.max(...rs),
+    maxY: Math.max(...bs),
+  };
 }
 
 export default function MonitorLayoutModal({
@@ -48,39 +103,65 @@ export default function MonitorLayoutModal({
   remoteLabel,
 }: Props) {
   const { t } = useTranslation('workspace');
-  const [dragging, setDragging] = useState(false);
-  const dragOffset = useRef({ x: 0, y: 0 });
   const viewportRef = useRef<HTMLDivElement>(null);
-  const [viewport, setViewport] = useState({ w: 900, h: 520 });
+  const [view, setView] = useState<ViewTransform>({ panX: 0, panY: 0, zoom: 0.15 });
+  const [worldShift, setWorldShift] = useState<WorldShift>({ x: 0, y: 0 });
+  const [draggingRemote, setDraggingRemote] = useState(false);
+  const [panning, setPanning] = useState(false);
+  const dragOffset = useRef({ x: 0, y: 0 });
+  const panStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
 
-  useEffect(() => {
-    if (!opened || !viewportRef.current) return;
-    const el = viewportRef.current;
-    const ro = new ResizeObserver(() => {
-      setViewport({ w: el.clientWidth, h: el.clientHeight });
-    });
-    ro.observe(el);
-    setViewport({ w: el.clientWidth, h: el.clientHeight });
-    return () => ro.disconnect();
-  }, [opened]);
-
-  const scale = useMemo(() => {
-    if (!layout) return 0.12;
-    return computeCanvasScale(layout, viewport.w - 32, viewport.h - 32);
-  }, [layout, viewport]);
+  const canvasW = WORLD_W * DISPLAY_SCALE;
+  const canvasH = WORLD_H * DISPLAY_SCALE;
 
   const placedRemote = useMemo(
     () => (layout ? placedRemoteMonitors(layout) : []),
     [layout],
   );
 
-  const canvasSize = useMemo(() => {
-    if (!layout) return { w: 400, h: 300 };
-    const all = [...layout.local_monitors, ...placedRemote];
-    const maxR = Math.max(...all.map((m) => (m.x + m.width) * scale), 400);
-    const maxB = Math.max(...all.map((m) => (m.y + m.height) * scale), 300);
-    return { w: maxR + 48, h: maxB + 48 };
-  }, [layout, placedRemote, scale]);
+  const fitToContent = useCallback(() => {
+    if (!layout || !viewportRef.current) return;
+    const shift = computeWorldShift(layout);
+    setWorldShift(shift);
+    const bounds = contentScreenBounds(layout, shift);
+    const contentW = bounds.maxX - bounds.minX;
+    const contentH = bounds.maxY - bounds.minY;
+    const pad = 80;
+    const vw = viewportRef.current.clientWidth;
+    const vh = viewportRef.current.clientHeight;
+    const zoom = Math.min(
+      (vw - pad) / contentW,
+      (vh - pad) / contentH,
+      ZOOM_MAX,
+    );
+    const cx = (bounds.minX + bounds.maxX) / 2;
+    const cy = (bounds.minY + bounds.maxY) / 2;
+    setView({
+      zoom: Math.max(zoom, ZOOM_MIN),
+      panX: vw / 2 - cx * zoom,
+      panY: vh / 2 - cy * zoom,
+    });
+  }, [layout]);
+
+  useEffect(() => {
+    if (opened && layout && !loading) {
+      fitToContent();
+    }
+  }, [opened, layout, loading, fitToContent]);
+
+  const screenToWorld = useCallback(
+    (clientX: number, clientY: number): { x: number; y: number } => {
+      const rect = viewportRef.current?.getBoundingClientRect();
+      if (!rect) return { x: 0, y: 0 };
+      const localX = (clientX - rect.left - view.panX) / view.zoom;
+      const localY = (clientY - rect.top - view.panY) / view.zoom;
+      return {
+        x: localX / DISPLAY_SCALE - worldShift.x,
+        y: localY / DISPLAY_SCALE - worldShift.y,
+      };
+    },
+    [view.panX, view.panY, view.zoom, worldShift],
+  );
 
   const handleSave = () => {
     if (!layout) return;
@@ -91,52 +172,103 @@ export default function MonitorLayoutModal({
 
   const onRemotePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (!layout) return;
-    const canvas = event.currentTarget.closest(`.${classes.monitorCanvas}`);
-    if (!canvas) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const bounds = placedRemoteMonitors(layout)[0] ?? layout.remote_virtual;
-    const box = toCanvas(bounds, scale);
-
+    event.stopPropagation();
+    const world = screenToWorld(event.clientX, event.clientY);
     dragOffset.current = {
-      x: event.clientX - rect.left - box.left,
-      y: event.clientY - rect.top - box.top,
+      x: world.x - layout.remote_virtual.x,
+      y: world.y - layout.remote_virtual.y,
     };
-    setDragging(true);
+    setDraggingRemote(true);
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
-  const onCanvasPointerMove = useCallback(
+  const onViewportPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 && event.button !== 1) return;
+    if (draggingRemote) return;
+    panStart.current = {
+      x: event.clientX,
+      y: event.clientY,
+      panX: view.panX,
+      panY: view.panY,
+    };
+    setPanning(true);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const onViewportPointerMove = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
-      if (!dragging || !layout) return;
-
-      const rect = event.currentTarget.getBoundingClientRect();
-      const canvasX = snap(event.clientX - rect.left - dragOffset.current.x);
-      const canvasY = snap(event.clientY - rect.top - dragOffset.current.y);
-
-      onLayoutChange({
-        ...layout,
-        remote_virtual: {
-          ...layout.remote_virtual,
-          x: Math.round(canvasX / scale),
-          y: Math.round(canvasY / scale),
-        },
-      });
+      if (draggingRemote && layout) {
+        const world = screenToWorld(event.clientX, event.clientY);
+        onLayoutChange({
+          ...layout,
+          remote_virtual: {
+            ...layout.remote_virtual,
+            x: snap(world.x - dragOffset.current.x),
+            y: snap(world.y - dragOffset.current.y),
+          },
+        });
+        return;
+      }
+      if (!panning) return;
+      const dx = event.clientX - panStart.current.x;
+      const dy = event.clientY - panStart.current.y;
+      setView((v) => ({
+        ...v,
+        panX: panStart.current.panX + dx,
+        panY: panStart.current.panY + dy,
+      }));
     },
-    [dragging, layout, onLayoutChange, scale],
+    [draggingRemote, layout, onLayoutChange, panning, screenToWorld],
   );
 
-  const onCanvasPointerUp = () => {
-    if (dragging && layout) {
+  const onViewportPointerUp = () => {
+    if (draggingRemote && layout) {
       onLayoutChange(withInferredEdges(layout));
     }
-    setDragging(false);
+    setDraggingRemote(false);
+    setPanning(false);
+  };
+
+  const onWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const rect = viewportRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const mx = event.clientX - rect.left;
+    const my = event.clientY - rect.top;
+    const factor = event.deltaY > 0 ? 0.92 : 1.08;
+    setView((v) => {
+      const newZoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, v.zoom * factor));
+      const worldX = (mx - v.panX) / v.zoom;
+      const worldY = (my - v.panY) / v.zoom;
+      return {
+        zoom: newZoom,
+        panX: mx - worldX * newZoom,
+        panY: my - worldY * newZoom,
+      };
+    });
+  };
+
+  const zoomStep = (factor: number) => {
+    if (!viewportRef.current) return;
+    const vw = viewportRef.current.clientWidth;
+    const vh = viewportRef.current.clientHeight;
+    setView((v) => {
+      const newZoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, v.zoom * factor));
+      const cx = (vw / 2 - v.panX) / v.zoom;
+      const cy = (vh / 2 - v.panY) / v.zoom;
+      return {
+        zoom: newZoom,
+        panX: vw / 2 - cx * newZoom,
+        panY: vh / 2 - cy * newZoom,
+      };
+    });
   };
 
   const exitId = layout?.edge.exit_local_monitor_id;
   const edgeLabel = layout
     ? `${layout.edge.local_exit} → ${layout.edge.remote_entry}`
     : '';
+  const zoomPct = Math.round(view.zoom * 100);
 
   return (
     <Modal
@@ -163,26 +295,56 @@ export default function MonitorLayoutModal({
         )}
         {!loading && layout && (
           <>
-            <Group gap="md">
-              <Text className={classes.edgeBadge}>{edgeLabel}</Text>
-              {exitId != null && (
-                <Text size="xs" c="dimmed">
-                  {t('layoutEditor.exitMonitor', { id: exitId })}
-                </Text>
-              )}
+            <Group justify="space-between" align="center">
+              <Group gap="md">
+                <Text className={classes.edgeBadge}>{edgeLabel}</Text>
+                {exitId != null && (
+                  <Text size="xs" c="dimmed">
+                    {t('layoutEditor.exitMonitor', { id: exitId })}
+                  </Text>
+                )}
+              </Group>
+              <Group gap={4}>
+                <Tooltip label={t('layoutEditor.zoomOut')}>
+                  <ActionIcon variant="subtle" color="gray" onClick={() => zoomStep(0.85)}>
+                    −
+                  </ActionIcon>
+                </Tooltip>
+                <Text size="xs" c="dimmed" w={44} ta="center">{zoomPct}%</Text>
+                <Tooltip label={t('layoutEditor.zoomIn')}>
+                  <ActionIcon variant="subtle" color="gray" onClick={() => zoomStep(1.15)}>
+                    +
+                  </ActionIcon>
+                </Tooltip>
+                <Button size="xs" variant="subtle" color="gray" onClick={fitToContent}>
+                  {t('layoutEditor.fitView')}
+                </Button>
+              </Group>
             </Group>
 
-            <ScrollArea.Autosize mah="62vh" offsetScrollbars>
-              <Box ref={viewportRef} style={{ minHeight: 420 }}>
+            <Text size="xs" c="dimmed">{t('layoutEditor.panZoomHint')}</Text>
+
+            <Box
+              ref={viewportRef}
+              className={`${classes.viewport} ${panning ? classes.viewportPanning : ''}`}
+              onPointerDown={onViewportPointerDown}
+              onPointerMove={onViewportPointerMove}
+              onPointerUp={onViewportPointerUp}
+              onPointerLeave={onViewportPointerUp}
+              onWheel={onWheel}
+            >
+              <Box
+                className={classes.worldLayer}
+                style={{
+                  transform: `translate(${view.panX}px, ${view.panY}px) scale(${view.zoom})`,
+                }}
+              >
                 <Box
                   className={classes.monitorCanvas}
-                  onPointerMove={onCanvasPointerMove}
-                  onPointerUp={onCanvasPointerUp}
-                  onPointerLeave={onCanvasPointerUp}
-                  style={{ width: canvasSize.w, height: canvasSize.h, margin: '0 auto' }}
+                  style={{ width: canvasW, height: canvasH }}
                 >
                   {layout.local_monitors.map((monitor, idx) => {
-                    const box = toCanvas(monitor, scale);
+                    const box = toScreen(monitor, worldShift);
                     const isExit = monitor.id === exitId;
                     return (
                       <Box
@@ -205,11 +367,11 @@ export default function MonitorLayoutModal({
                   })}
 
                   {placedRemote.map((monitor, idx) => {
-                    const box = toCanvas(monitor, scale);
+                    const box = toScreen(monitor, worldShift);
                     return (
                       <Box
                         key={`remote-${monitor.id}-${idx}`}
-                        className={`${classes.remoteMonitor} ${dragging ? classes.remoteMonitorDragging : ''}`}
+                        className={`${classes.remoteMonitor} ${draggingRemote ? classes.remoteMonitorDragging : ''}`}
                         style={{
                           left: box.left,
                           top: box.top,
@@ -225,7 +387,7 @@ export default function MonitorLayoutModal({
                   })}
                 </Box>
               </Box>
-            </ScrollArea.Autosize>
+            </Box>
 
             <Box className={classes.legendRow}>
               <span>
