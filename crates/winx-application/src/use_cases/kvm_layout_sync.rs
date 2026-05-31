@@ -33,6 +33,8 @@ pub fn payload_kind(payload: &Payload) -> &'static str {
     match payload {
         Payload::PeerMonitorsAnnounce(_) => "PeerMonitorsAnnounce",
         Payload::KvmLayoutShare(_) => "KvmLayoutShare",
+        Payload::SessionCursorSync(_) => "SessionCursorSync",
+        Payload::SessionInputTakeover(_) => "SessionInputTakeover",
         Payload::Clipboard(_) => "Clipboard",
         Payload::Heartbeat => "Heartbeat",
         Payload::HeartbeatAck => "HeartbeatAck",
@@ -70,12 +72,24 @@ pub struct KvmLayoutSyncDeps {
 }
 
 impl KvmLayoutSyncDeps {
-    pub async fn register_handler(self: Arc<Self>, clipboard: &ClipboardService) {
+    pub async fn register_handler(
+        self: Arc<Self>,
+        clipboard: &ClipboardService,
+        session_handler: Option<LayoutDataHandler>,
+    ) {
         let deps = Arc::clone(&self);
         let handler: LayoutDataHandler = Arc::new(move |peer_id, payload| {
             let deps = Arc::clone(&deps);
+            let session_handler = session_handler.clone();
             tokio::spawn(async move {
-                handle_layout_payload(&deps, peer_id, payload).await;
+                match &payload {
+                    Payload::SessionCursorSync(_) | Payload::SessionInputTakeover(_) => {
+                        if let Some(h) = session_handler {
+                            h(peer_id, payload);
+                        }
+                    }
+                    _ => handle_layout_payload(&deps, peer_id, payload).await,
+                }
             });
         });
         clipboard.set_layout_handler(Some(handler)).await;

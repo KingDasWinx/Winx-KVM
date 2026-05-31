@@ -17,3 +17,21 @@ pub struct PeerMonitorsPayload {
 pub struct KvmSessionLayoutPayload {
     pub per_device: BTreeMap<String, Vec<MonitorRectPayload>>,
 }
+
+/// Posição do cursor unificado da sessão KVM (stream Data).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionCursorSyncPayload {
+    pub device_id: uuid::Uuid,
+    pub x: i32,
+    pub y: i32,
+    pub seq: u64,
+}
+
+/// Peer remoto retoma controle com mouse físico local.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionInputTakeoverPayload {
+    pub device_id: uuid::Uuid,
+    pub x: i32,
+    pub y: i32,
+    pub seq: u64,
+}

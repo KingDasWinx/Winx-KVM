@@ -23,7 +23,7 @@ use thiserror::Error;
 
 pub use clipboard::ClipboardPayload;
 pub use diagnostics::DiagPing;
-pub use layout::{KvmSessionLayoutPayload, MonitorLayoutPayload, MonitorRectPayload, PeerMonitorsPayload};
+pub use layout::{KvmSessionLayoutPayload, MonitorLayoutPayload, MonitorRectPayload, PeerMonitorsPayload, SessionCursorSyncPayload, SessionInputTakeoverPayload};
 pub use input::{InputEventDto, InputPayload};
 pub use pairing::{
     decode_pairing_datagram, encode_pairing_body, encode_pairing_datagram,
@@ -36,7 +36,8 @@ pub use pairing::{
 /// W2: bumped from 4 to 5 to add WorkspaceInviteMessage support.
 /// W3: bumped to 6 for PeerMonitorsAnnounce / KvmLayoutShare (single connection layout sync).
 /// W4: bumped to 7 for KvmSessionLayoutPayload (layout canônico compartilhado).
-pub const PROTOCOL_VERSION: u16 = 7;
+/// W5: bumped to 8 for SessionCursorSync / SessionInputTakeover (cursor unificado).
+pub const PROTOCOL_VERSION: u16 = 8;
 
 /// Magic bytes para início de stream (identifica tipo de stream).
 /// Formato: [MAGIC 4 bytes (b"WXSK")][kind u8] = 5 bytes
@@ -82,6 +83,10 @@ pub enum Payload {
     PeerMonitorsAnnounce(layout::PeerMonitorsPayload),
     /// Layout canônico compartilhado da sessão KVM (stream Data).
     KvmLayoutShare(layout::KvmSessionLayoutPayload),
+    /// Posição do cursor unificado da sessão (stream Data).
+    SessionCursorSync(layout::SessionCursorSyncPayload),
+    /// Retomada de controle por mouse físico no peer (stream Data).
+    SessionInputTakeover(layout::SessionInputTakeoverPayload),
 }
 
 /// Erros ao serializar/desserializar frames.

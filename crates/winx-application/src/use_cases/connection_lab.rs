@@ -484,6 +484,9 @@ mod tests {
         async fn warp_cursor_signed(&self, _: i32, _: i32) -> anyhow::Result<()> {
             Ok(())
         }
+        async fn get_cursor_pos(&self) -> anyhow::Result<(i32, i32)> {
+            Ok((0, 0))
+        }
     }
 
     #[tokio::test]

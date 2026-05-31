@@ -36,7 +36,7 @@ use windows::Win32::UI::Input::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, ClipCursor, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    GetSystemMetrics, PeekMessageW, RegisterClassW, SetCursorPos, SetForegroundWindow,
+    GetSystemMetrics, GetCursorPos, PeekMessageW, RegisterClassW, SetCursorPos, SetForegroundWindow,
     SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, UnregisterClassW, WaitMessage,
     WindowFromPoint, CS_HREDRAW, CS_VREDRAW, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED,
     LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, PM_REMOVE, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN,
@@ -486,6 +486,16 @@ impl InputBackend for Win32InputBackend {
             Ok(())
         })
         .await?
+    }
+
+    async fn get_cursor_pos(&self) -> anyhow::Result<(i32, i32)> {
+        tokio::task::spawn_blocking(|| unsafe {
+            let mut pt = POINT::default();
+            GetCursorPos(&mut pt).map_err(|e| anyhow::anyhow!("GetCursorPos: {e}"))?;
+            Ok((pt.x, pt.y))
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("join: {e}"))?
     }
 }
 

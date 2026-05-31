@@ -216,6 +216,8 @@ impl ClipboardService {
                                 layout_payload,
                                 Payload::PeerMonitorsAnnounce(_)
                                     | Payload::KvmLayoutShare(_)
+                                    | Payload::SessionCursorSync(_)
+                                    | Payload::SessionInputTakeover(_)
                             ) =>
                         {
                             let kind = payload_kind(layout_payload);

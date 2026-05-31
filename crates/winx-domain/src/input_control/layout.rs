@@ -312,6 +312,13 @@ impl MonitorLayout {
         }
     }
 
+    /// Mapeia coords relativas ao bloco remoto posicionado para coords OS.
+    #[must_use]
+    pub fn map_remote_relative_to_os(&self, rx: i32, ry: i32) -> (i32, i32) {
+        let remote = self.placed_remote_bounds();
+        (remote.x + rx, remote.y + ry)
+    }
+
     /// Mapeia o ponto de cruzamento local para coordenadas de entrada no monitor remoto,
     /// preservando a posição proporcional no eixo perpendicular à borda cruzada.
     #[must_use]

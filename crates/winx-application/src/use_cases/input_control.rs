@@ -18,6 +18,8 @@ use winx_domain::{
     DomainError, DomainEvent,
 };
 
+use winx_protocol::Payload;
+
 use crate::{
     bus::EventBus,
     ports::{transport::StreamSender, InputBackend, KvmLayoutStore, MonitorBackend, WorkspaceGlobalCursor},
@@ -25,6 +27,113 @@ use crate::{
     use_cases::{input_streams, mouse_coalesce::MouseCoalescer, TransportService},
     workspace_layout_wire::monitor_layout_to_session,
 };
+
+/// Contexto compartilhado do cursor unificado da sessão KVM.
+#[derive(Clone)]
+struct SessionCursorCtx {
+    x: Arc<AtomicI32>,
+    y: Arc<AtomicI32>,
+    seq: Arc<AtomicU64>,
+    ready: Arc<AtomicBool>,
+    host: Arc<Mutex<Option<DeviceId>>>,
+    peer_controls_us: Arc<AtomicBool>,
+    local_device_id: Arc<Mutex<Option<DeviceId>>>,
+    clipboard: Arc<Mutex<Option<Arc<super::ClipboardService>>>>,
+}
+
+impl SessionCursorCtx {
+    async fn store(&self, host: DeviceId, x: i32, y: i32, seq: u64) {
+        self.x.store(x, Ordering::SeqCst);
+        self.y.store(y, Ordering::SeqCst);
+        self.seq.store(seq, Ordering::SeqCst);
+        *self.host.lock().await = Some(host);
+        self.ready.store(true, Ordering::SeqCst);
+    }
+
+    async fn broadcast(&self, peer_id: PeerId, host: DeviceId, x: i32, y: i32, seq: u64) {
+        let Some(clipboard) = self.clipboard.lock().await.clone() else {
+            return;
+        };
+        let _ = clipboard
+            .send_data_payload(Payload::SessionCursorSync(
+                winx_protocol::SessionCursorSyncPayload {
+                    device_id: host.as_uuid(),
+                    x,
+                    y,
+                    seq,
+                },
+            ))
+            .await;
+        let _ = peer_id;
+    }
+
+    async fn maybe_handoff(&self, input: &Arc<dyn InputBackend>, screen_x: i32, screen_y: i32) -> bool {
+        if !self.ready.load(Ordering::SeqCst) {
+            return false;
+        }
+        let local_device = match *self.local_device_id.lock().await {
+            Some(d) => d,
+            None => return false,
+        };
+        if *self.host.lock().await != Some(local_device) {
+            return false;
+        }
+        let sx = self.x.load(Ordering::SeqCst);
+        let sy = self.y.load(Ordering::SeqCst);
+        let jump = (screen_x - sx).abs().saturating_add((screen_y - sy).abs());
+        if jump <= SESSION_HANDOFF_MANHATTAN_PX {
+            return false;
+        }
+        if input.warp_cursor_signed(sx, sy).await.is_err() {
+            return false;
+        }
+        input.reset_mouse_delta_baseline();
+        info!(sx, sy, jump, "session cursor: handoff");
+        true
+    }
+
+    async fn update_local(
+        &self,
+        input: &Arc<dyn InputBackend>,
+        peer_id: PeerId,
+        screen_x: i32,
+        screen_y: i32,
+    ) {
+        let local_device = match *self.local_device_id.lock().await {
+            Some(d) => d,
+            None => return,
+        };
+        let seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
+        self.store(local_device, screen_x, screen_y, seq).await;
+        self.broadcast(peer_id, local_device, screen_x, screen_y, seq)
+            .await;
+        let _ = input;
+    }
+
+    async fn send_takeover(&self, peer_id: PeerId, screen_x: i32, screen_y: i32) {
+        let local_device = match *self.local_device_id.lock().await {
+            Some(d) => d,
+            None => return,
+        };
+        let seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
+        self.store(local_device, screen_x, screen_y, seq).await;
+        let Some(clipboard) = self.clipboard.lock().await.clone() else {
+            return;
+        };
+        let _ = clipboard
+            .send_data_payload(Payload::SessionInputTakeover(
+                winx_protocol::SessionInputTakeoverPayload {
+                    device_id: local_device.as_uuid(),
+                    x: screen_x,
+                    y: screen_y,
+                    seq,
+                },
+            ))
+            .await;
+        self.peer_controls_us.store(false, Ordering::SeqCst);
+        info!(%peer_id, screen_x, screen_y, "session cursor: takeover enviado");
+    }
+}
 
 /// Estado de envio agregado de mouse para o peer remoto.
 pub struct MouseSendState {
@@ -34,6 +143,11 @@ pub struct MouseSendState {
     pub scale_q8: AtomicI32,
     pub frames_sent: AtomicU64,
 }
+
+/// Distância Manhattan mínima para detectar troca de mouse físico (handoff).
+const SESSION_HANDOFF_MANHATTAN_PX: i32 = 80;
+/// Movimento mínimo para retomar controle enquanto o peer injeta input.
+const SESSION_TAKEOVER_MANHATTAN_PX: i32 = 10;
 
 static FIRST_INJECT: AtomicBool = AtomicBool::new(true);
 
@@ -94,6 +208,12 @@ pub struct InputControlService {
     layout_sync_deps: Arc<Mutex<Option<Arc<super::kvm_layout_sync::KvmLayoutSyncDeps>>>>,
     clipboard: Arc<Mutex<Option<Arc<super::ClipboardService>>>>,
     local_device_id: Arc<Mutex<Option<DeviceId>>>,
+    session_cursor_x: Arc<AtomicI32>,
+    session_cursor_y: Arc<AtomicI32>,
+    session_cursor_seq: Arc<AtomicU64>,
+    session_cursor_ready: Arc<AtomicBool>,
+    session_cursor_host: Arc<Mutex<Option<DeviceId>>>,
+    peer_controls_us: Arc<AtomicBool>,
 }
 
 impl InputControlService {
@@ -138,6 +258,12 @@ impl InputControlService {
             layout_sync_deps: Arc::new(Mutex::new(None)),
             clipboard: Arc::new(Mutex::new(None)),
             local_device_id: Arc::new(Mutex::new(None)),
+            session_cursor_x: Arc::new(AtomicI32::new(0)),
+            session_cursor_y: Arc::new(AtomicI32::new(0)),
+            session_cursor_seq: Arc::new(AtomicU64::new(0)),
+            session_cursor_ready: Arc::new(AtomicBool::new(false)),
+            session_cursor_host: Arc::new(Mutex::new(None)),
+            peer_controls_us: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -152,11 +278,24 @@ impl InputControlService {
             .ok_or_else(|| internal_err("local_device_id não configurado"))
     }
 
+    fn session_ctx(&self) -> SessionCursorCtx {
+        SessionCursorCtx {
+            x: Arc::clone(&self.session_cursor_x),
+            y: Arc::clone(&self.session_cursor_y),
+            seq: Arc::clone(&self.session_cursor_seq),
+            ready: Arc::clone(&self.session_cursor_ready),
+            host: Arc::clone(&self.session_cursor_host),
+            peer_controls_us: Arc::clone(&self.peer_controls_us),
+            local_device_id: Arc::clone(&self.local_device_id),
+            clipboard: Arc::clone(&self.clipboard),
+        }
+    }
+
     pub async fn attach_clipboard(&self, clipboard: Arc<super::ClipboardService>) {
         *self.clipboard.lock().await = Some(clipboard);
     }
 
-    pub async fn init_layout_sync(&self, clipboard: Arc<super::ClipboardService>) {
+    pub async fn init_layout_sync(self: &Arc<Self>, clipboard: Arc<super::ClipboardService>) {
         let deps = Arc::new(super::kvm_layout_sync::KvmLayoutSyncDeps {
             store: Arc::clone(&self.kvm_layout_store),
             bus: self.bus.clone(),
@@ -169,7 +308,16 @@ impl InputControlService {
             local_device_id: Arc::clone(&self.local_device_id),
         });
         *self.layout_sync_deps.lock().await = Some(Arc::clone(&deps));
-        deps.register_handler(clipboard.as_ref()).await;
+        let weak = Arc::downgrade(self);
+        let session_handler: super::clipboard::LayoutDataHandler = Arc::new(move |peer_id, payload| {
+            if let Some(input) = weak.upgrade() {
+                tokio::spawn(async move {
+                    input.handle_session_data_payload(peer_id, payload).await;
+                });
+            }
+        });
+        deps.register_handler(clipboard.as_ref(), Some(session_handler))
+            .await;
         self.attach_clipboard(clipboard).await;
         info!("layout sync: deps inicializados e ligados ao clipboard");
     }
@@ -729,6 +877,7 @@ impl InputControlService {
         let service_remote_switch_grace = Arc::clone(&self.remote_switch_grace);
         let service_remote_return_armed = Arc::clone(&self.remote_return_armed);
         let service_focus_transition = Arc::clone(&self.focus_transition);
+        let service_session = self.session_ctx();
 
         let mouse_send_flush = Arc::clone(&self.mouse_send);
         let input_tx_flush = Arc::clone(&self.input_tx);
@@ -775,6 +924,7 @@ impl InputControlService {
                 let remote_switch_grace = service_remote_switch_grace.clone();
                 let remote_return_armed = service_remote_return_armed.clone();
                 let focus_transition = service_focus_transition.clone();
+                let session = service_session.clone();
                 let seq = Arc::clone(&service_seq);
                 runtime.spawn(async move {
                     if !*enabled.lock().await && !mirror.load(Ordering::SeqCst) {
@@ -801,6 +951,7 @@ impl InputControlService {
                         remote_switch_grace,
                         remote_return_armed,
                         focus_transition,
+                        session,
                     )
                     .await;
                 });
@@ -852,16 +1003,27 @@ impl InputControlService {
         let remote_frames = Arc::clone(&self.remote_frames_received);
         let remote_ok = Arc::clone(&self.remote_inject_ok);
         let remote_fail = Arc::clone(&self.remote_inject_fail);
+        let inject_layout = Arc::clone(&self.layout);
+        let inject_focus = Arc::clone(&self.focus);
+        let inject_active = Arc::clone(&self.active_peer);
+        let inject_session = self.session_ctx();
+        let inject_peer_controls = Arc::clone(&self.peer_controls_us);
         tokio::spawn(async move {
             while let Some(bytes) = rx.recv().await {
                 match winx_protocol::decode(&bytes) {
                     Ok(frame) => {
                         if let winx_protocol::Payload::Input(p) = frame.payload {
-                            let ev = input_event_from_dto(&p.event);
+                            let mut ev = input_event_from_dto(&p.event);
                             if ev.is_noop_mouse_move()
                                 || ev.is_noise_mouse_move(MOUSE_SEND_MIN_MANHATTAN)
                             {
                                 continue;
+                            }
+                            if let InputEvent::MouseWarpAbsolute { x, y } = ev {
+                                if let Some(layout) = inject_layout.lock().await.as_ref() {
+                                    let (ox, oy) = layout.map_remote_relative_to_os(x, y);
+                                    ev = InputEvent::MouseWarpAbsolute { x: ox, y: oy };
+                                }
                             }
                             remote_frames.fetch_add(1, Ordering::SeqCst);
                             if FIRST_INJECT.swap(false, Ordering::SeqCst) {
@@ -871,7 +1033,7 @@ impl InputControlService {
                                     "primeiro frame Input remoto recebido"
                                 );
                             }
-                            match inject_input.inject(ev).await {
+                            match inject_input.inject(ev.clone()).await {
                                 Ok(()) => {
                                     remote_ok.fetch_add(1, Ordering::SeqCst);
                                 }
@@ -885,6 +1047,23 @@ impl InputControlService {
                                     );
                                 }
                             }
+                            if matches!(
+                                ev,
+                                InputEvent::MouseMove { .. }
+                                    | InputEvent::MouseWarpAbsolute { .. }
+                            ) {
+                                inject_peer_controls.store(true, Ordering::SeqCst);
+                                inject_input.set_pass_through(false);
+                                if matches!(inject_focus.lock().await.target, FocusTarget::Local) {
+                                    if let Some(peer_id) = *inject_active.lock().await {
+                                        if let Ok((x, y)) = inject_input.get_cursor_pos().await {
+                                            inject_session
+                                                .update_local(&inject_input, peer_id, x, y)
+                                                .await;
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     Err(err) => {
@@ -896,6 +1075,9 @@ impl InputControlService {
 
         self.spawn_bus_subscriber();
         *self.enabled.lock().await = true;
+        if let Err(err) = self.register_session_cursor_at_connection(peer_id).await {
+            warn!(?err, %peer_id, "session cursor: falha ao registrar na conexão");
+        }
         info!(%peer_id, "input control habilitado");
         Ok(())
     }
@@ -924,6 +1106,14 @@ impl InputControlService {
             "layout sync: stream Data fechado — reabilitando KVM para sync de layout"
         );
         super::single_connection::enable_kvm_for_peer(clipboard.as_ref(), self, peer_id).await
+    }
+
+    fn clear_session_cursor(&self) {
+        self.session_cursor_ready.store(false, Ordering::SeqCst);
+        self.session_cursor_x.store(0, Ordering::SeqCst);
+        self.session_cursor_y.store(0, Ordering::SeqCst);
+        self.session_cursor_seq.store(0, Ordering::SeqCst);
+        self.peer_controls_us.store(false, Ordering::SeqCst);
     }
 
     /// Restaura cursor/foco local após desconexão (libera `ClipCursor`).
@@ -955,6 +1145,8 @@ impl InputControlService {
             self.input.reset_mouse_delta_baseline();
             info!(%peer_id, "input local restaurado após desconexão");
         }
+        *self.session_cursor_host.lock().await = None;
+        self.clear_session_cursor();
         FIRST_INJECT.store(true, Ordering::SeqCst);
     }
 
@@ -976,6 +1168,12 @@ impl InputControlService {
         let reload_mouse = Arc::clone(&self.mouse_send);
         let reload_return_armed = Arc::clone(&self.remote_return_armed);
         let reload_local_device = Arc::clone(&self.local_device_id);
+        let reload_session_ready = Arc::clone(&self.session_cursor_ready);
+        let reload_session_host = Arc::clone(&self.session_cursor_host);
+        let reload_peer_controls = Arc::clone(&self.peer_controls_us);
+        let reload_session_x = Arc::clone(&self.session_cursor_x);
+        let reload_session_y = Arc::clone(&self.session_cursor_y);
+        let reload_session_seq = Arc::clone(&self.session_cursor_seq);
 
         tokio::spawn(async move {
             while let Ok(event) = rx.recv().await {
@@ -995,6 +1193,12 @@ impl InputControlService {
                             input.set_pass_through(true);
                             let _ = input.set_cursor_clipped(None).await;
                             input.reset_mouse_delta_baseline();
+                            reload_session_ready.store(false, Ordering::SeqCst);
+                            reload_session_x.store(0, Ordering::SeqCst);
+                            reload_session_y.store(0, Ordering::SeqCst);
+                            reload_session_seq.store(0, Ordering::SeqCst);
+                            reload_peer_controls.store(false, Ordering::SeqCst);
+                            *reload_session_host.lock().await = None;
                             FIRST_INJECT.store(true, Ordering::SeqCst);
                             info!(peer_id = %e.peer_id, "foco e cursor restaurados (connection lost)");
                         }
@@ -1304,6 +1508,7 @@ async fn handle_local_input(
     remote_switch_grace: Arc<Mutex<Option<Instant>>>,
     remote_return_armed: Arc<AtomicBool>,
     focus_transition: Arc<Mutex<()>>,
+    session: SessionCursorCtx,
 ) {
     if keyboard_mirror.load(Ordering::SeqCst) {
         if let InputEvent::Key { code, pressed, .. } = &ev {
@@ -1352,12 +1557,32 @@ async fn handle_local_input(
 
     match &state.target {
         FocusTarget::Local => {
-            input.set_pass_through(true);
+            if !session.peer_controls_us.load(Ordering::SeqCst) {
+                input.set_pass_through(true);
+            }
             if let InputEvent::MouseMove {
                 screen_x, screen_y, ..
             } = ev
             {
                 if ev.is_noop_mouse_move() {
+                    return;
+                }
+                if session.peer_controls_us.load(Ordering::SeqCst) {
+                    let sx = session.x.load(Ordering::SeqCst);
+                    let sy = session.y.load(Ordering::SeqCst);
+                    let jump = (screen_x - sx).abs().saturating_add((screen_y - sy).abs());
+                    if jump >= SESSION_TAKEOVER_MANHATTAN_PX {
+                        if let Some(peer_id) = *active.lock().await {
+                            session
+                                .send_takeover(peer_id, screen_x, screen_y)
+                                .await;
+                            input.set_pass_through(true);
+                        }
+                    } else {
+                        return;
+                    }
+                }
+                if session.maybe_handoff(&input, screen_x, screen_y).await {
                     return;
                 }
                 let layout_guard = layout.lock().await;
@@ -1395,6 +1620,11 @@ async fn handle_local_input(
                 }
                 if let Some(bridge) = workspace_cursor.lock().await.as_ref() {
                     bridge.publish_local_cursor(screen_x, screen_y).await;
+                }
+                if let Some(peer_id) = *active.lock().await {
+                    session
+                        .update_local(&input, peer_id, screen_x, screen_y)
+                        .await;
                 }
             }
         }
@@ -1732,6 +1962,78 @@ async fn switch_focus(
     let _ = layout;
 }
 
+impl InputControlService {
+    async fn register_session_cursor_at_connection(&self, peer_id: PeerId) -> Result<(), DomainError> {
+        let ctx = self.session_ctx();
+        let local_device = self.require_local_device_id().await?;
+        let (x, y) = self
+            .input
+            .get_cursor_pos()
+            .await
+            .map_err(|e| internal_err(&e.to_string()))?;
+        let seq = ctx.seq.fetch_add(1, Ordering::SeqCst) + 1;
+        ctx.store(local_device, x, y, seq).await;
+        ctx.broadcast(peer_id, local_device, x, y, seq).await;
+        info!(%peer_id, x, y, seq, "session cursor: registrado na conexão");
+        Ok(())
+    }
+
+    pub async fn handle_session_data_payload(&self, peer_id: PeerId, payload: Payload) {
+        let ctx = self.session_ctx();
+        match payload {
+            Payload::SessionCursorSync(p) => {
+                let host = DeviceId::from_uuid(p.device_id);
+                let local_device = match *self.local_device_id.lock().await {
+                    Some(d) => d,
+                    None => return,
+                };
+                if p.seq <= ctx.seq.load(Ordering::SeqCst) {
+                    return;
+                }
+                ctx.store(host, p.x, p.y, p.seq).await;
+                if host == local_device {
+                    let _ = self.input.warp_cursor_signed(p.x, p.y).await;
+                    self.input.reset_mouse_delta_baseline();
+                    self.peer_controls_us.store(false, Ordering::SeqCst);
+                    self.input.set_pass_through(true);
+                }
+                info!(%peer_id, x = p.x, y = p.y, seq = p.seq, ?host, "session cursor: sync recebido");
+            }
+            Payload::SessionInputTakeover(p) => {
+                let taker = DeviceId::from_uuid(p.device_id);
+                let local_device = match *self.local_device_id.lock().await {
+                    Some(d) => d,
+                    None => return,
+                };
+                if taker == local_device {
+                    return;
+                }
+                if p.seq <= ctx.seq.load(Ordering::SeqCst) {
+                    return;
+                }
+                ctx.store(taker, p.x, p.y, p.seq).await;
+                let focus = self.focus.lock().await.target.clone();
+                if matches!(focus, FocusTarget::Remote(pid) if pid == peer_id) {
+                    info!(%peer_id, "session cursor: peer retomou controle — voltando foco local");
+                    drop(focus);
+                    let mut f = self.focus.lock().await;
+                    f.target = FocusTarget::Local;
+                    drop(f);
+                    self.input.set_pass_through(true);
+                    self.input.set_raw_mouse_capture(false);
+                    let _ = self.input.set_cursor_clipped(None).await;
+                    let _ = self.input.set_cursor_visible(true).await;
+                    self.input.reset_mouse_delta_baseline();
+                    self.peer_controls_us.store(false, Ordering::SeqCst);
+                    self.remote_return_armed.store(false, Ordering::SeqCst);
+                    *self.remote_switch_grace.lock().await = None;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn internal_err(msg: &str) -> DomainError {
     DomainError::new(DomainErrorCode::InternalError, msg)
 }
@@ -1780,6 +2082,9 @@ mod tests {
         }
         async fn warp_cursor_signed(&self, _: i32, _: i32) -> anyhow::Result<()> {
             Ok(())
+        }
+        async fn get_cursor_pos(&self) -> anyhow::Result<(i32, i32)> {
+            Ok((0, 0))
         }
     }
 

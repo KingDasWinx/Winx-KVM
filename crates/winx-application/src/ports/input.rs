@@ -89,4 +89,7 @@ pub trait InputBackend: Send + Sync + 'static {
 
     /// Warp com assinatura KVM para escapar do hook (0xDEADC0DE)
     async fn warp_cursor_signed(&self, x: i32, y: i32) -> anyhow::Result<()>;
+
+    /// Posição absoluta atual do cursor no desktop virtual do Windows.
+    async fn get_cursor_pos(&self) -> anyhow::Result<(i32, i32)>;
 }
