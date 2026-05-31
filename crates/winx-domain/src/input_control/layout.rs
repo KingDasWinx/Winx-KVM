@@ -319,6 +319,24 @@ impl MonitorLayout {
         (remote.x + rx, remote.y + ry)
     }
 
+    /// Converte posição OS reportada pelo peer (após inject) para coords relativas
+    /// do monitor remoto usadas pelo estimador de retorno (`remote_cursor_x_est`).
+    #[must_use]
+    pub fn peer_cursor_os_to_remote_relative(&self, os_x: i32, os_y: i32) -> (i32, i32) {
+        if self.remote_monitors.len() == 1 {
+            let m = &self.remote_monitors[0];
+            let rx = (os_x - m.x).clamp(0, m.width as i32 - 1);
+            let ry = (os_y - m.y).clamp(0, m.height as i32 - 1);
+            return (rx, ry);
+        }
+        let w = self.remote_virtual.width as i32;
+        let h = self.remote_virtual.height as i32;
+        (
+            os_x.clamp(0, w.saturating_sub(1)),
+            os_y.clamp(0, h.saturating_sub(1)),
+        )
+    }
+
     /// Mapeia o ponto de cruzamento local para coordenadas de entrada no monitor remoto,
     /// preservando a posição proporcional no eixo perpendicular à borda cruzada.
     #[must_use]

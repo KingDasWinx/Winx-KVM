@@ -9,7 +9,8 @@ use winx_domain::{
     input_control::{
         apply_focus_target,
         events::{FocusSwitched, HotkeyTriggered, InputBlocked},
-        should_return_to_local, should_switch_to_remote, toggle_lock_mode, remote_inland_px,
+        remote_inland_px, should_return_to_local, should_switch_to_remote,
+        approaching_local_exit_edge, toggle_lock_mode,
         EdgeDetectInput, FocusState, FocusTarget, HotkeyAction, InputEvent, MonitorLayout,
         RemoteCursorEst, SessionDesktopLayout, MOUSE_COALESCE_FLUSH_MS, MOUSE_SEND_MIN_MANHATTAN,
         REMOTE_MIN_INLAND_PX,
@@ -67,8 +68,17 @@ impl SessionCursorCtx {
         let _ = peer_id;
     }
 
-    async fn maybe_handoff(&self, input: &Arc<dyn InputBackend>, screen_x: i32, screen_y: i32) -> bool {
+    async fn maybe_handoff(
+        &self,
+        input: &Arc<dyn InputBackend>,
+        layout: Option<&MonitorLayout>,
+        screen_x: i32,
+        screen_y: i32,
+    ) -> bool {
         if !self.ready.load(Ordering::SeqCst) {
+            return false;
+        }
+        if layout.is_some_and(|l| approaching_local_exit_edge(l, screen_x, screen_y)) {
             return false;
         }
         let local_device = match *self.local_device_id.lock().await {
@@ -1385,7 +1395,7 @@ async fn panic_local(
     layout: Arc<Mutex<Option<MonitorLayout>>>,
     input: Arc<dyn InputBackend>,
     bus: EventBus,
-    _active: Arc<Mutex<Option<PeerId>>>,
+    active: Arc<Mutex<Option<PeerId>>>,
     _input_tx: Arc<Mutex<Option<StreamSender>>>,
     workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
 ) {
@@ -1400,6 +1410,7 @@ async fn panic_local(
         input,
         bus.clone(),
         workspace_cursor,
+        active,
     )
     .await;
     if let Some(layout) = layout_warp.lock().await.as_ref() {
@@ -1582,11 +1593,8 @@ async fn handle_local_input(
                         return;
                     }
                 }
-                if session.maybe_handoff(&input, screen_x, screen_y).await {
-                    return;
-                }
-                let layout_guard = layout.lock().await;
-                if let Some(layout_data) = layout_guard.as_ref() {
+                let layout_snapshot = layout.lock().await.clone();
+                if let Some(ref layout_data) = layout_snapshot {
                     if should_switch_to_remote(
                         EdgeDetectInput {
                             screen_x,
@@ -1595,7 +1603,6 @@ async fn handle_local_input(
                         },
                         layout_data,
                     ) {
-                        drop(layout_guard);
                         try_edge_switch(
                             screen_x,
                             screen_y,
@@ -1611,12 +1618,24 @@ async fn handle_local_input(
                             remote_switch_grace.clone(),
                             remote_return_armed.clone(),
                             focus_transition.clone(),
+                            session.clone(),
                         )
                         .await;
                         if !matches!(focus.lock().await.target, FocusTarget::Local) {
                             return;
                         }
                     }
+                }
+                if session
+                    .maybe_handoff(
+                        &input,
+                        layout_snapshot.as_ref(),
+                        screen_x,
+                        screen_y,
+                    )
+                    .await
+                {
+                    return;
                 }
                 if let Some(bridge) = workspace_cursor.lock().await.as_ref() {
                     bridge.publish_local_cursor(screen_x, screen_y).await;
@@ -1698,6 +1717,7 @@ async fn handle_local_input(
                             est_x,
                             est_y,
                             focus_transition.clone(),
+                            session.clone(),
                         )
                         .await;
                         return;
@@ -1752,6 +1772,7 @@ async fn try_edge_switch(
     remote_switch_grace: Arc<Mutex<Option<Instant>>>,
     remote_return_armed: Arc<AtomicBool>,
     focus_transition: Arc<Mutex<()>>,
+    session: SessionCursorCtx,
 ) {
     let Ok(_transition_guard) = focus_transition.try_lock() else {
         debug!("transição local→remoto já em andamento — ignorando");
@@ -1818,6 +1839,12 @@ async fn try_edge_switch(
         return;
     }
 
+    if let Some(peer_id) = *active.lock().await {
+        session
+            .update_local(&input, peer_id, screen_x, screen_y)
+            .await;
+    }
+
     // Transição lógica de foco — só após sucesso físico
     switch_focus(
         FocusTarget::Remote(peer),
@@ -1827,6 +1854,7 @@ async fn try_edge_switch(
         Arc::clone(&input),
         bus,
         workspace_cursor,
+        active,
     )
     .await;
 
@@ -1852,13 +1880,14 @@ async fn try_switch_back_to_local(
     layout: Arc<Mutex<Option<MonitorLayout>>>,
     input: Arc<dyn InputBackend>,
     bus: EventBus,
-    _active: Arc<Mutex<Option<PeerId>>>,
+    active: Arc<Mutex<Option<PeerId>>>,
     workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
     remote_switch_grace: Arc<Mutex<Option<Instant>>>,
     remote_return_armed: Arc<AtomicBool>,
     remote_x: i32,
     remote_y: i32,
     focus_transition: Arc<Mutex<()>>,
+    session: SessionCursorCtx,
 ) {
     if !remote_return_armed.swap(false, Ordering::SeqCst) {
         return;
@@ -1876,6 +1905,7 @@ async fn try_switch_back_to_local(
 
     let layout_guard = layout.lock().await;
     let Some(layout_data) = layout_guard.as_ref() else {
+        remote_return_armed.store(true, Ordering::SeqCst);
         return;
     };
 
@@ -1884,19 +1914,29 @@ async fn try_switch_back_to_local(
 
     if let Err(err) = input.set_cursor_clipped(None).await {
         warn!(?err, "falha ao liberar clip ao retornar para local");
+        remote_return_armed.store(true, Ordering::SeqCst);
         return;
     }
     if let Err(err) = input.restore_cursor_system().await {
         warn!(?err, "falha ao restaurar cursor ao retornar para local");
+        remote_return_armed.store(true, Ordering::SeqCst);
         return;
     }
     if let Err(err) = input.warp_cursor(warp_x, warp_y).await {
         warn!(?err, "falha ao reposicionar cursor ao retornar para local");
+        remote_return_armed.store(true, Ordering::SeqCst);
         return;
     }
     input.reset_mouse_delta_baseline();
 
     info!(warp_x, warp_y, "voltando para foco local via borda oposta");
+
+    session.peer_controls_us.store(false, Ordering::SeqCst);
+    if let Some(peer_id) = *active.lock().await {
+        session
+            .update_local(&input, peer_id, warp_x, warp_y)
+            .await;
+    }
 
     switch_focus(
         FocusTarget::Local,
@@ -1906,6 +1946,7 @@ async fn try_switch_back_to_local(
         input,
         bus,
         workspace_cursor,
+        active,
     )
     .await;
     *remote_switch_grace.lock().await = None;
@@ -1920,11 +1961,14 @@ async fn switch_focus(
     input: Arc<dyn InputBackend>,
     bus: EventBus,
     workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
+    active_kvm: Arc<Mutex<Option<PeerId>>>,
 ) {
     let transition = {
         let mut f = focus.lock().await;
         apply_focus_target(&mut f, to.clone())
     };
+
+    let kvm_active = active_kvm.lock().await.is_some();
 
     match &to {
         FocusTarget::Local => {
@@ -1933,10 +1977,14 @@ async fn switch_focus(
             let _ = input.set_cursor_clipped(None).await;
             let _ = input.set_cursor_visible(true).await;
             input.reset_mouse_delta_baseline();
-            if let Some(bridge) = workspace_cursor.lock().await.as_ref() {
-                if let Some((x, y)) = bridge.restore_cursor_on_focus().await {
-                    if input.warp_cursor_signed(x, y).await.is_err() {
-                        warn!("falha ao restaurar cursor global do workspace");
+            // Com KVM single-connection ativo, não restaurar cursor global do workspace —
+            // o warp de retorno KVM já posicionou na borda correta.
+            if !kvm_active {
+                if let Some(bridge) = workspace_cursor.lock().await.as_ref() {
+                    if let Some((x, y)) = bridge.restore_cursor_on_focus().await {
+                        if input.warp_cursor_signed(x, y).await.is_err() {
+                            warn!("falha ao restaurar cursor global do workspace");
+                        }
                     }
                 }
             }
@@ -1991,11 +2039,21 @@ impl InputControlService {
                     return;
                 }
                 ctx.store(host, p.x, p.y, p.seq).await;
-                if host == local_device {
+                if host == local_device && self.peer_controls_us.load(Ordering::SeqCst) {
                     let _ = self.input.warp_cursor_signed(p.x, p.y).await;
                     self.input.reset_mouse_delta_baseline();
                     self.peer_controls_us.store(false, Ordering::SeqCst);
                     self.input.set_pass_through(true);
+                } else if host != local_device {
+                    let focus = self.focus.lock().await.target.clone();
+                    if matches!(focus, FocusTarget::Remote(pid) if pid == peer_id) {
+                        if let Some(layout) = self.layout.lock().await.as_ref() {
+                            let (rx, ry) =
+                                layout.peer_cursor_os_to_remote_relative(p.x, p.y);
+                            self.remote_cursor_x_est.store(rx, Ordering::SeqCst);
+                            self.remote_cursor_y_est.store(ry, Ordering::SeqCst);
+                        }
+                    }
                 }
                 info!(%peer_id, x = p.x, y = p.y, seq = p.seq, ?host, "session cursor: sync recebido");
             }
@@ -2131,6 +2189,7 @@ mod tests {
             Arc::clone(&svc.remote_switch_grace),
             Arc::clone(&svc.remote_return_armed),
             Arc::clone(&svc.focus_transition),
+            svc.session_ctx(),
         )
         .await;
 
@@ -2142,7 +2201,18 @@ mod tests {
     async fn lock_mode_prevents_edge_switch() {
         let peer_id = PeerId::from_uuid(Uuid::new_v4());
         let bus = EventBus::new();
-        let focus = Arc::new(Mutex::new(FocusState::default()));
+        let svc = InputControlService::new(
+            Arc::new(MockInput),
+            Arc::new(MockMonitors),
+            Arc::new(TransportService::new(
+                Arc::new(NoopTransport),
+                Arc::new(NoopIdentity),
+                Arc::new(Mutex::new(winx_domain::discovery::DiscoveryRegistry::new())),
+                bus.clone(),
+            )),
+            bus.clone(),
+        );
+        let focus = Arc::clone(&svc.focus);
         {
             let mut f = focus.lock().await;
             f.lock_mode = true;
@@ -2174,7 +2244,8 @@ mod tests {
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(None)),
             Arc::new(AtomicBool::new(false)),
-            Arc::new(Mutex::new(())),
+            Arc::clone(&svc.focus_transition),
+            svc.session_ctx(),
         )
         .await;
 

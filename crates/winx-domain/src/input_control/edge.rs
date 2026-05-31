@@ -11,6 +11,52 @@ pub const REMOTE_ENTRY_INSET_PX: i32 = 20;
 /// Distância mínima (px) para dentro do remoto antes de permitir retorno pela borda oposta.
 pub const REMOTE_MIN_INLAND_PX: i32 = 48;
 
+/// Margem antes da borda de saída onde handoff de sessão não deve puxar o cursor para trás.
+pub const HANDOFF_EDGE_MARGIN_PX: i32 = 96;
+
+/// Verdadeiro quando o cursor está na borda de saída ou se aproximando dela (crossing KVM).
+#[must_use]
+pub fn approaching_local_exit_edge(
+    layout: &MonitorLayout,
+    screen_x: i32,
+    screen_y: i32,
+) -> bool {
+    if should_switch_to_remote(
+        EdgeDetectInput {
+            screen_x,
+            screen_y,
+            lock_mode: false,
+        },
+        layout,
+    ) {
+        return true;
+    }
+    let m = layout.exit_local_monitor();
+    let edge = layout.local_exit_edge_coord();
+    match layout.edge.local_exit {
+        BorderSide::Right => {
+            screen_x >= edge.saturating_sub(HANDOFF_EDGE_MARGIN_PX)
+                && screen_y >= m.y
+                && screen_y < m.bottom_edge()
+        }
+        BorderSide::Left => {
+            screen_x <= edge.saturating_add(HANDOFF_EDGE_MARGIN_PX)
+                && screen_y >= m.y
+                && screen_y < m.bottom_edge()
+        }
+        BorderSide::Bottom => {
+            screen_y >= edge.saturating_sub(HANDOFF_EDGE_MARGIN_PX)
+                && screen_x >= m.x
+                && screen_x < m.right_edge()
+        }
+        BorderSide::Top => {
+            screen_y <= edge.saturating_add(HANDOFF_EDGE_MARGIN_PX)
+                && screen_x >= m.x
+                && screen_x < m.right_edge()
+        }
+    }
+}
+
 /// Distância do cursor para "dentro" do monitor remoto, a partir da borda de entrada.
 #[must_use]
 pub fn remote_inland_px(est: RemoteCursorEst, layout: &MonitorLayout) -> i32 {

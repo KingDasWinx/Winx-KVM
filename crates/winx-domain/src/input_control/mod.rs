@@ -18,7 +18,8 @@ pub mod session_layout;
 pub mod mouse;
 
 pub use edge::{
-    remote_inland_px, should_return_to_local, should_switch_to_remote, EdgeDetectInput,
+    approaching_local_exit_edge, remote_inland_px, should_return_to_local,
+    should_switch_to_remote, EdgeDetectInput,
     RemoteCursorEst, EDGE_TOLERANCE_PX, REMOTE_ENTRY_INSET_PX, REMOTE_MIN_INLAND_PX,
 };
 pub use events::{
