@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use winx_domain::{
     data_exchange::{
         events::{ClipboardChanged, ClipboardReceived},
@@ -20,6 +20,7 @@ use crate::{
     protocol_convert::encode_clipboard_payload,
     use_cases::TransportService,
 };
+use super::kvm_layout_sync::payload_kind;
 
 const POLL_MS: u64 = 200;
 const DATA_STREAM_WAIT: Duration = Duration::from_secs(8);
@@ -68,13 +69,24 @@ impl ClipboardService {
     }
 
     pub async fn set_layout_handler(&self, handler: Option<LayoutDataHandler>) {
+        let registered = handler.is_some();
         *self.layout_handler.lock().await = handler;
+        info!(
+            registered,
+            "layout sync: handler de layout no clipboard {}",
+            if registered { "registrado" } else { "removido" }
+        );
     }
 
     /// Envia um frame arbitrário no stream Data compartilhado (layout KVM, etc.).
     pub async fn send_data_payload(&self, payload: Payload) -> Result<(), DomainError> {
+        let kind = payload_kind(&payload);
         let guard = self.data_tx.lock().await;
         let Some(tx) = guard.as_ref() else {
+            warn!(
+                payload = kind,
+                "layout sync: envio falhou — stream Data não aberto (clipboard.enable_for_peer primeiro?)"
+            );
             return Err(DomainError::new(
                 DomainErrorCode::TransportConnectionFailed,
                 "stream Data não aberto",
@@ -82,10 +94,25 @@ impl ClipboardService {
         };
         let frame = Frame::new(payload);
         let bytes = encode(&frame).map_err(|e| internal_err(&e.to_string()))?;
+        let byte_len = bytes.len();
         tx.send(bytes)
             .await
-            .map_err(|_| internal_err("falha ao enviar no stream Data"))?;
+            .map_err(|_| {
+                warn!(payload = kind, byte_len, "layout sync: falha ao escrever no stream Data");
+                internal_err("falha ao enviar no stream Data")
+            })?;
+        info!(
+            payload = kind,
+            byte_len,
+            protocol_version = winx_protocol::PROTOCOL_VERSION,
+            "layout sync: frame enviado no stream Data"
+        );
         Ok(())
+    }
+
+    /// `true` se o stream Data outbound/inbound já está aberto para envio.
+    pub async fn is_data_stream_open(&self) -> bool {
+        self.data_tx.lock().await.is_some()
     }
 
     pub async fn get_auto_sync(&self) -> bool {
@@ -106,15 +133,28 @@ impl ClipboardService {
 
         *self.active_peer.lock().await = Some(peer_id);
 
-        let (tx, mut rx) = if self.transport.is_peer_outbound(peer_id).await {
+        let outbound = self.transport.is_peer_outbound(peer_id).await;
+        let (tx, mut rx) = if outbound {
+            info!(%peer_id, role = "outbound", "layout sync: abrindo stream Data (outbound)");
             self.transport
                 .open_stream_for_peer(peer_id, StreamKind::Data)
                 .await?
         } else {
+            info!(
+                %peer_id,
+                role = "inbound",
+                wait_secs = DATA_STREAM_WAIT.as_secs(),
+                "layout sync: aguardando stream Data do peer outbound"
+            );
             self.transport
                 .wait_inbound_stream(peer_id, StreamKind::Data, DATA_STREAM_WAIT)
                 .await
                 .ok_or_else(|| {
+                    warn!(
+                        %peer_id,
+                        wait_secs = DATA_STREAM_WAIT.as_secs(),
+                        "layout sync: stream Data inbound não recebido a tempo"
+                    );
                     DomainError::new(
                         DomainErrorCode::TransportConnectionFailed,
                         "stream Data inbound não recebido a tempo",
@@ -122,6 +162,20 @@ impl ClipboardService {
                 })?
         };
         *self.data_tx.lock().await = Some(tx);
+
+        let has_layout_handler = self.layout_handler.lock().await.is_some();
+        info!(
+            %peer_id,
+            outbound,
+            has_layout_handler,
+            "layout sync: stream Data pronto para recv/send"
+        );
+        if !has_layout_handler {
+            warn!(
+                %peer_id,
+                "layout sync: handler NÃO registrado — frames PeerMonitorsAnnounce/KvmLayoutShare serão descartados"
+            );
+        }
 
         let clipboard_recv = Arc::clone(&self.clipboard);
         let local_peer = self.local_peer_id;
@@ -156,15 +210,54 @@ impl ClipboardService {
                                     | Payload::KvmLayoutShare(_)
                             ) =>
                         {
+                            let kind = payload_kind(layout_payload);
                             if let Some(handler) = layout_handler.lock().await.as_ref() {
+                                info!(
+                                    %peer_id,
+                                    payload = kind,
+                                    byte_len = bytes.len(),
+                                    "layout sync: frame recebido no stream Data — despachando handler"
+                                );
                                 handler(peer_id, layout_payload.clone());
+                            } else {
+                                warn!(
+                                    %peer_id,
+                                    payload = kind,
+                                    byte_len = bytes.len(),
+                                    "layout sync: frame recebido mas handler ausente — sync ignorado"
+                                );
                             }
                         }
-                        _ => {}
+                        other => {
+                            debug!(
+                                %peer_id,
+                                payload = payload_kind(&other),
+                                byte_len = bytes.len(),
+                                "layout sync: frame Data ignorado (tipo não-layout)"
+                            );
+                        }
                     },
-                    Err(err) => warn!(?err, %peer_id, "frame Data inválido"),
+                    Err(winx_protocol::ProtocolError::VersionMismatch { expected, got }) => {
+                        warn!(
+                            %peer_id,
+                            expected,
+                            got,
+                            byte_len = bytes.len(),
+                            "layout sync: frame rejeitado — versão de protocolo incompatível (rebuild nos dois PCs)"
+                        );
+                    }
+                    Err(err) => warn!(
+                        ?err,
+                        %peer_id,
+                        byte_len = bytes.len(),
+                        "layout sync: falha ao decodificar frame Data"
+                    ),
                 }
             }
+            warn!(
+                %peer_id,
+                "layout sync: stream Data encerrado (recv loop terminou)"
+            );
         });
 
         if self.watcher.lock().await.is_none() {

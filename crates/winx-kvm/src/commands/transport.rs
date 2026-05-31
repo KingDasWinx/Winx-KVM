@@ -2,6 +2,7 @@
 
 use serde::Serialize;
 use tauri::State;
+use tracing::info;
 use winx_domain::{shared::ids::PeerId, transport::ConnectionState};
 
 use crate::app_state::{ClipboardState, InputControlState, TransportState};
@@ -88,6 +89,7 @@ pub async fn open_connection(
         .connect_peer(pid, None)
         .await
         .map_err(map_err)?;
+    info!(%pid, "open_connection: QUIC conectado — habilitando clipboard → input → layout announce");
     clipboard
         .clipboard
         .enable_for_peer(pid)
@@ -103,6 +105,7 @@ pub async fn open_connection(
         .announce_layout_sync(pid)
         .await
         .map_err(map_err)?;
+    info!(%pid, "open_connection: concluído (input + clipboard + layout sync)");
     Ok(())
 }
 

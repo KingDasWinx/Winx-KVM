@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
-use tracing::info;
+use tracing::{debug, info, warn};
 use winx_domain::{
     input_control::{events::PeerMonitorsUpdated, MonitorLayout, MonitorRect},
     shared::ids::PeerId,
@@ -20,6 +20,36 @@ use crate::{
 };
 
 use super::input_control::MouseSendState;
+
+/// Nome estável do payload para logs de diagnóstico.
+#[must_use]
+pub fn payload_kind(payload: &Payload) -> &'static str {
+    match payload {
+        Payload::PeerMonitorsAnnounce(_) => "PeerMonitorsAnnounce",
+        Payload::KvmLayoutShare(_) => "KvmLayoutShare",
+        Payload::Clipboard(_) => "Clipboard",
+        Payload::Heartbeat => "Heartbeat",
+        Payload::HeartbeatAck => "HeartbeatAck",
+        Payload::Input(_) => "Input",
+        Payload::OpenStream { .. } => "OpenStream",
+        Payload::CloseStream { .. } => "CloseStream",
+        Payload::FocusSwitch { .. } => "FocusSwitch",
+        _ => "Unknown",
+    }
+}
+
+/// Resumo legível de monitores para logs.
+#[must_use]
+pub fn monitors_summary(monitors: &[MonitorRect]) -> String {
+    if monitors.is_empty() {
+        return "(vazio)".to_string();
+    }
+    monitors
+        .iter()
+        .map(|m| format!("#{} {}x{}@{},{}", m.id.0, m.width, m.height, m.x, m.y))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
 
 pub struct KvmLayoutSyncDeps {
     pub store: Arc<Mutex<Option<Arc<dyn KvmLayoutStore>>>>,
@@ -40,6 +70,7 @@ impl KvmLayoutSyncDeps {
             });
         });
         clipboard.set_layout_handler(Some(handler)).await;
+        info!("layout sync: handler registrado no stream Data do clipboard");
     }
 
     pub async fn announce_to_peer(
@@ -48,6 +79,14 @@ impl KvmLayoutSyncDeps {
         peer_id: PeerId,
         local_monitors: &[MonitorRect],
     ) -> Result<(), winx_domain::DomainError> {
+        let count = local_monitors.len();
+        info!(
+            %peer_id,
+            count,
+            monitors = %monitors_summary(local_monitors),
+            "layout sync: anunciando monitores locais ao peer"
+        );
+
         let saved = {
             let guard = self.store.lock().await;
             if let Some(s) = guard.as_ref() {
@@ -62,11 +101,19 @@ impl KvmLayoutSyncDeps {
                 monitors: rects_to_wire(local_monitors),
             }))
             .await?;
+        info!(%peer_id, count, "layout sync: PeerMonitorsAnnounce enviado");
 
         if let Some(layout) = saved.as_ref() {
             clipboard
                 .send_data_payload(Payload::KvmLayoutShare(monitor_layout_to_wire(layout)))
                 .await?;
+            info!(
+                %peer_id,
+                remote_monitors = layout.remote_monitors.len(),
+                "layout sync: KvmLayoutShare enviado (layout salvo)"
+            );
+        } else {
+            info!(%peer_id, "layout sync: sem layout salvo — KvmLayoutShare omitido");
         }
         Ok(())
     }
@@ -80,39 +127,81 @@ pub async fn store_peer_monitors(
 ) {
     let count = monitors.len();
     if count == 0 {
+        warn!(%peer_id, "layout sync: announce recebido sem monitores — ignorado");
         return;
     }
     if let Some(s) = store.lock().await.as_ref() {
-        if let Err(err) = s.save_peer_monitors(peer_id, &monitors).await {
-            tracing::warn!(?err, %peer_id, "falha ao persistir monitores do peer");
+        match s.save_peer_monitors(peer_id, &monitors).await {
+            Ok(()) => debug!(%peer_id, count, "layout sync: monitores persistidos no store"),
+            Err(err) => warn!(?err, %peer_id, "layout sync: falha ao persistir monitores do peer"),
         }
+    } else {
+        warn!(%peer_id, "layout sync: kvm layout store não configurado — monitores não persistidos");
     }
     bus.publish(DomainEvent::PeerMonitorsUpdated(PeerMonitorsUpdated {
         peer_id,
         monitor_count: count,
     }));
-    info!(%peer_id, count, "monitores do peer recebidos via sync");
+    info!(
+        %peer_id,
+        count,
+        monitors = %monitors_summary(&monitors),
+        "layout sync: monitores do peer recebidos e publicados"
+    );
 }
 
 async fn handle_layout_payload(deps: &KvmLayoutSyncDeps, peer_id: PeerId, payload: Payload) {
+    let kind = payload_kind(&payload);
+    debug!(%peer_id, payload = kind, "layout sync: frame recebido no handler");
+
     match payload {
         Payload::PeerMonitorsAnnounce(p) => {
             let monitors = rects_from_wire(&p.monitors);
+            info!(
+                %peer_id,
+                count = monitors.len(),
+                monitors = %monitors_summary(&monitors),
+                "layout sync: processando PeerMonitorsAnnounce"
+            );
             store_peer_monitors(&deps.store, &deps.bus, peer_id, monitors.clone()).await;
-            if *deps.enabled.lock().await && *deps.active_peer.lock().await == Some(peer_id) {
+            let input_enabled = *deps.enabled.lock().await;
+            let active = *deps.active_peer.lock().await;
+            if input_enabled && active == Some(peer_id) {
                 let mut current = deps.layout.lock().await;
                 if let Some(ref mut active) = *current {
+                    let was_empty = active.remote_monitors.is_empty();
                     active.remote_monitors = monitors;
-                    active.infer_edges_from_geometry();
-                    let scale = active.remote_mouse_scale();
-                    deps.mouse_send
-                        .scale_q8
-                        .store((scale * 256.0).round() as i32, Ordering::SeqCst);
+                    if was_empty {
+                        active.infer_edges_from_geometry();
+                        let scale = active.remote_mouse_scale();
+                        deps.mouse_send
+                            .scale_q8
+                            .store((scale * 256.0).round() as i32, Ordering::SeqCst);
+                        info!(%peer_id, scale, "layout sync: bordas recalculadas após 1º announce");
+                    } else {
+                        debug!(
+                            %peer_id,
+                            "layout sync: remote_monitors atualizado (bordas preservadas mid-session)"
+                        );
+                    }
                 }
+            } else {
+                debug!(
+                    %peer_id,
+                    input_enabled,
+                    ?active,
+                    "layout sync: monitores persistidos; layout ativo não atualizado (input inativo ou outro peer)"
+                );
             }
         }
         Payload::KvmLayoutShare(wire) => {
             let received = crate::workspace_layout_wire::monitor_layout_from_wire(&wire);
+            info!(
+                %peer_id,
+                local_count = received.local_monitors.len(),
+                remote_count = received.remote_monitors.len(),
+                "layout sync: processando KvmLayoutShare"
+            );
             if !received.local_monitors.is_empty() {
                 store_peer_monitors(
                     &deps.store,
@@ -131,11 +220,17 @@ async fn handle_layout_payload(deps: &KvmLayoutSyncDeps, peer_id: PeerId, payloa
                     deps.mouse_send
                         .scale_q8
                         .store((scale * 256.0).round() as i32, Ordering::SeqCst);
-                    info!(%peer_id, "layout remoto atualizado a partir de KvmLayoutShare");
+                    info!(%peer_id, "layout sync: layout ativo atualizado via KvmLayoutShare");
                 }
             }
         }
-        _ => {}
+        other => {
+            warn!(
+                %peer_id,
+                payload = payload_kind(&other),
+                "layout sync: payload inesperado no handler"
+            );
+        }
     }
 }
 
@@ -161,15 +256,27 @@ pub async fn broadcast_kvm_layout(
     local_monitors: Vec<MonitorRect>,
     layout: &MonitorLayout,
 ) {
-    let _ = clipboard
+    info!(
+        %peer_id,
+        local_count = local_monitors.len(),
+        remote_count = layout.remote_monitors.len(),
+        "layout sync: broadcast após save"
+    );
+    if let Err(err) = clipboard
         .send_data_payload(Payload::PeerMonitorsAnnounce(PeerMonitorsPayload {
             monitors: rects_to_wire(&local_monitors),
         }))
-        .await;
-    let _ = clipboard
+        .await
+    {
+        warn!(?err, %peer_id, "layout sync: falha ao broadcast PeerMonitorsAnnounce");
+    }
+    if let Err(err) = clipboard
         .send_data_payload(Payload::KvmLayoutShare(monitor_layout_to_wire(layout)))
-        .await;
-    let _ = (deps, peer_id);
+        .await
+    {
+        warn!(?err, %peer_id, "layout sync: falha ao broadcast KvmLayoutShare");
+    }
+    let _ = deps;
 }
 
 #[cfg(test)]

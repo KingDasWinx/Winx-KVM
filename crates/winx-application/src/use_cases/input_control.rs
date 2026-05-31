@@ -145,24 +145,49 @@ impl InputControlService {
         *self.layout_sync_deps.lock().await = Some(Arc::clone(&deps));
         deps.register_handler(clipboard.as_ref()).await;
         self.attach_clipboard(clipboard).await;
+        info!("layout sync: deps inicializados e ligados ao clipboard");
     }
 
     pub async fn announce_layout_sync(&self, peer_id: PeerId) -> Result<(), DomainError> {
         let local = self.list_local_monitors().await?;
+        info!(
+            %peer_id,
+            count = local.len(),
+            monitors = %super::kvm_layout_sync::monitors_summary(&local),
+            "layout sync: announce_layout_sync iniciado"
+        );
         let clipboard = self
             .clipboard
             .lock()
             .await
             .clone()
-            .ok_or_else(|| internal_err("clipboard não configurado"))?;
+            .ok_or_else(|| {
+                warn!(%peer_id, "layout sync: clipboard não configurado");
+                internal_err("clipboard não configurado")
+            })?;
+        if !clipboard.is_data_stream_open().await {
+            warn!(
+                %peer_id,
+                "layout sync: stream Data fechado — announce falhará (ordem: clipboard.enable antes de announce)"
+            );
+        }
         let deps = self
             .layout_sync_deps
             .lock()
             .await
             .clone()
-            .ok_or_else(|| internal_err("layout sync não configurado"))?;
+            .ok_or_else(|| {
+                warn!(%peer_id, "layout sync: deps não configurados");
+                internal_err("layout sync não configurado")
+            })?;
         deps.announce_to_peer(clipboard.as_ref(), peer_id, &local)
             .await
+            .map_err(|e| {
+                warn!(?e, %peer_id, "layout sync: announce_layout_sync falhou");
+                e
+            })?;
+        info!(%peer_id, "layout sync: announce_layout_sync concluído");
+        Ok(())
     }
 
     pub async fn attach_kvm_layout_store(&self, store: Arc<dyn KvmLayoutStore>) {
@@ -230,10 +255,9 @@ impl InputControlService {
             self.apply_monitor_layout(layout.clone()).await;
         }
 
-        if let (Some(deps), Some(clipboard)) = (
-            self.layout_sync_deps.lock().await.clone(),
-            self.clipboard.lock().await.clone(),
-        ) {
+        let layout_deps = self.layout_sync_deps.lock().await.clone();
+        let clipboard_svc = self.clipboard.lock().await.clone();
+        if let (Some(deps), Some(clipboard)) = (layout_deps, clipboard_svc) {
             super::kvm_layout_sync::broadcast_kvm_layout(
                 deps.as_ref(),
                 clipboard.as_ref(),
@@ -242,6 +266,11 @@ impl InputControlService {
                 &layout,
             )
             .await;
+        } else {
+            warn!(
+                %peer_id,
+                "layout sync: save concluído mas broadcast omitido (deps ou clipboard ausente)"
+            );
         }
 
         Ok(())
@@ -985,18 +1014,21 @@ async fn handle_local_input(
                         try_edge_switch(
                             screen_x,
                             screen_y,
-                            focus,
-                            layout,
-                            input,
-                            bus,
-                            active,
-                            input_tx,
+                            focus.clone(),
+                            layout.clone(),
+                            input.clone(),
+                            bus.clone(),
+                            active.clone(),
+                            input_tx.clone(),
                             Arc::clone(&remote_cursor_x_est),
                             Arc::clone(&remote_cursor_y_est),
                             workspace_cursor.clone(),
                             remote_switch_grace.clone(),
                         )
                         .await;
+                        if !matches!(focus.lock().await.target, FocusTarget::Local) {
+                            return;
+                        }
                     }
                 }
                 if let Some(bridge) = workspace_cursor.lock().await.as_ref() {
@@ -1016,6 +1048,18 @@ async fn handle_local_input(
                     let scale_q8 = mouse_send.scale_q8.load(Ordering::SeqCst);
                     let scaled_dx = ((i64::from(*dx) * i64::from(scale_q8)) / 256) as i32;
                     let scaled_dy = ((i64::from(*dy) * i64::from(scale_q8)) / 256) as i32;
+                    let in_grace = remote_switch_grace
+                        .lock()
+                        .await
+                        .is_some_and(|t| t.elapsed() < Duration::from_millis(450));
+                    if in_grace {
+                        // Durante grace: envia movimento ao remoto, mas não estima posição
+                        // nem verifica retorno — evita bounce por delta residual da borda.
+                        let mut c = mouse_send.coalesce.lock().await;
+                        c.push(*dx, *dy);
+                        mouse_send.flush_notify.notify_one();
+                        return;
+                    }
                     let go_back = {
                         let layout_guard = layout.lock().await;
                         if let Some(layout_data) = layout_guard.as_ref() {
@@ -1038,11 +1082,7 @@ async fn handle_local_input(
                             false
                         }
                     };
-                    let in_grace = remote_switch_grace
-                        .lock()
-                        .await
-                        .is_some_and(|t| t.elapsed() < Duration::from_millis(450));
-                    if go_back && !in_grace {
+                    if go_back {
                         try_switch_back_to_local(
                             Arc::clone(&focus),
                             Arc::clone(&layout),
@@ -1152,13 +1192,18 @@ async fn try_edge_switch(
 
     let from = current;
     let clip_rect = (clip_x, clip_y, clip_w, clip_h);
+
+    // Grace ANTES de trocar foco — evita race onde o 1º MouseMove remoto dispara go_back.
+    *remote_switch_grace.lock().await = Some(Instant::now());
+
     if let Err(err) = input.transition_to_remote(safe_x, safe_y, clip_rect).await {
         error!(?err, "falha na transição para remoto — mantendo foco local");
+        *remote_switch_grace.lock().await = None;
         let _ = input.set_cursor_clipped(None).await;
         return;
     }
 
-    // 2. Transição LÓGICA de foco — só após sucesso físico
+    // Transição lógica de foco — só após sucesso físico
     switch_focus(
         FocusTarget::Remote(peer),
         from,
@@ -1170,9 +1215,9 @@ async fn try_edge_switch(
     )
     .await;
 
-    *remote_switch_grace.lock().await = Some(Instant::now());
+    input.reset_mouse_delta_baseline();
 
-    // 3. Enviar warp absoluto como primeiro frame para posicionar cursor no receiver
+    // Enviar warp absoluto como primeiro frame para posicionar cursor no receiver
     if let Some(tx) = input_tx.lock().await.as_ref() {
         let warp_ev = InputEvent::MouseWarpAbsolute {
             x: remote_entry.0,
@@ -1270,6 +1315,7 @@ async fn switch_focus(
         FocusTarget::Remote(_) => {
             input.set_pass_through(false);
             input.set_raw_mouse_capture(true);
+            input.reset_mouse_delta_baseline();
         }
     }
 
