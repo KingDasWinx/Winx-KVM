@@ -320,6 +320,15 @@ pub fn reconfigure(exe_path: &Path) -> Result<()> {
             .to_string(),
         ),
         (
+            "Winx-KVM Workspace UDP In",
+            r#"
+            New-NetFirewallRule -DisplayName "Winx-KVM Workspace UDP In" `
+              -Direction Inbound -Action Allow -Protocol UDP `
+              -LocalPort 7880 -Profile Any -Enabled True -ErrorAction Stop
+            "#
+            .to_string(),
+        ),
+        (
             "Winx-KVM Program UDP In",
             format!(
                 r#"

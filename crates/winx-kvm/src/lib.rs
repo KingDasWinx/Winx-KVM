@@ -35,6 +35,7 @@ use winx_infra::{
     ArboardClipboardBackend, KeyringSecretStore, MdnsDiscoveryAdapter, QuicTransportAdapter,
     TomlConfigStore, TomlIdentityStore, TomlWorkspaceStore, UdpPairingTransport,
     UdpWorkspaceInviteTransport, Win32InputBackend, Win32MonitorBackend,
+    RegistryDiscoveryQuery,
 };
 
 use app_state::{
@@ -175,7 +176,7 @@ fn init_services(
         rt.block_on(UdpWorkspaceInviteTransport::bind(WORKSPACE_INVITE_PORT))
             .map_err(|e| std::io::Error::other(e.to_string()))?,
     );
-    let discovery_query = Arc::new(winx_infra::MemoryDiscoveryQuery::new());
+    let discovery_query = Arc::new(RegistryDiscoveryQuery::new(Arc::clone(&registry)));
     let workspace = Arc::new(WorkspaceService::new(
         workspace_store,
         workspace_transport,
