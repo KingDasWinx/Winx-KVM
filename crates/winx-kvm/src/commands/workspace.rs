@@ -2,9 +2,10 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use winx_domain::input_control::layout::MonitorLayout;
 use winx_domain::shared::ids::DeviceId;
+use winx_domain::shared::DomainErrorCode;
 use winx_domain::workspace::{OwnershipMode, WorkspaceId, WorkspaceLayout};
 
-use crate::app_state::WorkspaceState;
+use crate::app_state::{InputControlState, TransportState, WorkspaceState};
 
 #[derive(Debug, Serialize)]
 pub struct WorkspaceDto {
@@ -178,6 +179,42 @@ fn map_err(e: winx_domain::DomainError) -> String {
     serde_json::to_string(&e).unwrap_or_else(|_| e.to_string())
 }
 
+/// Conecta QUIC ao peer remoto do workspace e habilita input control com layout salvo.
+async fn activate_workspace_kvm(
+    ws_state: &WorkspaceState,
+    transport_state: &TransportState,
+    input_state: &InputControlState,
+    ws_id: WorkspaceId,
+) -> Result<(), String> {
+    let ws = ws_state.service.get_workspace(ws_id).await.map_err(map_err)?;
+    let primary = ws_state.service.primary_remote_peer(&ws).ok_or_else(|| {
+        map_err(winx_domain::DomainError::new(
+            DomainErrorCode::InternalError,
+            "workspace has no remote member for KVM",
+        ))
+    })?;
+
+    if !transport_state
+        .transport
+        .is_peer_connected(primary)
+        .await
+    {
+        transport_state
+            .transport
+            .connect_peer(primary)
+            .await
+            .map_err(map_err)?;
+    }
+
+    input_state
+        .input_control
+        .enable_for_peer(primary)
+        .await
+        .map_err(map_err)?;
+
+    Ok(())
+}
+
 fn ws_to_dto(ws: &winx_domain::workspace::Workspace) -> WorkspaceDto {
     let (is_mirror, is_orphan, owner_username) = match &ws.ownership_mode {
         OwnershipMode::Original => (false, false, None),
@@ -302,16 +339,20 @@ pub async fn reject_invite(
 
 #[tauri::command]
 pub async fn connect_to_workspace(
-    state: State<'_, WorkspaceState>,
+    ws_state: State<'_, WorkspaceState>,
+    transport_state: State<'_, TransportState>,
+    input_state: State<'_, InputControlState>,
     workspace_id: String,
 ) -> Result<(), String> {
     let ws_id = parse_workspace_id(&workspace_id)?;
 
-    state
+    ws_state
         .service
         .connect_to_workspace(ws_id)
         .await
-        .map_err(map_err)
+        .map_err(map_err)?;
+
+    activate_workspace_kvm(&ws_state, &transport_state, &input_state, ws_id).await
 }
 
 #[tauri::command]
@@ -325,16 +366,20 @@ pub async fn disconnect_from_workspace(state: State<'_, WorkspaceState>) -> Resu
 
 #[tauri::command]
 pub async fn force_disconnect_and_connect(
-    state: State<'_, WorkspaceState>,
+    ws_state: State<'_, WorkspaceState>,
+    transport_state: State<'_, TransportState>,
+    input_state: State<'_, InputControlState>,
     workspace_id: String,
 ) -> Result<(), String> {
     let ws_id = parse_workspace_id(&workspace_id)?;
 
-    state
+    ws_state
         .service
         .force_disconnect_and_connect(ws_id)
         .await
-        .map_err(map_err)
+        .map_err(map_err)?;
+
+    activate_workspace_kvm(&ws_state, &transport_state, &input_state, ws_id).await
 }
 
 #[tauri::command]
@@ -453,14 +498,15 @@ pub async fn get_workspace_layout(
 
 #[tauri::command]
 pub async fn update_workspace_layout(
-    state: State<'_, WorkspaceState>,
+    ws_state: State<'_, WorkspaceState>,
+    input_state: State<'_, InputControlState>,
     input: UpdateWorkspaceLayoutInput,
 ) -> Result<WorkspaceDto, String> {
     let ws_id = parse_workspace_id(&input.workspace_id)?;
     let device_uuid = parse_device_id(&input.device_id)?;
     let layout = dto_to_layout(input.layout)?;
 
-    let ws = state
+    let ws = ws_state
         .service
         .update_workspace(
             ws_id,
@@ -471,6 +517,12 @@ pub async fn update_workspace_layout(
         )
         .await
         .map_err(map_err)?;
+
+    if ws_state.service.active_workspace_id().await == Some(ws_id) {
+        if let Some(peer) = ws_state.service.primary_remote_peer(&ws) {
+            let _ = input_state.input_control.enable_for_peer(peer).await;
+        }
+    }
 
     Ok(ws_to_dto(&ws))
 }

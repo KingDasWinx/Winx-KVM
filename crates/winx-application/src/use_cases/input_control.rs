@@ -284,15 +284,33 @@ impl InputControlService {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
-    pub async fn enable_for_peer(&self, peer_id: PeerId) -> Result<(), DomainError> {
-        if *self.enabled.lock().await {
-            let active = *self.active_peer.lock().await;
-            if active == Some(peer_id) {
-                return Ok(());
+    /// Atualiza layout/escala sem reiniciar hooks (workspace conectado ou layout editado).
+    pub async fn apply_monitor_layout(&self, layout: MonitorLayout) {
+        let scale = layout.remote_mouse_scale();
+        self.mouse_send
+            .scale_q8
+            .store((scale * 256.0).round() as i32, Ordering::SeqCst);
+        *self.layout.lock().await = Some(layout);
+    }
+
+    async fn resolve_layout_for_peer(
+        &self,
+        peer_id: PeerId,
+        local_monitors: &[winx_domain::input_control::MonitorRect],
+    ) -> MonitorLayout {
+        if let Some(bridge) = self.workspace_cursor.lock().await.as_ref() {
+            if let Some(layout) = bridge
+                .input_layout_for_peer(peer_id, local_monitors.to_vec())
+                .await
+            {
+                return layout;
             }
         }
+        MonitorLayout::default_side_by_side(local_monitors.to_vec(), peer_id)
+    }
 
+    #[allow(clippy::too_many_lines)]
+    pub async fn enable_for_peer(&self, peer_id: PeerId) -> Result<(), DomainError> {
         if !self.transport.is_peer_connected(peer_id).await {
             return Err(DomainError::new(
                 DomainErrorCode::TransportConnectionFailed,
@@ -306,7 +324,16 @@ impl InputControlService {
             .await
             .map_err(|e| internal_err(&e.to_string()))?;
 
-        let layout = MonitorLayout::default_side_by_side(local.clone(), peer_id);
+        let layout = self.resolve_layout_for_peer(peer_id, &local).await;
+
+        if *self.enabled.lock().await {
+            let active = *self.active_peer.lock().await;
+            if active == Some(peer_id) {
+                self.apply_monitor_layout(layout).await;
+                return Ok(());
+            }
+        }
+
         let scale = layout.remote_mouse_scale();
         self.mouse_send
             .scale_q8

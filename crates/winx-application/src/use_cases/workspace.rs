@@ -658,6 +658,55 @@ impl WorkspaceService {
         self.active_workspace.read().await.clone()
     }
 
+    pub async fn get_workspace(&self, id: WorkspaceId) -> Result<Workspace, DomainError> {
+        self.store
+            .find_by_id(id)
+            .await
+            .map_err(|e| DomainError::new(DomainErrorCode::InternalError, e.to_string()))?
+            .ok_or_else(|| DomainError::new(DomainErrorCode::InternalError, "workspace not found"))
+    }
+
+    /// Peer remoto principal para KVM (primeiro membro que não é este device).
+    #[must_use]
+    pub fn primary_remote_peer(&self, ws: &Workspace) -> Option<PeerId> {
+        let local = DeviceId::from_uuid(self.local_device_id);
+        ws.members
+            .iter()
+            .find(|m| m.device_id != local)
+            .map(|m| PeerId::from_uuid(m.device_id.as_uuid()))
+    }
+
+    fn resolve_input_layout(
+        &self,
+        ws: &Workspace,
+        remote_peer: PeerId,
+        local_monitors: Vec<winx_domain::input_control::MonitorRect>,
+    ) -> Option<winx_domain::input_control::MonitorLayout> {
+        use winx_domain::input_control::MonitorLayout;
+
+        let local_device_id = DeviceId::from_uuid(self.local_device_id);
+        let remote_device = DeviceId::from_uuid(remote_peer.as_uuid());
+        if !ws
+            .members
+            .iter()
+            .any(|m| m.device_id == remote_device)
+        {
+            return None;
+        }
+
+        if let Some(saved) = ws.layout.get(local_device_id) {
+            let mut layout = saved.clone();
+            layout.local_monitors = local_monitors;
+            layout.remote_peer = remote_peer;
+            return Some(layout);
+        }
+
+        Some(MonitorLayout::default_side_by_side(
+            local_monitors,
+            remote_peer,
+        ))
+    }
+
     async fn load_workspace_for_cursor(&self, workspace_id: WorkspaceId) -> Option<Workspace> {
         if let Some(ws) = self.cursor_pending.lock().await.get(&workspace_id).cloned() {
             return Some(ws);
@@ -1399,6 +1448,16 @@ impl WorkspaceGlobalCursor for WorkspaceService {
         let workspace_id = self.active_workspace.read().await.clone()?;
         let ws = self.load_workspace_for_cursor(workspace_id).await?;
         Some((ws.global_cursor.x, ws.global_cursor.y))
+    }
+
+    async fn input_layout_for_peer(
+        &self,
+        remote_peer: PeerId,
+        local_monitors: Vec<winx_domain::input_control::MonitorRect>,
+    ) -> Option<winx_domain::input_control::MonitorLayout> {
+        let workspace_id = self.active_workspace.read().await.clone()?;
+        let ws = self.load_workspace_for_cursor(workspace_id).await?;
+        self.resolve_input_layout(&ws, remote_peer, local_monitors)
     }
 }
 
