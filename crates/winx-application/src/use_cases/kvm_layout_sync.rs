@@ -1,54 +1,74 @@
-//! Sync de layout/monitores via stream Data (single connection).
+//! Sync de layout/monitores via stream Data compartilhado com clipboard.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
 
 use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
+use tracing::info;
 use winx_domain::{
     input_control::{events::PeerMonitorsUpdated, MonitorLayout, MonitorRect},
     shared::ids::PeerId,
-    transport::StreamKind,
     DomainEvent,
 };
-use winx_protocol::{encode, Frame, Payload, PeerMonitorsPayload};
+use winx_protocol::{Payload, PeerMonitorsPayload};
 
 use crate::{
     bus::EventBus,
-    ports::{transport::StreamSender, KvmLayoutStore},
+    ports::KvmLayoutStore,
+    use_cases::clipboard::{ClipboardService, LayoutDataHandler},
     workspace_layout_wire::{monitor_layout_to_wire, rects_from_wire, rects_to_wire},
-    use_cases::TransportService,
 };
 
 use super::input_control::MouseSendState;
 
-const LAYOUT_SYNC_WAIT: Duration = Duration::from_secs(6);
-
-async fn send_frame(tx: &StreamSender, payload: Payload) {
-    let frame = Frame::new(payload);
-    if let Ok(bytes) = encode(&frame) {
-        if tx.send(bytes).await.is_err() {
-            warn!("falha ao enviar frame de layout KVM no stream Data");
-        }
-    }
+pub struct KvmLayoutSyncDeps {
+    pub store: Arc<Mutex<Option<Arc<dyn KvmLayoutStore>>>>,
+    pub bus: EventBus,
+    pub layout: Arc<Mutex<Option<MonitorLayout>>>,
+    pub enabled: Arc<Mutex<bool>>,
+    pub active_peer: Arc<Mutex<Option<PeerId>>>,
+    pub mouse_send: Arc<MouseSendState>,
 }
 
-async fn send_announcements(
-    tx: &StreamSender,
-    local_monitors: &[MonitorRect],
-    saved: Option<&MonitorLayout>,
-) {
-    send_frame(
-        tx,
-        Payload::PeerMonitorsAnnounce(PeerMonitorsPayload {
-            monitors: rects_to_wire(local_monitors),
-        }),
-    )
-    .await;
+impl KvmLayoutSyncDeps {
+    pub async fn register_handler(self: Arc<Self>, clipboard: &ClipboardService) {
+        let deps = Arc::clone(&self);
+        let handler: LayoutDataHandler = Arc::new(move |peer_id, payload| {
+            let deps = Arc::clone(&deps);
+            tokio::spawn(async move {
+                handle_layout_payload(&deps, peer_id, payload).await;
+            });
+        });
+        clipboard.set_layout_handler(Some(handler)).await;
+    }
 
-    if let Some(layout) = saved {
-        send_frame(tx, Payload::KvmLayoutShare(monitor_layout_to_wire(layout))).await;
+    pub async fn announce_to_peer(
+        &self,
+        clipboard: &ClipboardService,
+        peer_id: PeerId,
+        local_monitors: &[MonitorRect],
+    ) -> Result<(), winx_domain::DomainError> {
+        let saved = {
+            let guard = self.store.lock().await;
+            if let Some(s) = guard.as_ref() {
+                s.get(peer_id).await.ok().flatten()
+            } else {
+                None
+            }
+        };
+
+        clipboard
+            .send_data_payload(Payload::PeerMonitorsAnnounce(PeerMonitorsPayload {
+                monitors: rects_to_wire(local_monitors),
+            }))
+            .await?;
+
+        if let Some(layout) = saved.as_ref() {
+            clipboard
+                .send_data_payload(Payload::KvmLayoutShare(monitor_layout_to_wire(layout)))
+                .await?;
+        }
+        Ok(())
     }
 }
 
@@ -64,7 +84,7 @@ pub async fn store_peer_monitors(
     }
     if let Some(s) = store.lock().await.as_ref() {
         if let Err(err) = s.save_peer_monitors(peer_id, &monitors).await {
-            warn!(?err, %peer_id, "falha ao persistir monitores do peer");
+            tracing::warn!(?err, %peer_id, "falha ao persistir monitores do peer");
         }
     }
     bus.publish(DomainEvent::PeerMonitorsUpdated(PeerMonitorsUpdated {
@@ -74,143 +94,48 @@ pub async fn store_peer_monitors(
     info!(%peer_id, count, "monitores do peer recebidos via sync");
 }
 
-async fn handle_layout_frame(
-    store: &Arc<Mutex<Option<Arc<dyn KvmLayoutStore>>>>,
-    bus: &EventBus,
-    layout: &Arc<Mutex<Option<MonitorLayout>>>,
-    enabled: &Arc<Mutex<bool>>,
-    active_peer: &Arc<Mutex<Option<PeerId>>>,
-    mouse_send: &Arc<MouseSendState>,
-    peer_id: PeerId,
-    bytes: Vec<u8>,
-) {
-    let Ok(frame) = winx_protocol::decode(&bytes) else {
-        return;
-    };
-    match frame.payload {
+async fn handle_layout_payload(deps: &KvmLayoutSyncDeps, peer_id: PeerId, payload: Payload) {
+    match payload {
         Payload::PeerMonitorsAnnounce(p) => {
             let monitors = rects_from_wire(&p.monitors);
-            store_peer_monitors(store, bus, peer_id, monitors).await;
+            store_peer_monitors(&deps.store, &deps.bus, peer_id, monitors.clone()).await;
+            if *deps.enabled.lock().await && *deps.active_peer.lock().await == Some(peer_id) {
+                let mut current = deps.layout.lock().await;
+                if let Some(ref mut active) = *current {
+                    active.remote_monitors = monitors;
+                    active.infer_edges_from_geometry();
+                    let scale = active.remote_mouse_scale();
+                    deps.mouse_send
+                        .scale_q8
+                        .store((scale * 256.0).round() as i32, Ordering::SeqCst);
+                }
+            }
         }
         Payload::KvmLayoutShare(wire) => {
             let received = crate::workspace_layout_wire::monitor_layout_from_wire(&wire);
             if !received.local_monitors.is_empty() {
                 store_peer_monitors(
-                    store,
-                    bus,
+                    &deps.store,
+                    &deps.bus,
                     peer_id,
                     received.local_monitors.clone(),
                 )
                 .await;
             }
-            if *enabled.lock().await && *active_peer.lock().await == Some(peer_id) {
-                let mut current = layout.lock().await;
+            if *deps.enabled.lock().await && *deps.active_peer.lock().await == Some(peer_id) {
+                let mut current = deps.layout.lock().await;
                 if let Some(ref mut active) = *current {
-                    if active.remote_monitors.is_empty() {
-                        active.remote_monitors = received.local_monitors;
-                        active.infer_edges_from_geometry();
-                        let scale = active.remote_mouse_scale();
-                        mouse_send
-                            .scale_q8
-                            .store((scale * 256.0).round() as i32, Ordering::SeqCst);
-                        info!(%peer_id, "layout remoto atualizado a partir de KvmLayoutShare");
-                    }
+                    active.remote_monitors = received.local_monitors;
+                    active.infer_edges_from_geometry();
+                    let scale = active.remote_mouse_scale();
+                    deps.mouse_send
+                        .scale_q8
+                        .store((scale * 256.0).round() as i32, Ordering::SeqCst);
+                    info!(%peer_id, "layout remoto atualizado a partir de KvmLayoutShare");
                 }
             }
         }
         _ => {}
-    }
-}
-
-async fn recv_layout_loop(
-    store: Arc<Mutex<Option<Arc<dyn KvmLayoutStore>>>>,
-    bus: EventBus,
-    layout: Arc<Mutex<Option<MonitorLayout>>>,
-    enabled: Arc<Mutex<bool>>,
-    active_peer: Arc<Mutex<Option<PeerId>>>,
-    mouse_send: Arc<MouseSendState>,
-    peer_id: PeerId,
-    mut rx: crate::ports::transport::StreamReceiver,
-) {
-    while let Some(bytes) = rx.recv().await {
-        handle_layout_frame(
-            &store,
-            &bus,
-            &layout,
-            &enabled,
-            &active_peer,
-            &mouse_send,
-            peer_id,
-            bytes,
-        )
-        .await;
-    }
-    debug!(%peer_id, "layout sync stream encerrado");
-}
-
-/// Anuncia monitores/layout locais e escuta respostas do peer (stream Data dedicado).
-pub async fn start_kvm_layout_sync(
-    transport: Arc<TransportService>,
-    store: Arc<Mutex<Option<Arc<dyn KvmLayoutStore>>>>,
-    bus: EventBus,
-    layout: Arc<Mutex<Option<MonitorLayout>>>,
-    enabled: Arc<Mutex<bool>>,
-    active_peer: Arc<Mutex<Option<PeerId>>>,
-    mouse_send: Arc<MouseSendState>,
-    peer_id: PeerId,
-    local_monitors: Vec<MonitorRect>,
-) {
-    let saved = {
-        let guard = store.lock().await;
-        if let Some(s) = guard.as_ref() {
-            s.get(peer_id).await.ok().flatten()
-        } else {
-            None
-        }
-    };
-
-    let saved_inbound = saved.clone();
-    let monitors_inbound = local_monitors.clone();
-
-    let store_in = Arc::clone(&store);
-    let bus_in = bus.clone();
-    let layout_in = Arc::clone(&layout);
-    let enabled_in = Arc::clone(&enabled);
-    let active_in = Arc::clone(&active_peer);
-    let mouse_in = Arc::clone(&mouse_send);
-    let transport_in = Arc::clone(&transport);
-    tokio::spawn(async move {
-        if let Some((tx, rx)) = transport_in
-            .wait_inbound_stream(peer_id, StreamKind::Data, LAYOUT_SYNC_WAIT)
-            .await
-        {
-            send_announcements(&tx, &monitors_inbound, saved_inbound.as_ref()).await;
-            recv_layout_loop(
-                store_in,
-                bus_in,
-                layout_in,
-                enabled_in,
-                active_in,
-                mouse_in,
-                peer_id,
-                rx,
-            )
-            .await;
-        }
-    });
-
-    match transport
-        .open_stream_for_peer(peer_id, StreamKind::Data)
-        .await
-    {
-        Ok((tx, rx)) => {
-            send_announcements(&tx, &local_monitors, saved.as_ref()).await;
-            recv_layout_loop(store, bus, layout, enabled, active_peer, mouse_send, peer_id, rx)
-                .await;
-        }
-        Err(err) => {
-            warn!(?err, %peer_id, "falha ao abrir stream Data para layout sync");
-        }
     }
 }
 
@@ -229,21 +154,195 @@ pub async fn get_peer_monitors_from_store(
         .unwrap_or_default()
 }
 
-/// Reenvia layout local ao peer (após salvar no editor).
 pub async fn broadcast_kvm_layout(
-    transport: Arc<TransportService>,
-    _store: Arc<Mutex<Option<Arc<dyn KvmLayoutStore>>>>,
+    deps: &KvmLayoutSyncDeps,
+    clipboard: &ClipboardService,
     peer_id: PeerId,
     local_monitors: Vec<MonitorRect>,
     layout: &MonitorLayout,
 ) {
-    if !transport.is_peer_connected(peer_id).await {
-        return;
+    let _ = clipboard
+        .send_data_payload(Payload::PeerMonitorsAnnounce(PeerMonitorsPayload {
+            monitors: rects_to_wire(&local_monitors),
+        }))
+        .await;
+    let _ = clipboard
+        .send_data_payload(Payload::KvmLayoutShare(monitor_layout_to_wire(layout)))
+        .await;
+    let _ = (deps, peer_id);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicI32, AtomicU64};
+    use std::sync::{Arc, Mutex as StdMutex};
+
+    use tokio::sync::{Mutex, Notify};
+    use uuid::Uuid;
+    use winx_domain::input_control::MonitorId;
+    use winx_protocol::PeerMonitorsPayload;
+
+    use crate::use_cases::{input_control::MouseSendState, mouse_coalesce::MouseCoalescer};
+    use super::*;
+
+    struct MockKvmLayoutStore {
+        peer_monitors: StdMutex<HashMap<PeerId, Vec<MonitorRect>>>,
+        layouts: StdMutex<HashMap<PeerId, MonitorLayout>>,
     }
-    if let Ok((tx, _rx)) = transport
-        .open_stream_for_peer(peer_id, StreamKind::Data)
-        .await
-    {
-        send_announcements(&tx, &local_monitors, Some(layout)).await;
+
+    impl Default for MockKvmLayoutStore {
+        fn default() -> Self {
+            Self {
+                peer_monitors: StdMutex::new(HashMap::new()),
+                layouts: StdMutex::new(HashMap::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl KvmLayoutStore for MockKvmLayoutStore {
+        async fn get(&self, peer_id: PeerId) -> anyhow::Result<Option<MonitorLayout>> {
+            Ok(self.layouts.lock().unwrap().get(&peer_id).cloned())
+        }
+
+        async fn save(&self, peer_id: PeerId, layout: &MonitorLayout) -> anyhow::Result<()> {
+            self.layouts
+                .lock()
+                .unwrap()
+                .insert(peer_id, layout.clone());
+            Ok(())
+        }
+
+        async fn delete(&self, peer_id: PeerId) -> anyhow::Result<()> {
+            self.layouts.lock().unwrap().remove(&peer_id);
+            Ok(())
+        }
+
+        async fn get_peer_monitors(
+            &self,
+            peer_id: PeerId,
+        ) -> anyhow::Result<Option<Vec<MonitorRect>>> {
+            Ok(self.peer_monitors.lock().unwrap().get(&peer_id).cloned())
+        }
+
+        async fn save_peer_monitors(
+            &self,
+            peer_id: PeerId,
+            monitors: &[MonitorRect],
+        ) -> anyhow::Result<()> {
+            self.peer_monitors
+                .lock()
+                .unwrap()
+                .insert(peer_id, monitors.to_vec());
+            Ok(())
+        }
+    }
+
+    fn remote_monitors_pair() -> Vec<MonitorRect> {
+        vec![
+            MonitorRect {
+                id: MonitorId(1),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+            MonitorRect {
+                id: MonitorId(2),
+                x: 1920,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+        ]
+    }
+
+    fn test_deps(
+        peer_id: PeerId,
+        mock: Arc<MockKvmLayoutStore>,
+        bus: EventBus,
+    ) -> KvmLayoutSyncDeps {
+        KvmLayoutSyncDeps {
+            store: Arc::new(Mutex::new(Some(
+                mock as Arc<dyn KvmLayoutStore>
+            ))),
+            bus,
+            layout: Arc::new(Mutex::new(Some(MonitorLayout::default_side_by_side(
+                vec![MonitorRect {
+                    id: MonitorId(10),
+                    x: 0,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                }],
+                peer_id,
+            )))),
+            enabled: Arc::new(Mutex::new(true)),
+            active_peer: Arc::new(Mutex::new(Some(peer_id))),
+            mouse_send: Arc::new(MouseSendState {
+                coalesce: Mutex::new(MouseCoalescer::new()),
+                flush_notify: Notify::new(),
+                scale_q8: AtomicI32::new(256),
+                frames_sent: AtomicU64::new(0),
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn peer_monitors_announce_persists_publishes_and_updates_active_layout() {
+        let peer_id = PeerId::from_uuid(Uuid::new_v4());
+        let monitors = remote_monitors_pair();
+        let mock = Arc::new(MockKvmLayoutStore::default());
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let deps = test_deps(peer_id, Arc::clone(&mock), bus);
+
+        handle_layout_payload(
+            &deps,
+            peer_id,
+            Payload::PeerMonitorsAnnounce(PeerMonitorsPayload {
+                monitors: rects_to_wire(&monitors),
+            }),
+        )
+        .await;
+
+        let saved = mock
+            .peer_monitors
+            .lock()
+            .unwrap()
+            .get(&peer_id)
+            .cloned()
+            .expect("monitores persistidos");
+        assert_eq!(saved.len(), 2);
+        assert_eq!(saved, monitors);
+
+        let evt = rx.recv().await.unwrap();
+        match evt {
+            DomainEvent::PeerMonitorsUpdated(e) => {
+                assert_eq!(e.peer_id, peer_id);
+                assert_eq!(e.monitor_count, 2);
+            }
+            other => panic!("evento inesperado: {other:?}"),
+        }
+
+        let active = deps.layout.lock().await;
+        let active = active.as_ref().expect("layout ativo");
+        assert_eq!(active.remote_monitors.len(), 2);
+        assert_eq!(active.remote_monitors, monitors);
+
+        let mut expected = MonitorLayout::default_side_by_side(
+            vec![MonitorRect {
+                id: MonitorId(10),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            }],
+            peer_id,
+        );
+        expected.remote_monitors = monitors;
+        expected.infer_edges_from_geometry();
+        assert_eq!(active.edge, expected.edge);
     }
 }

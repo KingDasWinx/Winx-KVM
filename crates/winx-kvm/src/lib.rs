@@ -199,6 +199,11 @@ fn init_services(
     rt.block_on(
         input_control.attach_kvm_layout_store(Arc::clone(&kvm_layout_store)),
     );
+    rt.block_on(async {
+        input_control
+            .init_layout_sync(Arc::clone(&clipboard))
+            .await;
+    });
 
     Ok(InitializedServices {
         ensure_device,

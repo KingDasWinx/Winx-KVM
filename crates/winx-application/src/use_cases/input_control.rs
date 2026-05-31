@@ -83,6 +83,8 @@ pub struct InputControlService {
     workspace_cursor: Arc<Mutex<Option<Arc<dyn WorkspaceGlobalCursor>>>>,
     kvm_layout_store: Arc<Mutex<Option<Arc<dyn KvmLayoutStore>>>>,
     remote_switch_grace: Arc<Mutex<Option<Instant>>>,
+    layout_sync_deps: Arc<Mutex<Option<Arc<super::kvm_layout_sync::KvmLayoutSyncDeps>>>>,
+    clipboard: Arc<Mutex<Option<Arc<super::ClipboardService>>>>,
 }
 
 impl InputControlService {
@@ -122,7 +124,45 @@ impl InputControlService {
             workspace_cursor: Arc::new(Mutex::new(None)),
             kvm_layout_store: Arc::new(Mutex::new(None)),
             remote_switch_grace: Arc::new(Mutex::new(None)),
+            layout_sync_deps: Arc::new(Mutex::new(None)),
+            clipboard: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub async fn attach_clipboard(&self, clipboard: Arc<super::ClipboardService>) {
+        *self.clipboard.lock().await = Some(clipboard);
+    }
+
+    pub async fn init_layout_sync(&self, clipboard: Arc<super::ClipboardService>) {
+        let deps = Arc::new(super::kvm_layout_sync::KvmLayoutSyncDeps {
+            store: Arc::clone(&self.kvm_layout_store),
+            bus: self.bus.clone(),
+            layout: Arc::clone(&self.layout),
+            enabled: Arc::clone(&self.enabled),
+            active_peer: Arc::clone(&self.active_peer),
+            mouse_send: Arc::clone(&self.mouse_send),
+        });
+        *self.layout_sync_deps.lock().await = Some(Arc::clone(&deps));
+        deps.register_handler(clipboard.as_ref()).await;
+        self.attach_clipboard(clipboard).await;
+    }
+
+    pub async fn announce_layout_sync(&self, peer_id: PeerId) -> Result<(), DomainError> {
+        let local = self.list_local_monitors().await?;
+        let clipboard = self
+            .clipboard
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| internal_err("clipboard não configurado"))?;
+        let deps = self
+            .layout_sync_deps
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| internal_err("layout sync não configurado"))?;
+        deps.announce_to_peer(clipboard.as_ref(), peer_id, &local)
+            .await
     }
 
     pub async fn attach_kvm_layout_store(&self, store: Arc<dyn KvmLayoutStore>) {
@@ -190,14 +230,19 @@ impl InputControlService {
             self.apply_monitor_layout(layout.clone()).await;
         }
 
-        super::kvm_layout_sync::broadcast_kvm_layout(
-            Arc::clone(&self.transport),
-            Arc::clone(&self.kvm_layout_store),
-            peer_id,
-            local.clone(),
-            &layout,
-        )
-        .await;
+        if let (Some(deps), Some(clipboard)) = (
+            self.layout_sync_deps.lock().await.clone(),
+            self.clipboard.lock().await.clone(),
+        ) {
+            super::kvm_layout_sync::broadcast_kvm_layout(
+                deps.as_ref(),
+                clipboard.as_ref(),
+                peer_id,
+                local,
+                &layout,
+            )
+            .await;
+        }
 
         Ok(())
     }
@@ -576,19 +621,6 @@ impl InputControlService {
         FIRST_INJECT.store(true, Ordering::SeqCst);
         self.remote_cursor_x_est.store(0, Ordering::SeqCst);
         self.remote_cursor_y_est.store(0, Ordering::SeqCst);
-
-        let local_for_sync = local.clone();
-        tokio::spawn(super::kvm_layout_sync::start_kvm_layout_sync(
-            Arc::clone(&self.transport),
-            Arc::clone(&self.kvm_layout_store),
-            self.bus.clone(),
-            Arc::clone(&self.layout),
-            Arc::clone(&self.enabled),
-            Arc::clone(&self.active_peer),
-            Arc::clone(&self.mouse_send),
-            peer_id,
-            local_for_sync,
-        ));
 
         let inject_input = Arc::clone(&self.input);
         let remote_frames = Arc::clone(&self.remote_frames_received);
@@ -987,12 +1019,15 @@ async fn handle_local_input(
                     let go_back = {
                         let layout_guard = layout.lock().await;
                         if let Some(layout_data) = layout_guard.as_ref() {
-                            let remote_w = layout_data.remote_virtual.width as i32;
-                            let remote_h = layout_data.remote_virtual.height as i32;
+                            let remote_bounds = layout_data.placed_remote_bounds();
+                            let remote_w = remote_bounds.width as i32;
+                            let remote_h = remote_bounds.height as i32;
+                            let max_x = remote_w.saturating_sub(1);
+                            let max_y = remote_h.saturating_sub(1);
                             let old_x = remote_cursor_x_est.load(Ordering::SeqCst);
                             let old_y = remote_cursor_y_est.load(Ordering::SeqCst);
-                            let new_x = (old_x + scaled_dx).clamp(0, remote_w);
-                            let new_y = (old_y + scaled_dy).clamp(0, remote_h);
+                            let new_x = (old_x + scaled_dx).clamp(0, max_x);
+                            let new_y = (old_y + scaled_dy).clamp(0, max_y);
                             remote_cursor_x_est.store(new_x, Ordering::SeqCst);
                             remote_cursor_y_est.store(new_y, Ordering::SeqCst);
                             should_return_to_local(
@@ -1332,7 +1367,7 @@ mod tests {
         ));
 
         try_edge_switch(
-            1920,
+            1919,
             540,
             Arc::clone(&svc.focus),
             Arc::clone(&svc.layout),
@@ -1343,6 +1378,7 @@ mod tests {
             Arc::new(AtomicI32::new(0)),
             Arc::new(AtomicI32::new(0)),
             Arc::clone(&svc.workspace_cursor),
+            Arc::clone(&svc.remote_switch_grace),
         )
         .await;
 
@@ -1373,7 +1409,7 @@ mod tests {
         let input_tx = Arc::new(Mutex::new(None));
 
         try_edge_switch(
-            1920,
+            1919,
             540,
             Arc::clone(&focus),
             Arc::clone(&layout),
@@ -1383,6 +1419,7 @@ mod tests {
             input_tx,
             Arc::new(AtomicI32::new(0)),
             Arc::new(AtomicI32::new(0)),
+            Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(None)),
         )
         .await;

@@ -88,14 +88,19 @@ pub async fn open_connection(
         .connect_peer(pid, None)
         .await
         .map_err(map_err)?;
+    clipboard
+        .clipboard
+        .enable_for_peer(pid)
+        .await
+        .map_err(map_err)?;
     input
         .input_control
         .enable_for_peer(pid)
         .await
         .map_err(map_err)?;
-    clipboard
-        .clipboard
-        .enable_for_peer(pid)
+    input
+        .input_control
+        .announce_layout_sync(pid)
         .await
         .map_err(map_err)?;
     Ok(())

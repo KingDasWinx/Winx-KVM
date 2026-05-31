@@ -48,8 +48,9 @@ pub struct RemoteCursorEst {
 /// (mesma borda por onde entrou no remoto).
 #[must_use]
 pub fn should_return_to_local(est: RemoteCursorEst, layout: &MonitorLayout) -> bool {
-    let w = layout.remote_virtual.width as i32;
-    let h = layout.remote_virtual.height as i32;
+    let remote = layout.placed_remote_bounds();
+    let w = remote.width as i32;
+    let h = remote.height as i32;
     match layout.edge.remote_entry {
         BorderSide::Left => est.x <= EDGE_TOLERANCE_PX,
         BorderSide::Right => est.x >= w.saturating_sub(EDGE_TOLERANCE_PX),
@@ -169,15 +170,30 @@ mod tests {
     }
 
     #[test]
-    fn return_triggers_at_right_edge_when_remote_entry_is_right() {
-        let mut layout = layout_1920();
-        layout.remote_virtual.x = -1920;
+    fn return_does_not_trigger_at_bottom_entry_inset() {
+        let peer = PeerId::from_uuid(Uuid::new_v4());
+        let mut layout = MonitorLayout::default_side_by_side(
+            vec![MonitorRect {
+                id: MonitorId(1),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            }],
+            peer,
+        );
+        layout.remote_virtual.x = 0;
+        layout.remote_virtual.y = -1080;
         layout.infer_edges_from_geometry();
-        assert_eq!(layout.edge.local_exit, BorderSide::Left);
-        assert_eq!(layout.edge.remote_entry, BorderSide::Right);
-        let est = |x| RemoteCursorEst { x, y: 540 };
-        assert!(should_return_to_local(est(1918), &layout));
-        assert!(should_return_to_local(est(1920), &layout));
-        assert!(!should_return_to_local(est(100), &layout));
+        assert_eq!(layout.edge.local_exit, BorderSide::Top);
+        assert_eq!(layout.edge.remote_entry, BorderSide::Bottom);
+
+        let (_, entry_y) = layout.map_crossing_point(960, 0);
+        assert_eq!(entry_y, 1080 - REMOTE_ENTRY_INSET_PX);
+
+        let est = |y| RemoteCursorEst { x: 960, y };
+        assert!(!should_return_to_local(est(entry_y), &layout));
+        assert!(!should_return_to_local(est(entry_y + 17), &layout));
+        assert!(should_return_to_local(est(1078), &layout));
     }
 }

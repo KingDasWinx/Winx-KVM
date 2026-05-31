@@ -99,23 +99,17 @@ async fn activate_workspace_kvm(
         ))
     })?;
 
-    if !transport_state
+    transport_state
         .transport
-        .is_peer_connected(primary)
+        .connect_peer(primary, Some(ws_id.as_uuid()))
         .await
-    {
-        transport_state
-            .transport
-            .connect_peer(primary, Some(ws_id.as_uuid()))
-            .await
-            .map_err(map_err)?;
-    } else {
-        transport_state
-            .transport
-            .connect_peer(primary, Some(ws_id.as_uuid()))
-            .await
-            .map_err(map_err)?;
-    }
+        .map_err(map_err)?;
+
+    clipboard_state
+        .clipboard
+        .enable_for_peer(primary)
+        .await
+        .map_err(map_err)?;
 
     input_state
         .input_control
@@ -123,9 +117,9 @@ async fn activate_workspace_kvm(
         .await
         .map_err(map_err)?;
 
-    clipboard_state
-        .clipboard
-        .enable_for_peer(primary)
+    input_state
+        .input_control
+        .announce_layout_sync(primary)
         .await
         .map_err(map_err)?;
 

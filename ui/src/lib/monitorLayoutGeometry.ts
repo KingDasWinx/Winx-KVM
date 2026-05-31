@@ -159,15 +159,7 @@ export function buildDefaultLayout(
       width,
       height,
     };
-    remoteList = [
-      {
-        id: REMOTE_MONITOR_ID,
-        x: 0,
-        y: 0,
-        width,
-        height,
-      },
-    ];
+    remoteList = [];
   }
 
   return inferEdgesFromGeometry({

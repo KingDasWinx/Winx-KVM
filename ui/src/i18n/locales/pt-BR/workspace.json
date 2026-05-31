@@ -85,6 +85,7 @@
     "saveButton": "Salvar layout",
     "loading": "Carregando layout…",
     "noRemoteMember": "Adicione um membro remoto para configurar o layout.",
+    "syncPending": "Monitores remotos ainda não sincronizados — conecte a este peer, aguarde alguns segundos e reabra.",
     "loadErrorTitle": "Falha ao carregar layout",
     "loadErrorMessage": "Não foi possível carregar o layout do workspace",
     "saveErrorTitle": "Falha ao salvar layout",

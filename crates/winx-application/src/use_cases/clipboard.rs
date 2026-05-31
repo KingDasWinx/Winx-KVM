@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -11,6 +12,7 @@ use winx_domain::{
     shared::{ids::PeerId, DomainError, DomainErrorCode, DomainEvent},
     transport::StreamKind,
 };
+use winx_protocol::{encode, Frame, Payload};
 
 use crate::{
     bus::EventBus,
@@ -20,7 +22,12 @@ use crate::{
 };
 
 const POLL_MS: u64 = 200;
+const DATA_STREAM_WAIT: Duration = Duration::from_secs(8);
 
+/// Handler opcional para frames de layout KVM no mesmo stream Data do clipboard.
+pub type LayoutDataHandler = Arc<dyn Fn(PeerId, Payload) + Send + Sync>;
+
+#[derive(Clone)]
 pub struct ClipboardService {
     clipboard: Arc<dyn ClipboardBackend>,
     transport: Arc<TransportService>,
@@ -33,6 +40,7 @@ pub struct ClipboardService {
     last_applied_hash: Arc<Mutex<Option<ContentHash>>>,
     suppress_local_emit: Arc<AtomicBool>,
     watcher: Arc<Mutex<Option<ClipboardWatcherHandle>>>,
+    layout_handler: Arc<Mutex<Option<LayoutDataHandler>>>,
 }
 
 impl ClipboardService {
@@ -55,7 +63,29 @@ impl ClipboardService {
             last_applied_hash: Arc::new(Mutex::new(None)),
             suppress_local_emit: Arc::new(AtomicBool::new(false)),
             watcher: Arc::new(Mutex::new(None)),
+            layout_handler: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub async fn set_layout_handler(&self, handler: Option<LayoutDataHandler>) {
+        *self.layout_handler.lock().await = handler;
+    }
+
+    /// Envia um frame arbitrário no stream Data compartilhado (layout KVM, etc.).
+    pub async fn send_data_payload(&self, payload: Payload) -> Result<(), DomainError> {
+        let guard = self.data_tx.lock().await;
+        let Some(tx) = guard.as_ref() else {
+            return Err(DomainError::new(
+                DomainErrorCode::TransportConnectionFailed,
+                "stream Data não aberto",
+            ));
+        };
+        let frame = Frame::new(payload);
+        let bytes = encode(&frame).map_err(|e| internal_err(&e.to_string()))?;
+        tx.send(bytes)
+            .await
+            .map_err(|_| internal_err("falha ao enviar no stream Data"))?;
+        Ok(())
     }
 
     pub async fn get_auto_sync(&self) -> bool {
@@ -76,10 +106,21 @@ impl ClipboardService {
 
         *self.active_peer.lock().await = Some(peer_id);
 
-        let (tx, mut rx) = self
-            .transport
-            .open_stream_for_peer(peer_id, StreamKind::Data)
-            .await?;
+        let (tx, mut rx) = if self.transport.is_peer_outbound(peer_id).await {
+            self.transport
+                .open_stream_for_peer(peer_id, StreamKind::Data)
+                .await?
+        } else {
+            self.transport
+                .wait_inbound_stream(peer_id, StreamKind::Data, DATA_STREAM_WAIT)
+                .await
+                .ok_or_else(|| {
+                    DomainError::new(
+                        DomainErrorCode::TransportConnectionFailed,
+                        "stream Data inbound não recebido a tempo",
+                    )
+                })?
+        };
         *self.data_tx.lock().await = Some(tx);
 
         let clipboard_recv = Arc::clone(&self.clipboard);
@@ -87,25 +128,41 @@ impl ClipboardService {
         let last_applied = Arc::clone(&self.last_applied_hash);
         let suppress = Arc::clone(&self.suppress_local_emit);
         let bus_recv = self.bus.clone();
+        let layout_handler = Arc::clone(&self.layout_handler);
 
         tokio::spawn(async move {
             while let Some(bytes) = rx.recv().await {
-                if let Ok(frame) = winx_protocol::decode(&bytes) {
-                    if let winx_protocol::Payload::Clipboard(p) = frame.payload {
-                        if let Err(err) = handle_remote_payload(
-                            &p,
-                            local_peer,
-                            &clipboard_recv,
-                            &last_applied,
-                            &suppress,
-                            &bus_recv,
-                            peer_id,
-                        )
-                        .await
-                        {
-                            warn!(?err, "falha ao aplicar clipboard remoto");
+                match winx_protocol::decode(&bytes) {
+                    Ok(frame) => match frame.payload {
+                        winx_protocol::Payload::Clipboard(p) => {
+                            if let Err(err) = handle_remote_payload(
+                                &p,
+                                local_peer,
+                                &clipboard_recv,
+                                &last_applied,
+                                &suppress,
+                                &bus_recv,
+                                peer_id,
+                            )
+                            .await
+                            {
+                                warn!(?err, "falha ao aplicar clipboard remoto");
+                            }
                         }
-                    }
+                        ref layout_payload
+                            if matches!(
+                                layout_payload,
+                                Payload::PeerMonitorsAnnounce(_)
+                                    | Payload::KvmLayoutShare(_)
+                            ) =>
+                        {
+                            if let Some(handler) = layout_handler.lock().await.as_ref() {
+                                handler(peer_id, layout_payload.clone());
+                            }
+                        }
+                        _ => {}
+                    },
+                    Err(err) => warn!(?err, %peer_id, "frame Data inválido"),
                 }
             }
         });

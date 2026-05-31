@@ -341,6 +341,10 @@ export default function MonitorLayoutModal({
 
             <Text size="xs" c="dimmed">{t('layoutEditor.panZoomHint')}</Text>
 
+            {!layout.remote_monitors?.length && (
+              <Text size="sm" c="yellow">{t('layoutEditor.syncPending')}</Text>
+            )}
+
             <Box
               ref={viewportRef}
               className={`${classes.viewport} ${panning ? classes.viewportPanning : ''}`}
