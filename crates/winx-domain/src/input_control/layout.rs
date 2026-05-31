@@ -14,11 +14,13 @@ pub enum BorderSide {
 }
 
 /// Descreve por qual borda local o cursor sai e por qual borda remota entra.
-/// Permite layouts futuros configuráveis (remoto acima, abaixo, etc.).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EdgeConfig {
     pub local_exit: BorderSide,
     pub remote_entry: BorderSide,
+    /// Monitor local cuja borda encosta no bloco remoto no layout virtual.
+    #[serde(default)]
+    pub exit_local_monitor_id: Option<MonitorId>,
 }
 
 impl Default for EdgeConfig {
@@ -26,19 +28,26 @@ impl Default for EdgeConfig {
         Self {
             local_exit: BorderSide::Right,
             remote_entry: BorderSide::Left,
+            exit_local_monitor_id: None,
         }
     }
 }
 
-/// Layout virtual lado-a-lado: monitores locais + um monitor representando o peer remoto.
+/// Layout virtual: monitores locais + bloco remoto posicionável no desktop virtual.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MonitorLayout {
     pub local_monitors: Vec<MonitorRect>,
     pub remote_peer: PeerId,
+    /// Retângulo envolvente do bloco remoto no espaço virtual compartilhado.
     pub remote_virtual: MonitorRect,
-    /// Configuração de qual borda local conecta ao remoto. Default: Right→Left.
+    /// Monitores reais do peer remoto (coordenadas Windows dele). Vazio = um monitor virtual.
+    #[serde(default)]
+    pub remote_monitors: Vec<MonitorRect>,
     pub edge: EdgeConfig,
 }
+
+/// Tolerância de encostar (px) ao inferir adjacência no editor.
+const ADJACENCY_GAP_PX: i32 = 80;
 
 impl MonitorLayout {
     /// Coloca o peer remoto à direita do monitor local mais à direita (v0.1).
@@ -71,8 +80,168 @@ impl MonitorLayout {
             local_monitors: local,
             remote_peer,
             remote_virtual,
+            remote_monitors: Vec::new(),
             edge: EdgeConfig::default(),
         }
+    }
+
+    /// Monitor local de saída configurado (fallback: envolvente).
+    #[must_use]
+    pub fn exit_local_monitor(&self) -> MonitorRect {
+        if let Some(id) = self.edge.exit_local_monitor_id {
+            if let Some(m) = self.local_monitors.iter().find(|m| m.id == id) {
+                return *m;
+            }
+        }
+        self.local_union_bounds()
+    }
+
+    /// Monitores remotos posicionados no espaço virtual (origem = `remote_virtual`).
+    #[must_use]
+    pub fn placed_remote_monitors(&self) -> Vec<MonitorRect> {
+        if self.remote_monitors.is_empty() {
+            return vec![self.remote_virtual];
+        }
+        let min_x = self
+            .remote_monitors
+            .iter()
+            .map(|m| m.x)
+            .min()
+            .unwrap_or(0);
+        let min_y = self
+            .remote_monitors
+            .iter()
+            .map(|m| m.y)
+            .min()
+            .unwrap_or(0);
+        let ox = self.remote_virtual.x;
+        let oy = self.remote_virtual.y;
+        self.remote_monitors
+            .iter()
+            .map(|m| MonitorRect {
+                id: m.id,
+                x: m.x - min_x + ox,
+                y: m.y - min_y + oy,
+                width: m.width,
+                height: m.height,
+            })
+            .collect()
+    }
+
+    /// Envelope do bloco remoto posicionado.
+    #[must_use]
+    pub fn placed_remote_bounds(&self) -> MonitorRect {
+        let placed = self.placed_remote_monitors();
+        let Some(first) = placed.first() else {
+            return self.remote_virtual;
+        };
+        let mut min_x = first.x;
+        let mut min_y = first.y;
+        let mut max_r = first.right_edge();
+        let mut max_b = first.bottom_edge();
+        for m in placed.iter().skip(1) {
+            min_x = min_x.min(m.x);
+            min_y = min_y.min(m.y);
+            max_r = max_r.max(m.right_edge());
+            max_b = max_b.max(m.bottom_edge());
+        }
+        MonitorRect {
+            id: MonitorId(0xFFFF),
+            x: min_x,
+            y: min_y,
+            width: (max_r - min_x).max(1) as u32,
+            height: (max_b - min_y).max(1) as u32,
+        }
+    }
+
+    fn overlap_1d(a0: i32, a1: i32, b0: i32, b1: i32) -> i32 {
+        (a1.min(b1) - a0.max(b0)).max(0)
+    }
+
+    /// Encontra o par monitor-local ↔ borda com melhor adjacência ao bloco remoto.
+    fn find_adjacent_edge(
+        locals: &[MonitorRect],
+        remote: MonitorRect,
+    ) -> (MonitorId, BorderSide, BorderSide) {
+        let mut best: Option<(MonitorId, BorderSide, BorderSide, i32)> = None;
+
+        let consider = |best: &mut Option<(MonitorId, BorderSide, BorderSide, i32)>,
+                        id: MonitorId,
+                        local_exit: BorderSide,
+                        remote_entry: BorderSide,
+                        gap: i32,
+                        overlap: i32| {
+            if overlap <= 0 {
+                return;
+            }
+            if gap.abs() > ADJACENCY_GAP_PX {
+                return;
+            }
+            // Menor gap e maior overlap ganham.
+            let score = gap.abs() * 10_000 - overlap;
+            if best.map_or(true, |(_, _, _, s)| score < s) {
+                *best = Some((id, local_exit, remote_entry, score));
+            }
+        };
+
+        for local in locals {
+            let overlap_y =
+                Self::overlap_1d(local.y, local.bottom_edge(), remote.y, remote.bottom_edge());
+            let gap_right = remote.x - local.right_edge();
+            consider(
+                &mut best,
+                local.id,
+                BorderSide::Right,
+                BorderSide::Left,
+                gap_right,
+                overlap_y,
+            );
+
+            let gap_left = local.x - remote.right_edge();
+            consider(
+                &mut best,
+                local.id,
+                BorderSide::Left,
+                BorderSide::Right,
+                gap_left,
+                overlap_y,
+            );
+
+            let overlap_x = Self::overlap_1d(
+                local.x,
+                local.right_edge(),
+                remote.x,
+                remote.right_edge(),
+            );
+            let gap_bottom = remote.y - local.bottom_edge();
+            consider(
+                &mut best,
+                local.id,
+                BorderSide::Bottom,
+                BorderSide::Top,
+                gap_bottom,
+                overlap_x,
+            );
+
+            let gap_top = local.y - remote.bottom_edge();
+            consider(
+                &mut best,
+                local.id,
+                BorderSide::Top,
+                BorderSide::Bottom,
+                gap_top,
+                overlap_x,
+            );
+        }
+
+        best.map(|(id, le, re, _)| (id, le, re)).unwrap_or((
+            locals
+                .first()
+                .map(|m| m.id)
+                .unwrap_or(MonitorId(1)),
+            BorderSide::Right,
+            BorderSide::Left,
+        ))
     }
 
     /// Fator de escala sugerido para mouse remoto (clamp 0.5–2.0).
@@ -111,45 +280,27 @@ impl MonitorLayout {
         self.remote_virtual.x
     }
 
-    /// Coordenada da borda local de saída (eixo X para Right/Left, Y para Top/Bottom).
+    /// Coordenada da borda local de saída no monitor de crossing.
     #[must_use]
     pub fn local_exit_edge_coord(&self) -> i32 {
+        let m = self.exit_local_monitor();
         match self.edge.local_exit {
-            BorderSide::Right => self
-                .local_monitors
-                .iter()
-                .map(MonitorRect::right_edge)
-                .max()
-                .unwrap_or(0),
-            BorderSide::Left => self.local_monitors.iter().map(|m| m.x).min().unwrap_or(0),
-            BorderSide::Bottom => self
-                .local_monitors
-                .iter()
-                .map(MonitorRect::bottom_edge)
-                .max()
-                .unwrap_or(0),
-            BorderSide::Top => self.local_monitors.iter().map(|m| m.y).min().unwrap_or(0),
+            BorderSide::Right => m.right_edge(),
+            BorderSide::Left => m.x,
+            BorderSide::Bottom => m.bottom_edge(),
+            BorderSide::Top => m.y,
         }
     }
 
-    /// Coordenada da borda local de retorno (oposta à saída).
+    /// Coordenada da borda local de retorno (oposta à saída, no monitor de crossing).
     #[must_use]
     pub fn local_return_edge_coord(&self) -> i32 {
+        let m = self.exit_local_monitor();
         match self.edge.local_exit {
-            BorderSide::Right => self.local_monitors.iter().map(|m| m.x).min().unwrap_or(0),
-            BorderSide::Left => self
-                .local_monitors
-                .iter()
-                .map(MonitorRect::right_edge)
-                .max()
-                .unwrap_or(0),
-            BorderSide::Bottom => self.local_monitors.iter().map(|m| m.y).min().unwrap_or(0),
-            BorderSide::Top => self
-                .local_monitors
-                .iter()
-                .map(MonitorRect::bottom_edge)
-                .max()
-                .unwrap_or(0),
+            BorderSide::Right => m.x,
+            BorderSide::Left => m.right_edge(),
+            BorderSide::Bottom => m.y,
+            BorderSide::Top => m.bottom_edge(),
         }
     }
 
@@ -157,8 +308,8 @@ impl MonitorLayout {
     /// preservando a posição proporcional no eixo perpendicular à borda cruzada.
     #[must_use]
     pub fn map_crossing_point(&self, screen_x: i32, screen_y: i32) -> (i32, i32) {
-        let local = self.local_monitor_at(screen_x, screen_y);
-        let remote = &self.remote_virtual;
+        let local = self.exit_local_monitor();
+        let remote = self.placed_remote_bounds();
 
         match self.edge.local_exit {
             BorderSide::Right | BorderSide::Left => {
@@ -238,42 +389,15 @@ impl MonitorLayout {
             .unwrap_or_else(|| self.local_union_bounds())
     }
 
-    /// Infere `edge` a partir da posição de `remote_virtual` em relação aos monitores locais.
+    /// Infere bordas a partir da adjacência real entre monitores locais e o bloco remoto.
     pub fn infer_edges_from_geometry(&mut self) {
-        let bounds = self.local_union_bounds();
-        let local_l = bounds.x;
-        let local_t = bounds.y;
-        let rv = &self.remote_virtual;
-        let remote_cx = rv.x + i32::try_from(rv.width).unwrap_or(0) / 2;
-        let remote_cy = rv.y + i32::try_from(rv.height).unwrap_or(0) / 2;
-        let local_cx = local_l + i32::try_from(bounds.width).unwrap_or(0) / 2;
-        let local_cy = local_t + i32::try_from(bounds.height).unwrap_or(0) / 2;
-
-        let dx = remote_cx - local_cx;
-        let dy = remote_cy - local_cy;
-
-        self.edge = if dx.abs() >= dy.abs() {
-            if dx >= 0 {
-                EdgeConfig {
-                    local_exit: BorderSide::Right,
-                    remote_entry: BorderSide::Left,
-                }
-            } else {
-                EdgeConfig {
-                    local_exit: BorderSide::Left,
-                    remote_entry: BorderSide::Right,
-                }
-            }
-        } else if dy >= 0 {
-            EdgeConfig {
-                local_exit: BorderSide::Bottom,
-                remote_entry: BorderSide::Top,
-            }
-        } else {
-            EdgeConfig {
-                local_exit: BorderSide::Top,
-                remote_entry: BorderSide::Bottom,
-            }
+        let remote = self.placed_remote_bounds();
+        let (id, local_exit, remote_entry) =
+            Self::find_adjacent_edge(&self.local_monitors, remote);
+        self.edge = EdgeConfig {
+            local_exit,
+            remote_entry,
+            exit_local_monitor_id: Some(id),
         };
     }
 
@@ -287,22 +411,22 @@ impl MonitorLayout {
     /// Ponto de warp ao retornar do controle remoto para o desktop local.
     #[must_use]
     pub fn local_return_warp_point(&self) -> (i32, i32) {
-        let bounds = self.local_union_bounds();
+        let m = self.exit_local_monitor();
         match self.edge.local_exit {
             BorderSide::Right => (
                 self.local_return_edge_coord().saturating_sub(4),
-                bounds.y + i32::try_from(bounds.height).unwrap_or(1080) / 2,
+                m.y + i32::try_from(m.height).unwrap_or(1080) / 2,
             ),
             BorderSide::Left => (
                 self.local_return_edge_coord().saturating_add(4),
-                bounds.y + i32::try_from(bounds.height).unwrap_or(1080) / 2,
+                m.y + i32::try_from(m.height).unwrap_or(1080) / 2,
             ),
             BorderSide::Bottom => (
-                bounds.x + i32::try_from(bounds.width).unwrap_or(1920) / 2,
+                m.x + i32::try_from(m.width).unwrap_or(1920) / 2,
                 self.local_return_edge_coord().saturating_sub(4),
             ),
             BorderSide::Top => (
-                bounds.x + i32::try_from(bounds.width).unwrap_or(1920) / 2,
+                m.x + i32::try_from(m.width).unwrap_or(1920) / 2,
                 self.local_return_edge_coord().saturating_add(4),
             ),
         }
@@ -311,10 +435,7 @@ impl MonitorLayout {
     /// Retângulo de clip do monitor local enquanto controla o remoto.
     #[must_use]
     pub fn local_clip_rect_while_remote(&self) -> (i32, i32, u32, u32) {
-        let m = self.local_monitor_at(
-            self.local_return_edge_coord(),
-            self.local_union_bounds().y,
-        );
+        let m = self.exit_local_monitor();
         (m.x, m.y, m.width, m.height)
     }
 }
@@ -427,10 +548,65 @@ mod tests {
                 width: 1920,
                 height: 1080,
             },
+            remote_monitors: Vec::new(),
             edge: EdgeConfig::default(),
         };
         layout.infer_edges_from_geometry();
         assert_eq!(layout.edge.local_exit, BorderSide::Left);
         assert_eq!(layout.edge.remote_entry, BorderSide::Right);
+        assert_eq!(layout.edge.exit_local_monitor_id, Some(MonitorId(1)));
+    }
+
+    #[test]
+    fn dual_local_only_rightmost_monitor_is_exit() {
+        let peer = PeerId::from_uuid(Uuid::new_v4());
+        let mut layout = MonitorLayout {
+            local_monitors: vec![
+                MonitorRect {
+                    id: MonitorId(1),
+                    x: 0,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                },
+                MonitorRect {
+                    id: MonitorId(2),
+                    x: 1920,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                },
+            ],
+            remote_peer: peer,
+            remote_virtual: MonitorRect {
+                id: MonitorId(0xFFFF),
+                x: 3840,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+            remote_monitors: Vec::new(),
+            edge: EdgeConfig::default(),
+        };
+        layout.infer_edges_from_geometry();
+        assert_eq!(layout.edge.exit_local_monitor_id, Some(MonitorId(2)));
+
+        use crate::input_control::edge::{should_switch_to_remote, EdgeDetectInput};
+        assert!(!should_switch_to_remote(
+            EdgeDetectInput {
+                screen_x: 1919,
+                screen_y: 540,
+                lock_mode: false,
+            },
+            &layout,
+        ));
+        assert!(should_switch_to_remote(
+            EdgeDetectInput {
+                screen_x: 3839,
+                screen_y: 540,
+                lock_mode: false,
+            },
+            &layout,
+        ));
     }
 }

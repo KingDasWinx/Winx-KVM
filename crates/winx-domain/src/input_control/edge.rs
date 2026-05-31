@@ -17,6 +17,14 @@ pub fn should_switch_to_remote(input: EdgeDetectInput, layout: &MonitorLayout) -
     if input.lock_mode {
         return false;
     }
+    let exit = layout.exit_local_monitor();
+    if input.screen_x < exit.x
+        || input.screen_x >= exit.right_edge()
+        || input.screen_y < exit.y
+        || input.screen_y >= exit.bottom_edge()
+    {
+        return false;
+    }
     let edge = layout.local_exit_edge_coord();
     match layout.edge.local_exit {
         BorderSide::Right => input.screen_x >= edge.saturating_sub(EDGE_TOLERANCE_PX),

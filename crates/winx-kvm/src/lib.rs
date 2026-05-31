@@ -490,6 +490,7 @@ pub fn run() {
             commands::enable_input_control,
             commands::list_local_monitors,
             commands::get_kvm_layout,
+            commands::get_peer_monitors,
             commands::update_kvm_layout,
             commands::run_connectivity_suite,
             commands::start_keyboard_mirror_test,

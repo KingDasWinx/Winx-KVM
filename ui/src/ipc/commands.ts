@@ -329,12 +329,14 @@ export interface MonitorRectDto {
 export interface EdgeConfigDto {
   local_exit: string;
   remote_entry: string;
+  exit_local_monitor_id?: number;
 }
 
 export interface MonitorLayoutDto {
   local_monitors: MonitorRectDto[];
   remote_peer: string;
   remote_virtual: MonitorRectDto;
+  remote_monitors?: MonitorRectDto[];
   edge: EdgeConfigDto;
 }
 
@@ -366,6 +368,13 @@ export async function listLocalMonitors(): Promise<MonitorRectDto[]> {
 
 export async function getKvmLayout(peerId: string): Promise<MonitorLayoutDto | null> {
   return invoke('get_kvm_layout', { peerId });
+}
+
+export async function getPeerMonitors(
+  peerId: string,
+  workspaceId?: string,
+): Promise<MonitorRectDto[]> {
+  return invoke('get_peer_monitors', { peerId, workspaceId: workspaceId ?? null });
 }
 
 export async function updateKvmLayout(input: {

@@ -186,7 +186,7 @@ function PeerCard({ peer, connection, focus, onPair, onConnect, onDisconnect }: 
         )}
 
         {peer.is_paired && (
-          <SingleKvmLayoutPanel peerId={peer.id} />
+          <SingleKvmLayoutPanel peerId={peer.id} peerUsername={peer.username} />
         )}
       </Stack>
     </Card>

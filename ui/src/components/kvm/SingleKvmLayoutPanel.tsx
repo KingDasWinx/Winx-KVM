@@ -1,35 +1,45 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Stack, Text, UnstyledButton } from '@mantine/core';
+import { Button, Stack } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useTranslation } from 'react-i18next';
 
-import MonitorLayoutEditor from '../shared/MonitorLayoutEditor';
+import MonitorLayoutModal from '../shared/MonitorLayoutModal';
 import { buildDefaultLayout } from '../../lib/monitorLayoutGeometry';
 import * as ipc from '../../ipc/commands';
 import type { MonitorLayoutDto } from '../../ipc/commands';
 
 interface Props {
   peerId: string;
-  defaultOpen?: boolean;
+  peerUsername?: string;
 }
 
-export default function SingleKvmLayoutPanel({ peerId, defaultOpen = false }: Props) {
+export default function SingleKvmLayoutPanel({ peerId, peerUsername }: Props) {
   const { t } = useTranslation('common');
   const { t: tw } = useTranslation('workspace');
-  const [open, setOpen] = useState(defaultOpen);
+  const [open, setOpen] = useState(false);
   const [layout, setLayout] = useState<MonitorLayoutDto | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const loadLayout = useCallback(async () => {
     setLoading(true);
     try {
-      const localMonitors = await ipc.listLocalMonitors();
-      const saved = await ipc.getKvmLayout(peerId);
+      const [localMonitors, saved, remoteMonitors] = await Promise.all([
+        ipc.listLocalMonitors(),
+        ipc.getKvmLayout(peerId),
+        ipc.getPeerMonitors(peerId),
+      ]);
+
       if (saved) {
-        setLayout({ ...saved, local_monitors: localMonitors });
+        setLayout({
+          ...saved,
+          local_monitors: localMonitors,
+          remote_monitors: remoteMonitors.length > 0
+            ? remoteMonitors
+            : saved.remote_monitors,
+        });
       } else {
-        setLayout(buildDefaultLayout(localMonitors, peerId));
+        setLayout(buildDefaultLayout(localMonitors, peerId, remoteMonitors));
       }
     } catch (err) {
       console.error('Failed to load KVM layout:', err);
@@ -44,8 +54,8 @@ export default function SingleKvmLayoutPanel({ peerId, defaultOpen = false }: Pr
   }, [peerId, tw]);
 
   useEffect(() => {
-    void loadLayout();
-  }, [loadLayout]);
+    if (open) void loadLayout();
+  }, [open, loadLayout]);
 
   const handleSave = async (normalized: MonitorLayoutDto) => {
     setSaving(true);
@@ -56,6 +66,7 @@ export default function SingleKvmLayoutPanel({ peerId, defaultOpen = false }: Pr
         message: tw('layoutEditor.saveSuccessMessage'),
         color: 'green',
       });
+      setOpen(false);
     } catch (err) {
       console.error('Failed to save KVM layout:', err);
       notifications.show({
@@ -70,23 +81,25 @@ export default function SingleKvmLayoutPanel({ peerId, defaultOpen = false }: Pr
 
   return (
     <Stack gap="xs">
-      <UnstyledButton onClick={() => setOpen((v) => !v)}>
-        <Text size="sm" fw={500} c="blue">
-          {open ? '▼' : '▶'} {t('kvm.layout_panel_title')}
-        </Text>
-      </UnstyledButton>
-      {open && (
-        loading ? (
-          <Text size="sm" c="dimmed">{tw('layoutEditor.loading')}</Text>
-        ) : layout ? (
-          <MonitorLayoutEditor
-            layout={layout}
-            onLayoutChange={setLayout}
-            onSave={handleSave}
-            saving={saving}
-          />
-        ) : null
-      )}
+      <Button
+        size="xs"
+        variant="light"
+        color="teal"
+        onClick={() => setOpen(true)}
+      >
+        {t('kvm.layout_panel_title')}
+      </Button>
+
+      <MonitorLayoutModal
+        opened={open}
+        onClose={() => setOpen(false)}
+        layout={loading ? null : layout}
+        onLayoutChange={setLayout}
+        onSave={handleSave}
+        saving={saving}
+        loading={loading}
+        remoteLabel={peerUsername}
+      />
     </Stack>
   );
 }

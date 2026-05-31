@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Stack, Text } from '@mantine/core';
+import { Button, Stack, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useTranslation } from 'react-i18next';
 
-import MonitorLayoutEditor from '../shared/MonitorLayoutEditor';
+import MonitorLayoutModal from '../shared/MonitorLayoutModal';
 import { buildDefaultLayout } from '../../lib/monitorLayoutGeometry';
 import * as ipc from '../../ipc/commands';
 import type { MonitorLayoutDto } from '../../ipc/commands';
@@ -14,9 +14,11 @@ interface Props {
 
 export default function WorkspaceLayoutEditor({ workspaceId }: Props) {
   const { t } = useTranslation('workspace');
+  const [open, setOpen] = useState(false);
   const [layout, setLayout] = useState<MonitorLayoutDto | null>(null);
   const [deviceId, setDeviceId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [remoteUsername, setRemoteUsername] = useState<string | undefined>();
+  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const loadLayout = useCallback(async () => {
@@ -31,19 +33,36 @@ export default function WorkspaceLayoutEditor({ workspaceId }: Props) {
 
       setDeviceId(deviceInfo.id);
 
-      const existing = layoutDto.per_device[deviceInfo.id];
       const remoteMember = members.find((m) => m.device_id !== deviceInfo.id);
       if (!remoteMember) {
         setLayout(null);
         return;
       }
 
+      setRemoteUsername(remoteMember.username);
+
+      const remoteMonitors = await ipc.getPeerMonitors(
+        remoteMember.device_id,
+        workspaceId,
+      );
+
+      const existing = layoutDto.per_device[deviceInfo.id];
       if (existing) {
-        setLayout({ ...existing, local_monitors: localMonitors });
+        setLayout({
+          ...existing,
+          local_monitors: localMonitors,
+          remote_monitors: remoteMonitors.length > 0
+            ? remoteMonitors
+            : existing.remote_monitors ?? [],
+        });
         return;
       }
 
-      setLayout(buildDefaultLayout(localMonitors, remoteMember.device_id));
+      setLayout(buildDefaultLayout(
+        localMonitors,
+        remoteMember.device_id,
+        remoteMonitors,
+      ));
     } catch (err) {
       console.error('Failed to load workspace layout:', err);
       notifications.show({
@@ -57,8 +76,8 @@ export default function WorkspaceLayoutEditor({ workspaceId }: Props) {
   }, [t, workspaceId]);
 
   useEffect(() => {
-    void loadLayout();
-  }, [loadLayout]);
+    if (open) void loadLayout();
+  }, [open, loadLayout]);
 
   const handleSave = async (normalized: MonitorLayoutDto) => {
     if (!deviceId) return;
@@ -71,6 +90,7 @@ export default function WorkspaceLayoutEditor({ workspaceId }: Props) {
         message: t('layoutEditor.saveSuccessMessage'),
         color: 'green',
       });
+      setOpen(false);
     } catch (err) {
       console.error('Failed to save workspace layout:', err);
       notifications.show({
@@ -83,21 +103,23 @@ export default function WorkspaceLayoutEditor({ workspaceId }: Props) {
     }
   };
 
-  if (loading) {
-    return <Text size="sm" c="dimmed">{t('layoutEditor.loading')}</Text>;
-  }
-
-  if (!layout) {
-    return <Text size="sm" c="dimmed">{t('layoutEditor.noRemoteMember')}</Text>;
-  }
-
   return (
     <Stack gap="sm">
-      <MonitorLayoutEditor
-        layout={layout}
+      <Text size="sm" fw={600}>{t('layoutEditor.title')}</Text>
+      <Text size="xs" c="dimmed">{t('layoutEditor.hint')}</Text>
+      <Button size="sm" variant="light" color="teal" onClick={() => setOpen(true)}>
+        {t('layoutEditor.openModalButton')}
+      </Button>
+
+      <MonitorLayoutModal
+        opened={open}
+        onClose={() => setOpen(false)}
+        layout={loading ? null : layout}
         onLayoutChange={setLayout}
         onSave={handleSave}
         saving={saving}
+        loading={loading}
+        remoteLabel={remoteUsername}
       />
     </Stack>
   );

@@ -4,7 +4,8 @@ use serde::Deserialize;
 use tauri::State;
 use winx_domain::shared::ids::PeerId;
 
-use crate::app_state::InputControlState;
+use crate::app_state::{InputControlState, WorkspaceState};
+use winx_domain::shared::ids::DeviceId;
 
 use super::monitor_layout_dto::{dto_to_layout, layout_to_dto, MonitorLayoutDto, MonitorRectDto};
 
@@ -45,6 +46,39 @@ pub async fn get_kvm_layout(
         .await
         .map_err(map_err)?;
     Ok(layout.as_ref().map(layout_to_dto))
+}
+
+#[tauri::command]
+pub async fn get_peer_monitors(
+    ws_state: State<'_, WorkspaceState>,
+    peer_id: String,
+    workspace_id: Option<String>,
+) -> Result<Vec<MonitorRectDto>, String> {
+    let peer_uuid = uuid::Uuid::parse_str(&peer_id)
+        .map_err(|e| format!("peer_id inválido: {e}"))?;
+    let device_id = DeviceId::from_uuid(peer_uuid);
+
+    if let Some(ws_id_str) = workspace_id {
+        let ws_id = uuid::Uuid::parse_str(&ws_id_str)
+            .map_err(|e| format!("workspace_id inválido: {e}"))?;
+        let ws_id = winx_domain::workspace::WorkspaceId::from_uuid(ws_id);
+        let workspaces = ws_state
+            .service
+            .list_workspaces()
+            .await
+            .map_err(|e| format!("falha ao listar workspaces: {e}"))?;
+        if let Some(ws) = workspaces.into_iter().find(|w| w.id == ws_id) {
+            if let Some(layout) = ws.layout.get(device_id) {
+                return Ok(layout
+                    .local_monitors
+                    .iter()
+                    .map(super::monitor_layout_dto::rect_to_dto)
+                    .collect());
+            }
+        }
+    }
+
+    Ok(Vec::new())
 }
 
 #[derive(Debug, Deserialize)]

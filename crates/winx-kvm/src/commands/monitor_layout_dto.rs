@@ -10,6 +10,8 @@ pub struct MonitorLayoutDto {
     pub local_monitors: Vec<MonitorRectDto>,
     pub remote_peer: String,
     pub remote_virtual: MonitorRectDto,
+    #[serde(default)]
+    pub remote_monitors: Vec<MonitorRectDto>,
     pub edge: EdgeConfigDto,
 }
 
@@ -26,6 +28,8 @@ pub struct MonitorRectDto {
 pub struct EdgeConfigDto {
     pub local_exit: String,
     pub remote_entry: String,
+    #[serde(default)]
+    pub exit_local_monitor_id: Option<u32>,
 }
 
 pub fn layout_to_dto(layout: &MonitorLayout) -> MonitorLayoutDto {
@@ -52,9 +56,11 @@ pub fn layout_to_dto(layout: &MonitorLayout) -> MonitorLayoutDto {
         local_monitors: layout.local_monitors.iter().map(rect_to_dto).collect(),
         remote_peer: layout.remote_peer.to_string(),
         remote_virtual: rect_to_dto(&layout.remote_virtual),
+        remote_monitors: layout.remote_monitors.iter().map(rect_to_dto).collect(),
         edge: EdgeConfigDto {
             local_exit: border_str(layout.edge.local_exit),
             remote_entry: border_str(layout.edge.remote_entry),
+            exit_local_monitor_id: layout.edge.exit_local_monitor_id.map(|id| id.0),
         },
     }
 }
@@ -88,9 +94,11 @@ pub fn dto_to_layout(dto: MonitorLayoutDto) -> Result<MonitorLayout, String> {
         local_monitors: dto.local_monitors.into_iter().map(rect_from_dto).collect(),
         remote_peer,
         remote_virtual: rect_from_dto(dto.remote_virtual),
+        remote_monitors: dto.remote_monitors.into_iter().map(rect_from_dto).collect(),
         edge: EdgeConfig {
             local_exit: parse_border(&dto.edge.local_exit)?,
             remote_entry: parse_border(&dto.edge.remote_entry)?,
+            exit_local_monitor_id: dto.edge.exit_local_monitor_id.map(MonitorId),
         },
     })
 }
