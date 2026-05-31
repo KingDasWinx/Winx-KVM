@@ -10,13 +10,12 @@ import {
 import type { MonitorLayoutDto, MonitorRectDto } from '../../ipc/commands';
 import classes from './monitorLayout.module.css';
 
-/** Mundo virtual fixo (estilo Figma) — não redimensiona ao arrastar monitores. */
-const WORLD_W = 24_000;
-const WORLD_H = 18_000;
+/** Padding em pixels virtuais (desktop) ao redor do conteúdo — mundo fixo ao abrir. */
+const WORLD_PAD = 2400;
 const DISPLAY_SCALE = 0.12;
 const GRID_STEP = 40;
-const ZOOM_MIN = 0.06;
-const ZOOM_MAX = 0.45;
+const ZOOM_MIN = 0.08;
+const ZOOM_MAX = 4;
 
 interface Props {
   opened: boolean;
@@ -56,22 +55,32 @@ function toScreen(
   };
 }
 
-function computeWorldShift(layout: MonitorLayoutDto): WorldShift {
+function computeWorldFrame(layout: MonitorLayoutDto): {
+  worldW: number;
+  worldH: number;
+  shift: WorldShift;
+} {
   const placed = placedRemoteMonitors(layout);
   const all = [...layout.local_monitors, ...placed];
   if (all.length === 0) {
-    return { x: WORLD_W / DISPLAY_SCALE / 2, y: WORLD_H / DISPLAY_SCALE / 2 };
+    const fallback = 4800 * DISPLAY_SCALE;
+    return { worldW: fallback, worldH: fallback * 0.75, shift: { x: 0, y: 0 } };
   }
   const minX = Math.min(...all.map((m) => m.x));
   const minY = Math.min(...all.map((m) => m.y));
   const maxR = Math.max(...all.map((m) => m.x + m.width));
   const maxB = Math.max(...all.map((m) => m.y + m.height));
-  const contentW = maxR - minX;
-  const contentH = maxB - minY;
+  const virtualW = maxR - minX + WORLD_PAD * 2;
+  const virtualH = maxB - minY + WORLD_PAD * 2;
   return {
-    x: (WORLD_W / DISPLAY_SCALE - contentW) / 2 - minX,
-    y: (WORLD_H / DISPLAY_SCALE - contentH) / 2 - minY,
+    worldW: virtualW * DISPLAY_SCALE,
+    worldH: virtualH * DISPLAY_SCALE,
+    shift: { x: WORLD_PAD - minX, y: WORLD_PAD - minY },
   };
+}
+
+function computeWorldShift(layout: MonitorLayoutDto): WorldShift {
+  return computeWorldFrame(layout).shift;
 }
 
 function contentScreenBounds(
@@ -104,6 +113,11 @@ export default function MonitorLayoutModal({
 }: Props) {
   const { t } = useTranslation('workspace');
   const viewportRef = useRef<HTMLDivElement>(null);
+  const [worldFrame, setWorldFrame] = useState<{
+    worldW: number;
+    worldH: number;
+    shift: WorldShift;
+  } | null>(null);
   const [view, setView] = useState<ViewTransform>({ panX: 0, panY: 0, zoom: 0.15 });
   const [worldShift, setWorldShift] = useState<WorldShift>({ x: 0, y: 0 });
   const [draggingRemote, setDraggingRemote] = useState(false);
@@ -111,8 +125,8 @@ export default function MonitorLayoutModal({
   const dragOffset = useRef({ x: 0, y: 0 });
   const panStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
 
-  const canvasW = WORLD_W * DISPLAY_SCALE;
-  const canvasH = WORLD_H * DISPLAY_SCALE;
+  const canvasW = worldFrame?.worldW ?? 4800 * DISPLAY_SCALE;
+  const canvasH = worldFrame?.worldH ?? 3600 * DISPLAY_SCALE;
 
   const placedRemote = useMemo(
     () => (layout ? placedRemoteMonitors(layout) : []),
@@ -121,19 +135,15 @@ export default function MonitorLayoutModal({
 
   const fitToContent = useCallback(() => {
     if (!layout || !viewportRef.current) return;
-    const shift = computeWorldShift(layout);
+    const shift = worldFrame?.shift ?? computeWorldShift(layout);
     setWorldShift(shift);
     const bounds = contentScreenBounds(layout, shift);
     const contentW = bounds.maxX - bounds.minX;
     const contentH = bounds.maxY - bounds.minY;
-    const pad = 80;
+    const pad = 64;
     const vw = viewportRef.current.clientWidth;
     const vh = viewportRef.current.clientHeight;
-    const zoom = Math.min(
-      (vw - pad) / contentW,
-      (vh - pad) / contentH,
-      ZOOM_MAX,
-    );
+    const zoom = Math.min((vw - pad) / contentW, (vh - pad) / contentH);
     const cx = (bounds.minX + bounds.maxX) / 2;
     const cy = (bounds.minY + bounds.maxY) / 2;
     setView({
@@ -141,13 +151,20 @@ export default function MonitorLayoutModal({
       panX: vw / 2 - cx * zoom,
       panY: vh / 2 - cy * zoom,
     });
-  }, [layout]);
+  }, [layout, worldFrame]);
 
   useEffect(() => {
-    if (opened && layout && !loading) {
-      fitToContent();
+    if (!opened) {
+      setWorldFrame(null);
+      return;
     }
-  }, [opened, layout, loading, fitToContent]);
+    if (layout && !loading && !worldFrame) {
+      const frame = computeWorldFrame(layout);
+      setWorldFrame(frame);
+      setWorldShift(frame.shift);
+      requestAnimationFrame(() => fitToContent());
+    }
+  }, [opened, layout, loading, worldFrame, fitToContent]);
 
   const screenToWorld = useCallback(
     (clientX: number, clientY: number): { x: number; y: number } => {

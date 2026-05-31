@@ -147,6 +147,23 @@ impl Workspace {
         Ok(())
     }
 
+    /// Atualiza o layout do próprio device em um mirror (sync bidirecional de layout).
+    pub fn update_own_layout_as_mirror(
+        &mut self,
+        device_id: DeviceId,
+        layout: MonitorLayout,
+    ) -> Result<(), String> {
+        if !self.ownership_mode.is_mirror() {
+            return Err("workspace.not_mirror".to_string());
+        }
+        if !self.members.iter().any(|m| m.device_id == device_id) {
+            return Err("workspace.member_not_found".to_string());
+        }
+        self.layout.set(device_id, layout);
+        self.version = self.version.next();
+        Ok(())
+    }
+
     /// Aplica um update de cursor remoto.
     pub fn apply_cursor(&mut self, update: GlobalCursorUpdate) -> Result<(), String> {
         self.global_cursor.apply_remote(update)
@@ -162,7 +179,9 @@ impl Workspace {
         if snapshot.version.is_newer_than(self.version) {
             self.name = snapshot.name;
             self.members = snapshot.members;
-            self.layout = snapshot.layout;
+            for (device_id, monitor_layout) in snapshot.layout.per_device {
+                self.layout.set(device_id, monitor_layout);
+            }
             self.version = snapshot.version;
             SyncOutcome::Applied
         } else {

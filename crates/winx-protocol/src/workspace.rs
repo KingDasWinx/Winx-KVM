@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 pub const WORKSPACE_INVITE_PROTOCOL_VERSION: u16 = 1;
@@ -34,6 +35,9 @@ pub struct WorkspaceSnapshotPayload {
     pub owner_username: String,
     pub version: u64,
     pub members: Vec<MemberSnapshotPayload>,
+    /// Layouts por device; ausente em snapshots antigos → default vazio.
+    #[serde(default)]
+    pub layout: WorkspaceLayoutPayload,
 }
 
 /// Member snapshot in workspace.
@@ -43,6 +47,40 @@ pub struct MemberSnapshotPayload {
     pub public_key: [u8; 32],
     pub username: String,
     pub joined_at_rfc3339: String,
+}
+
+/// Layout de monitores por device (wire format para sync).
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct WorkspaceLayoutPayload {
+    #[serde(default)]
+    pub per_device: BTreeMap<String, MonitorLayoutPayload>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct MonitorLayoutPayload {
+    pub local_monitors: Vec<MonitorRectPayload>,
+    pub remote_peer: Uuid,
+    pub remote_virtual: MonitorRectPayload,
+    #[serde(default)]
+    pub remote_monitors: Vec<MonitorRectPayload>,
+    pub edge: EdgeConfigPayload,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct MonitorRectPayload {
+    pub id: u32,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct EdgeConfigPayload {
+    pub local_exit: String,
+    pub remote_entry: String,
+    #[serde(default)]
+    pub exit_local_monitor_id: Option<u32>,
 }
 
 /// Response to workspace invite.

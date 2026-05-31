@@ -18,6 +18,8 @@ use winx_protocol::workspace::{
     WorkspaceSyncPayload,
 };
 
+use crate::workspace_layout_wire::{layout_from_payload, layout_to_payload};
+
 use crate::bus::EventBus;
 use crate::ports::{
     DiscoveryQuery, IdentityStore, SecretStore, WorkspaceGlobalCursor, WorkspaceInviteTransport,
@@ -605,13 +607,33 @@ impl WorkspaceService {
             })?;
 
         if ws.ownership_mode.is_mirror() {
-            return Err(DomainError::new(
-                DomainErrorCode::WorkspaceMirrorImmutable,
-                "mirrors cannot be edited locally",
-            ));
+            match patch {
+                WorkspacePatch::UpdateLayout { device_id, layout } => {
+                    let local = DeviceId::from_uuid(self.local_device_id);
+                    if device_id != local {
+                        return Err(DomainError::new(
+                            DomainErrorCode::WorkspaceMirrorImmutable,
+                            "mirrors can only update their own layout",
+                        ));
+                    }
+                    ws.update_own_layout_as_mirror(device_id, layout).map_err(|e| {
+                        if e == "workspace.mirror_immutable" {
+                            DomainError::new(DomainErrorCode::WorkspaceMirrorImmutable, e)
+                        } else {
+                            DomainError::new(DomainErrorCode::InternalError, e)
+                        }
+                    })?;
+                }
+                _ => {
+                    return Err(DomainError::new(
+                        DomainErrorCode::WorkspaceMirrorImmutable,
+                        "mirrors cannot be edited locally",
+                    ));
+                }
+            }
+        } else {
+            apply_patch_local(&mut ws, patch)?;
         }
-
-        apply_patch_local(&mut ws, patch)?;
 
         self.store
             .save(&ws)
@@ -1149,7 +1171,7 @@ impl WorkspaceService {
             version: winx_domain::workspace::WorkspaceVersion::from_u64(payload.snapshot.version),
             ownership_mode: ws.ownership_mode.clone(),
             members: domain_members,
-            layout: ws.layout.clone(), // layout não vem no MVP de sync; preservar local
+            layout: layout_from_payload(&payload.snapshot.layout),
         };
 
         let local_version = ws.version.as_u64();
@@ -1558,6 +1580,7 @@ fn build_snapshot_payload(ws: &Workspace) -> WorkspaceSnapshotPayload {
         owner_username,
         version: ws.version.as_u64(),
         members: members_snapshot,
+        layout: layout_to_payload(&ws.layout),
     }
 }
 
@@ -1830,6 +1853,7 @@ mod tests {
                 username: "Remote".to_string(),
                 joined_at_rfc3339: "2026-01-01T00:00:00Z".to_string(),
             }],
+            layout: Default::default(),
         };
 
         let session = InviteSession::new(
@@ -2275,6 +2299,7 @@ mod tests {
                     username: "Owner".to_string(),
                     joined_at_rfc3339: "2026-01-01T00:00:00Z".to_string(),
                 }],
+                layout: Default::default(),
             },
             sender_device_id: owner_device_id.as_uuid(),
             sender_pubkey: [1u8; 32],
@@ -2324,6 +2349,7 @@ mod tests {
                     username: "Owner".to_string(),
                     joined_at_rfc3339: "2026-01-01T00:00:00Z".to_string(),
                 }],
+                layout: Default::default(),
             },
             sender_device_id: owner_device_id.as_uuid(),
             sender_pubkey: [1u8; 32],
@@ -2367,6 +2393,7 @@ mod tests {
                 owner_username: "Owner".to_string(),
                 version: 3,
                 members: vec![],
+                layout: Default::default(),
             },
             sender_device_id: owner_device_id.as_uuid(),
             sender_pubkey: [1u8; 32],

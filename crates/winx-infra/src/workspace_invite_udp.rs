@@ -241,6 +241,7 @@ mod tests {
             owner_username: "Owner".to_string(),
             version: 5,
             members: vec![],
+            layout: Default::default(),
         };
         let msg = WorkspaceInviteMessage::Sync(winx_protocol::workspace::WorkspaceSyncPayload {
             workspace_id: snapshot.id,

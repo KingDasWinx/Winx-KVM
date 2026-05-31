@@ -26,9 +26,10 @@ use winx_application::{
         IdentityStore, MonitorBackend, SecretStore, WorkspaceGlobalCursor, WorkspaceStore,
         WINX_KVM_PORT, WORKSPACE_INVITE_PORT,
     },
-    ClipboardService, ConnectionLabService, DiscoveryService, EnsureDevice, InputControlService,
-    PairingService, TransportService, WorkspaceService,
+    ClipboardService, ConnectionLabService, DiscoveryService, EnsureDevice,
+    InputControlService, PairingService, TransportService, WorkspaceService,
 };
+use winx_domain::shared::DomainEvent;
 use winx_domain::{discovery::DiscoveryRegistry, shared::ids::PeerId};
 use winx_infra::{
     generate_or_load_quic_cert, network_config, network_watcher::NetworkWatcher,
@@ -362,6 +363,34 @@ pub fn run() {
     rt.spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         workspace_bootstrap.bootstrap_presence().await;
+    });
+
+    let workspace_sync_layout = Arc::clone(&services.workspace);
+    let input_control_sync = Arc::clone(&services.input_control);
+    let sync_bus = app_state.bus.clone();
+    rt.spawn(async move {
+        let mut rx = sync_bus.subscribe();
+        loop {
+            match rx.recv().await {
+                Ok(DomainEvent::WorkspaceSyncApplied(e)) if e.from_remote => {
+                    if workspace_sync_layout.active_workspace_id().await != Some(e.workspace_id) {
+                        continue;
+                    }
+                    let Ok(workspaces) = workspace_sync_layout.list_workspaces().await else {
+                        continue;
+                    };
+                    let Some(ws) = workspaces.into_iter().find(|w| w.id == e.workspace_id) else {
+                        continue;
+                    };
+                    if let Some(peer) = workspace_sync_layout.primary_remote_peer(&ws) {
+                        let _ = input_control_sync.enable_for_peer(peer).await;
+                    }
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
     });
 
     // Spawnar network watcher task se disponível

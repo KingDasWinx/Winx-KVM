@@ -72,14 +72,10 @@ export default function WorkspaceDetailDrawer({ workspace, onClose }: Props) {
             </Group>
           )}
 
-          {!workspace.is_mirror && (
-            <>
-              <Divider />
-              <WorkspaceLayoutEditor workspaceId={workspace.id} />
-            </>
-          )}
-
           <Divider />
+          <WorkspaceLayoutEditor workspaceId={workspace.id} />
+
+          {!workspace.is_mirror && <Divider />}
 
           <WorkspaceMembersPanel workspace={workspace} onInviteClick={() => setInviteOpen(true)} />
 
