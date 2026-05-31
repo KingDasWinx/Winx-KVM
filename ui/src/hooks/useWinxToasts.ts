@@ -24,6 +24,9 @@ function toastForEvent(event: WinxEvent, t: TFunction<'common'>) {
       });
       break;
     case 'connection-established':
+      if (event.is_inbound || event.workspace_id) {
+        break;
+      }
       notifications.show({
         title: t('toast.connection_established_title'),
         message: t('toast.connection_established_message', {

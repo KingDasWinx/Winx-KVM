@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 use crate::shared::ids::{PeerId, SessionId};
 
@@ -56,6 +57,9 @@ pub struct Connection {
     pub stats: ConnectionStats,
     /// `true` se este device iniciou o handshake QUIC (`connect_peer`).
     pub is_outbound: bool,
+    /// Preenchido quando a conexão foi aberta pelo fluxo de workspace (não KVM single).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via_workspace_id: Option<Uuid>,
 }
 
 impl Connection {
@@ -67,6 +71,7 @@ impl Connection {
             state: ConnectionState::Connecting,
             stats: ConnectionStats::default(),
             is_outbound: false,
+            via_workspace_id: None,
         }
     }
 

@@ -102,6 +102,8 @@ export interface ConnectionStateDto {
   rtt_ms?: number;
   tx_bytes?: number;
   rx_bytes?: number;
+  is_outbound: boolean;
+  via_workspace_id?: string;
 }
 
 export async function listConnectionStates(): Promise<ConnectionStateDto[]> {

@@ -4,7 +4,7 @@ use serde::Serialize;
 use tauri::State;
 use winx_domain::{shared::ids::PeerId, transport::ConnectionState};
 
-use crate::app_state::{InputControlState, TransportState};
+use crate::app_state::{ClipboardState, InputControlState, TransportState};
 
 #[derive(Debug, Serialize)]
 pub struct ConnectionStateDto {
@@ -14,6 +14,10 @@ pub struct ConnectionStateDto {
     pub rtt_ms: Option<u32>,
     pub tx_bytes: Option<u64>,
     pub rx_bytes: Option<u64>,
+    /// `true` se este device iniciou o QUIC.
+    pub is_outbound: bool,
+    /// Preenchido quando a sessão QUIC pertence a um workspace.
+    pub via_workspace_id: Option<String>,
 }
 
 fn connection_state_to_status(state: &ConnectionState) -> &'static str {
@@ -32,7 +36,7 @@ pub async fn list_connection_states(
     let list = state.transport.list_connection_snapshots().await;
     Ok(list
         .into_iter()
-        .map(|(peer_id, conn_state, stats)| {
+        .map(|(peer_id, conn_state, stats, is_outbound, via_workspace_id)| {
             let include_stats = matches!(conn_state, ConnectionState::Connected { .. });
             ConnectionStateDto {
                 peer_id: peer_id.to_string(),
@@ -40,6 +44,8 @@ pub async fn list_connection_states(
                 rtt_ms: include_stats.then_some(stats.rtt_ms),
                 tx_bytes: include_stats.then_some(stats.tx_bytes),
                 rx_bytes: include_stats.then_some(stats.rx_bytes),
+                is_outbound,
+                via_workspace_id: via_workspace_id.map(|id| id.to_string()),
             }
         })
         .collect())
@@ -65,11 +71,34 @@ fn map_err(e: winx_domain::DomainError) -> String {
 
 #[tauri::command]
 pub async fn open_connection(
-    state: State<'_, TransportState>,
+    transport: State<'_, TransportState>,
+    input: State<'_, InputControlState>,
+    clipboard: State<'_, ClipboardState>,
     peer_id: String,
 ) -> Result<(), String> {
     let pid = parse_peer_id(&peer_id)?;
-    state.transport.connect_peer(pid).await.map_err(map_err)
+    if transport.transport.via_workspace_id(pid).await.is_some() {
+        return Err(map_err(winx_domain::DomainError::new(
+            winx_domain::shared::DomainErrorCode::TransportConnectionFailed,
+            "peer vinculado a um workspace — desconecte pelo workspace antes do modo single",
+        )));
+    }
+    transport
+        .transport
+        .connect_peer(pid, None)
+        .await
+        .map_err(map_err)?;
+    input
+        .input_control
+        .enable_for_peer(pid)
+        .await
+        .map_err(map_err)?;
+    clipboard
+        .clipboard
+        .enable_for_peer(pid)
+        .await
+        .map_err(map_err)?;
+    Ok(())
 }
 
 #[tauri::command]

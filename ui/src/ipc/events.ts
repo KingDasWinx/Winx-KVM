@@ -19,7 +19,13 @@ export type WinxEvent =
   | { kind: 'pairing-cancelled'; session_id: string; peer_id: string }
   | { kind: 'pairing-failed'; session_id: string; peer_id: string }
   // Sprint 4 — Transport
-  | { kind: 'connection-established'; peer_id: string; peer_username: string }
+  | {
+      kind: 'connection-established';
+      peer_id: string;
+      peer_username: string;
+      is_inbound?: boolean;
+      workspace_id?: string;
+    }
   | { kind: 'connection-lost'; peer_id: string; reason?: string }
   | { kind: 'stats-updated'; peer_id: string; rtt_ms: number; tx_bytes: number; rx_bytes: number }
   // Sprint 5 — InputControl

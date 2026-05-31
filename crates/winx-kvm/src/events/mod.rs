@@ -69,6 +69,8 @@ struct FrontendEvent {
     seq: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sync_from_remote: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_inbound: Option<bool>,
 }
 
 impl FrontendEvent {
@@ -102,6 +104,7 @@ impl FrontendEvent {
             y: None,
             seq: None,
             sync_from_remote: None,
+            is_inbound: None,
         }
     }
 }
@@ -190,6 +193,8 @@ impl From<&DomainEvent> for FrontendEvent {
                 kind: "connection-established",
                 peer_id: Some(e.peer_id.to_string()),
                 peer_username: Some(e.peer_username.clone()),
+                workspace_id: e.via_workspace_id.map(|id| id.to_string()),
+                is_inbound: Some(e.is_inbound),
                 ..FrontendEvent::empty("connection-established")
             },
             DomainEvent::ConnectionLost(e) => FrontendEvent {

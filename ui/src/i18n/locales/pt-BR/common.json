@@ -62,8 +62,11 @@
     "status_disconnected": "Desconectado",
     "connect_button": "Conectar",
     "disconnect_button": "Desconectar",
-    "single_connect_hint": "Apenas um PC deve clicar em Conectar; o outro habilita o input automaticamente ao aceitar a sessão.",
+    "single_connect_hint": "KVM single: apenas um PC deve clicar em Conectar aqui. Para workspaces, use o painel Workspaces nos dois PCs.",
     "already_connected": "Já conectado a este dispositivo",
+    "via_workspace_badge": "Via workspace",
+    "inbound_workspace_hint": "Peer conectou — entre no workspace",
+    "workspace_disconnect_hint": "Desconecte pelo workspace primeiro",
     "rtt_label": "Latência: {{ms}}ms",
     "stats_label": "↑{{tx}} ↓{{rx}}"
   },

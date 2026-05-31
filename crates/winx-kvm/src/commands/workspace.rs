@@ -5,7 +5,7 @@ use winx_domain::shared::ids::DeviceId;
 use winx_domain::shared::DomainErrorCode;
 use winx_domain::workspace::{OwnershipMode, WorkspaceId, WorkspaceLayout};
 
-use crate::app_state::{InputControlState, TransportState, WorkspaceState};
+use crate::app_state::{ClipboardState, InputControlState, TransportState, WorkspaceState};
 
 #[derive(Debug, Serialize)]
 pub struct WorkspaceDto {
@@ -184,6 +184,7 @@ async fn activate_workspace_kvm(
     ws_state: &WorkspaceState,
     transport_state: &TransportState,
     input_state: &InputControlState,
+    clipboard_state: &ClipboardState,
     ws_id: WorkspaceId,
 ) -> Result<(), String> {
     let ws = ws_state.service.get_workspace(ws_id).await.map_err(map_err)?;
@@ -201,13 +202,25 @@ async fn activate_workspace_kvm(
     {
         transport_state
             .transport
-            .connect_peer(primary)
+            .connect_peer(primary, Some(ws_id.as_uuid()))
+            .await
+            .map_err(map_err)?;
+    } else {
+        transport_state
+            .transport
+            .connect_peer(primary, Some(ws_id.as_uuid()))
             .await
             .map_err(map_err)?;
     }
 
     input_state
         .input_control
+        .enable_for_peer(primary)
+        .await
+        .map_err(map_err)?;
+
+    clipboard_state
+        .clipboard
         .enable_for_peer(primary)
         .await
         .map_err(map_err)?;
@@ -342,6 +355,7 @@ pub async fn connect_to_workspace(
     ws_state: State<'_, WorkspaceState>,
     transport_state: State<'_, TransportState>,
     input_state: State<'_, InputControlState>,
+    clipboard_state: State<'_, ClipboardState>,
     workspace_id: String,
 ) -> Result<(), String> {
     let ws_id = parse_workspace_id(&workspace_id)?;
@@ -352,16 +366,34 @@ pub async fn connect_to_workspace(
         .await
         .map_err(map_err)?;
 
-    activate_workspace_kvm(&ws_state, &transport_state, &input_state, ws_id).await
+    activate_workspace_kvm(
+        &ws_state,
+        &transport_state,
+        &input_state,
+        &clipboard_state,
+        ws_id,
+    )
+    .await
 }
 
 #[tauri::command]
-pub async fn disconnect_from_workspace(state: State<'_, WorkspaceState>) -> Result<(), String> {
-    state
+pub async fn disconnect_from_workspace(
+    ws_state: State<'_, WorkspaceState>,
+    transport_state: State<'_, TransportState>,
+) -> Result<(), String> {
+    let workspace_id = ws_state.service.active_workspace_id().await;
+    ws_state
         .service
         .disconnect_from_workspace()
         .await
-        .map_err(map_err)
+        .map_err(map_err)?;
+    if let Some(ws_id) = workspace_id {
+        transport_state
+            .transport
+            .clear_workspace_scope(ws_id.as_uuid())
+            .await;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -369,6 +401,7 @@ pub async fn force_disconnect_and_connect(
     ws_state: State<'_, WorkspaceState>,
     transport_state: State<'_, TransportState>,
     input_state: State<'_, InputControlState>,
+    clipboard_state: State<'_, ClipboardState>,
     workspace_id: String,
 ) -> Result<(), String> {
     let ws_id = parse_workspace_id(&workspace_id)?;
@@ -379,7 +412,14 @@ pub async fn force_disconnect_and_connect(
         .await
         .map_err(map_err)?;
 
-    activate_workspace_kvm(&ws_state, &transport_state, &input_state, ws_id).await
+    activate_workspace_kvm(
+        &ws_state,
+        &transport_state,
+        &input_state,
+        &clipboard_state,
+        ws_id,
+    )
+    .await
 }
 
 #[tauri::command]

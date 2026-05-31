@@ -2,6 +2,7 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use tokio::sync::Mutex;
 use tracing::{info, warn};
+use uuid::Uuid;
 use winx_domain::{
     discovery::DiscoveryRegistry,
     shared::{
@@ -28,6 +29,19 @@ type InboundStreamStore = HashMap<(PeerId, StreamKind), (StreamSender, StreamRec
 
 const MAX_RECONNECT_ATTEMPTS: u32 = 3;
 const STATS_RTT_DELTA_MS: u32 = 5;
+
+fn connection_established_event(
+    peer_id: PeerId,
+    peer_username: String,
+    conn: &Connection,
+) -> ConnectionEstablished {
+    ConnectionEstablished {
+        peer_id,
+        peer_username,
+        is_inbound: !conn.is_outbound,
+        via_workspace_id: conn.via_workspace_id,
+    }
+}
 
 pub struct TransportService {
     adapter: Arc<dyn TransportAdapter>,
@@ -89,15 +103,22 @@ impl TransportService {
         Ok(())
     }
 
-    /// Conecta a um peer pareado. No-op se já conectado.
-    pub async fn connect_peer(&self, peer_id: PeerId) -> Result<(), DomainError> {
+    /// Conecta a um peer pareado. No-op se já conectado (atualiza `via_workspace_id` se informado).
+    pub async fn connect_peer(
+        &self,
+        peer_id: PeerId,
+        via_workspace_id: Option<Uuid>,
+    ) -> Result<(), DomainError> {
         {
-            let conns = self.connections.lock().await;
-            if let Some(c) = conns.get(&peer_id) {
+            let mut conns = self.connections.lock().await;
+            if let Some(c) = conns.get_mut(&peer_id) {
                 if matches!(
                     c.state,
                     winx_domain::transport::ConnectionState::Connected { .. }
                 ) {
+                    if let Some(ws_id) = via_workspace_id {
+                        c.via_workspace_id = Some(ws_id);
+                    }
                     return Ok(());
                 }
             }
@@ -124,33 +145,50 @@ impl TransportService {
             )
         })?;
 
-        let mut entry = self.connections.lock().await;
-        let conn = entry
-            .entry(peer_id)
-            .or_insert_with(|| Connection::new(peer_id));
+        let established = {
+            let mut entry = self.connections.lock().await;
+            let conn = entry
+                .entry(peer_id)
+                .or_insert_with(|| Connection::new(peer_id));
 
-        let active = self
-            .adapter
-            .connect(peer_addr, *trusted.public_key.as_bytes())
-            .await
-            .map_err(|e| {
-                conn.mark_disconnected();
-                DomainError::new(DomainErrorCode::TransportConnectionFailed, e.to_string())
-            })?;
+            let active = self
+                .adapter
+                .connect(peer_addr, *trusted.public_key.as_bytes())
+                .await
+                .map_err(|e| {
+                    conn.mark_disconnected();
+                    DomainError::new(DomainErrorCode::TransportConnectionFailed, e.to_string())
+                })?;
 
-        conn.id = active.conn_id;
-        conn.is_outbound = true;
-        conn.mark_connected();
-        drop(entry);
+            conn.id = active.conn_id;
+            conn.is_outbound = true;
+            conn.via_workspace_id = via_workspace_id;
+            conn.mark_connected();
+            connection_established_event(peer_id, trusted.username.clone(), conn)
+        };
 
         self.bus
-            .publish(DomainEvent::ConnectionEstablished(ConnectionEstablished {
-                peer_id,
-                peer_username: trusted.username.clone(),
-            }));
+            .publish(DomainEvent::ConnectionEstablished(established));
 
-        info!(%peer_id, %peer_addr, "conexão QUIC estabelecida");
+        info!(%peer_id, %peer_addr, ?via_workspace_id, "conexão QUIC estabelecida");
         Ok(())
+    }
+
+    pub async fn via_workspace_id(&self, peer_id: PeerId) -> Option<Uuid> {
+        self.connections
+            .lock()
+            .await
+            .get(&peer_id)
+            .and_then(|c| c.via_workspace_id)
+    }
+
+    pub async fn clear_workspace_scope(&self, workspace_id: Uuid) {
+        let mut conns = self.connections.lock().await;
+        for c in conns.values_mut() {
+            if c.via_workspace_id == Some(workspace_id) {
+                c.via_workspace_id = None;
+            }
+        }
     }
 
     pub async fn disconnect_peer(&self, peer_id: PeerId) -> Result<(), DomainError> {
@@ -162,8 +200,15 @@ impl TransportService {
                     "nenhuma conexão ativa para este peer",
                 )
             })?;
+            if conn.via_workspace_id.is_some() {
+                return Err(DomainError::new(
+                    DomainErrorCode::TransportConnectionFailed,
+                    "peer vinculado a um workspace — desconecte pelo workspace",
+                ));
+            }
             let id = conn.id;
             conn.mark_disconnected();
+            conn.via_workspace_id = None;
             id
         };
 
@@ -308,6 +353,8 @@ impl TransportService {
         PeerId,
         winx_domain::transport::ConnectionState,
         winx_domain::transport::ConnectionStats,
+        bool,
+        Option<Uuid>,
     )> {
         self.connections
             .lock()
@@ -319,7 +366,15 @@ impl TransportService {
                     winx_domain::transport::ConnectionState::Disconnected
                 )
             })
-            .map(|(id, c)| (*id, c.state.clone(), c.stats))
+            .map(|(id, c)| {
+                (
+                    *id,
+                    c.state.clone(),
+                    c.stats,
+                    c.is_outbound,
+                    c.via_workspace_id,
+                )
+            })
             .collect()
     }
 
@@ -421,22 +476,26 @@ impl TransportService {
                     {
                         Ok(active) => {
                             let username = trusted.username.clone();
-                            {
+                            let established = {
                                 let mut conns = this_connections.lock().await;
                                 if let Some(c) = conns.get_mut(&peer_id) {
                                     c.id = active.conn_id;
                                     c.mark_connected();
+                                    Some(connection_established_event(
+                                        peer_id,
+                                        username.clone(),
+                                        c,
+                                    ))
+                                } else {
+                                    None
                                 }
-                            }
+                            };
                             let _ = this_adapter
                                 .close(conn_id, "substituída por reconexão")
                                 .await;
-                            this_bus.publish(DomainEvent::ConnectionEstablished(
-                                ConnectionEstablished {
-                                    peer_id,
-                                    peer_username: username,
-                                },
-                            ));
+                            if let Some(event) = established {
+                                this_bus.publish(DomainEvent::ConnectionEstablished(event));
+                            }
                         }
                         Err(err) => {
                             warn!(%peer_id, ?err, "reconexão falhou");
@@ -535,6 +594,7 @@ async fn handle_incoming(
     conn.id = incoming.conn_id;
     conn.is_outbound = false;
     conn.mark_connected();
+    let established = connection_established_event(peer_id, trusted.username.clone(), conn);
     drop(conns);
 
     let mut inbound_rx = incoming.inbound_streams;
@@ -548,10 +608,7 @@ async fn handle_incoming(
         }
     });
 
-    bus.publish(DomainEvent::ConnectionEstablished(ConnectionEstablished {
-        peer_id,
-        peer_username: trusted.username.clone(),
-    }));
+    bus.publish(DomainEvent::ConnectionEstablished(established));
 
     info!(%peer_id, "conexão entrante aceita");
     Ok(())
@@ -712,7 +769,7 @@ mod tests {
         seed_discovered(&registry, peer_id).await;
 
         let service = TransportService::new(adapter, identity, registry, bus);
-        service.connect_peer(peer_id).await.unwrap();
+        service.connect_peer(peer_id, None).await.unwrap();
 
         let event = rx.recv().await.unwrap();
         assert!(matches!(
@@ -735,7 +792,7 @@ mod tests {
         let service = TransportService::new(adapter, identity, registry, bus.clone());
         let mut rx = bus.subscribe();
 
-        service.connect_peer(peer_id).await.unwrap();
+        service.connect_peer(peer_id, None).await.unwrap();
         let _ = rx.recv().await;
 
         service.disconnect_peer(peer_id).await.unwrap();
@@ -759,7 +816,7 @@ mod tests {
 
         let service =
             TransportService::new(Arc::clone(&adapter), Arc::clone(&identity), registry, bus);
-        service.connect_peer(peer_id).await.unwrap();
+        service.connect_peer(peer_id, None).await.unwrap();
 
         let (outbound_id, is_outbound) = service.test_conn_snapshot(peer_id).await.unwrap();
         assert!(is_outbound);

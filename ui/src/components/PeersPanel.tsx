@@ -38,6 +38,8 @@ interface PeerConnectionState {
   rttMs?: number;
   txBytes?: number;
   rxBytes?: number;
+  isOutbound?: boolean;
+  viaWorkspaceId?: string;
 }
 
 interface PeerCardProps {
@@ -63,10 +65,18 @@ function focusBadgeLabel(
 
 function PeerCard({ peer, connection, focus, onPair, onConnect, onDisconnect }: PeerCardProps) {
   const { t } = useTranslation('common');
-  const isConnected = connection.status === 'connected';
+  const isWorkspaceLink = !!connection.viaWorkspaceId;
+  const isSingleConnected =
+    connection.status === 'connected' && !isWorkspaceLink;
+  const isInboundWorkspaceWait =
+    connection.status === 'connected' &&
+    !isWorkspaceLink &&
+    connection.isOutbound === false;
   const isBusy =
     connection.status === 'connecting' || connection.status === 'reconnecting';
-  const focusLabel = focusBadgeLabel(t, focus, peer.id);
+  const focusLabel = isSingleConnected
+    ? focusBadgeLabel(t, focus, peer.id)
+    : null;
 
   return (
     <Card withBorder radius="md" p="md">
@@ -83,12 +93,22 @@ function PeerCard({ peer, connection, focus, onPair, onConnect, onDisconnect }: 
               </Badge>
             )}
             <ConnectionStatus
-              state={connection.status}
+              state={isSingleConnected ? connection.status : 'idle'}
               rttMs={connection.rttMs}
               txBytes={connection.txBytes}
               rxBytes={connection.rxBytes}
             />
-            {isConnected && focusLabel && (
+            {isWorkspaceLink && (
+              <Badge color="violet" variant="light" size="sm">
+                {t('transport.via_workspace_badge')}
+              </Badge>
+            )}
+            {isInboundWorkspaceWait && (
+              <Badge color="gray" variant="light" size="sm">
+                {t('transport.inbound_workspace_hint')}
+              </Badge>
+            )}
+            {isSingleConnected && focusLabel && (
               <Badge color="grape" variant="light" size="sm">
                 {focusLabel}
               </Badge>
@@ -102,7 +122,7 @@ function PeerCard({ peer, connection, focus, onPair, onConnect, onDisconnect }: 
               {t('pairing.pair_button')}
             </Button>
           )}
-          {isConnected ? (
+          {isSingleConnected ? (
             <Button
               size="xs"
               variant="light"
@@ -113,15 +133,24 @@ function PeerCard({ peer, connection, focus, onPair, onConnect, onDisconnect }: 
             </Button>
           ) : (
             <Tooltip
-              label={t('transport.already_connected')}
-              disabled={!isConnected}
+              label={
+                isWorkspaceLink
+                  ? t('transport.workspace_disconnect_hint')
+                  : t('transport.already_connected')
+              }
+              disabled={!isWorkspaceLink && !isInboundWorkspaceWait}
               withArrow
             >
               <Button
                 size="xs"
                 variant="filled"
                 loading={isBusy}
-                disabled={!peer.is_paired || isConnected}
+                disabled={
+                  !peer.is_paired ||
+                  isSingleConnected ||
+                  isWorkspaceLink ||
+                  isInboundWorkspaceWait
+                }
                 title={
                   !peer.is_paired
                     ? t('error.transport.peer_not_trusted')
@@ -188,6 +217,8 @@ export function PeersPanel({ onPairRequest }: PeersPanelProps) {
             rttMs: s.rtt_ms,
             txBytes: s.tx_bytes,
             rxBytes: s.rx_bytes,
+            isOutbound: s.is_outbound,
+            viaWorkspaceId: s.via_workspace_id,
           };
         }
         return next;
@@ -259,6 +290,12 @@ export function PeersPanel({ onPairRequest }: PeersPanelProps) {
       if (event.kind === 'connection-established' && event.peer_id) {
         void syncConnectionsFromBackend();
         refreshFocus();
+      }
+      if (
+        event.kind === 'workspace-connected' ||
+        event.kind === 'workspace-disconnected'
+      ) {
+        void syncConnectionsFromBackend();
       }
       if (event.kind === 'focus-switched' || event.kind === 'hotkey-triggered') {
         refreshFocus();

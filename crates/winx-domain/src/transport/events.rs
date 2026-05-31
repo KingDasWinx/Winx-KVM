@@ -8,6 +8,10 @@ use super::connection::ConnectionStats;
 pub struct ConnectionEstablished {
     pub peer_id: PeerId,
     pub peer_username: String,
+    /// `true` quando o peer remoto iniciou o QUIC (este device aceitou inbound).
+    pub is_inbound: bool,
+    /// Some quando a conexão pertence a um workspace, não ao modo single.
+    pub via_workspace_id: Option<uuid::Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
