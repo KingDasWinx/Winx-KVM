@@ -126,6 +126,7 @@ impl WorkspaceService {
         invite_id: Uuid,
         responder_pubkey: [u8; 32],
         accepted: bool,
+        responder_username: String,
     ) {
         let signing_key = match self.load_signing_key().await {
             Ok(k) => k,
@@ -139,6 +140,7 @@ impl WorkspaceService {
             responder_device_id: self.local_device_id,
             responder_pubkey,
             accepted,
+            responder_username,
         };
         let msg = WorkspaceInviteMessage::Response(payload);
         match self.discovery_query.resolve_address(sender_device_id).await {
@@ -354,7 +356,17 @@ impl WorkspaceService {
 
         // Convert protocol snapshot to domain snapshot
         let owner_username = snapshot.owner_username.clone();
-        let members: Vec<WorkspaceMember> = snapshot
+        let local_device_id = DeviceId::from_uuid(self.local_device_id);
+        let local_device = self
+            .identity_store
+            .load_device()
+            .await
+            .map_err(|e| DomainError::new(DomainErrorCode::InternalError, e.to_string()))?
+            .ok_or_else(|| {
+                DomainError::new(DomainErrorCode::InternalError, "local device not found")
+            })?;
+
+        let mut members: Vec<WorkspaceMember> = snapshot
             .members
             .iter()
             .map(|m| {
@@ -365,6 +377,16 @@ impl WorkspaceService {
                 )
             })
             .collect();
+
+        // Mirror local inclui o device que aceitou (snapshot do invite só traz membros atuais do owner).
+        let local_member = WorkspaceMember::new(
+            local_device_id,
+            local_device.public_key,
+            self.local_username.clone(),
+        );
+        if !members.iter().any(|m| m.device_id == local_device_id) {
+            members.push(local_member);
+        }
 
         let domain_snapshot = winx_domain::workspace::WorkspaceSnapshot {
             id: WorkspaceId::from_uuid(snapshot.id),
@@ -390,19 +412,15 @@ impl WorkspaceService {
         info!(%invite_id, %workspace_id, "invite accepted and mirror created");
 
         // Send signed response back to the sender (best-effort)
-        let responder_pubkey = {
-            let device = self
-                .identity_store
-                .load_device()
-                .await
-                .map_err(|e| DomainError::new(DomainErrorCode::InternalError, e.to_string()))?
-                .ok_or_else(|| {
-                    DomainError::new(DomainErrorCode::InternalError, "local device not found")
-                })?;
-            *device.public_key.as_bytes()
-        };
-        self.send_invite_response(sender_device_id, invite_id, responder_pubkey, true)
-            .await;
+        let responder_pubkey = *local_device.public_key.as_bytes();
+        self.send_invite_response(
+            sender_device_id,
+            invite_id,
+            responder_pubkey,
+            true,
+            self.local_username.clone(),
+        )
+        .await;
 
         // Publish event
         self.bus.publish(DomainEvent::WorkspaceInviteAccepted(
@@ -450,8 +468,14 @@ impl WorkspaceService {
                 })?;
             *device.public_key.as_bytes()
         };
-        self.send_invite_response(sender_device_id, invite_id, responder_pubkey, false)
-            .await;
+        self.send_invite_response(
+            sender_device_id,
+            invite_id,
+            responder_pubkey,
+            false,
+            String::new(),
+        )
+        .await;
 
         // Publish event
         self.bus.publish(DomainEvent::WorkspaceInviteRejected(
@@ -904,6 +928,77 @@ impl WorkspaceService {
         ));
     }
 
+    /// Owner: adiciona membro ao workspace Original quando o invite é aceito.
+    async fn register_accepted_invite_member(
+        &self,
+        workspace_id: WorkspaceId,
+        device_id: DeviceId,
+        public_key: PublicKey,
+        username: String,
+    ) {
+        let mut ws = match self.store.find_by_id(workspace_id).await {
+            Ok(Some(w)) => w,
+            Ok(None) => {
+                warn!(%workspace_id, "invite accept for unknown workspace");
+                return;
+            }
+            Err(e) => {
+                warn!(?e, %workspace_id, "failed to load workspace for invite accept");
+                return;
+            }
+        };
+
+        if ws.ownership_mode.is_mirror() {
+            return;
+        }
+
+        if ws.members.iter().any(|m| m.device_id == device_id) {
+            debug!(%workspace_id, %device_id, "member already in workspace");
+            return;
+        }
+
+        let member = WorkspaceMember::new(device_id, public_key, username.clone());
+        if let Err(e) = ws.add_member(member) {
+            warn!(?e, %workspace_id, "add_member failed on invite accept");
+            return;
+        }
+
+        let peer = TrustedPeer::new(
+            PeerId::from_uuid(device_id.as_uuid()),
+            username.clone(),
+            public_key,
+        );
+        if let Err(e) = self.identity_store.save_peer(&peer).await {
+            warn!(?e, %device_id, "failed to TOFU peer on invite accept");
+        }
+
+        if let Err(e) = self.store.save(&ws).await {
+            warn!(?e, %workspace_id, "failed to persist workspace after invite accept");
+            return;
+        }
+
+        self.bus.publish(DomainEvent::WorkspaceMemberJoined(
+            winx_domain::workspace::events::MemberJoined {
+                workspace_id,
+                device_id,
+                username,
+            },
+        ));
+
+        self.bus.publish(DomainEvent::WorkspaceSyncApplied(
+            winx_domain::workspace::events::WorkspaceSyncApplied {
+                workspace_id,
+                new_version: ws.version.as_u64(),
+                workspace_name: ws.name.clone(),
+                from_remote: false,
+            },
+        ));
+
+        info!(%workspace_id, %device_id, member_count = ws.members.len(), "member added after invite accept");
+        self.broadcast_sync(&ws).await;
+        self.refresh_member_presence(std::slice::from_ref(&ws)).await;
+    }
+
     async fn handle_invite_response(&self, payload: &WorkspaceInviteResponsePayload) {
         info!(
             invite_id = %payload.invite_id,
@@ -921,16 +1016,29 @@ impl WorkspaceService {
             let workspace_id = data.session.workspace_id;
 
             if payload.accepted {
-                // Response: accepted
+                let accepting_device_id = DeviceId::from_uuid(payload.responder_device_id);
+                let username = if payload.responder_username.is_empty() {
+                    accepting_device_id.to_string()
+                } else {
+                    payload.responder_username.clone()
+                };
+                self.register_accepted_invite_member(
+                    workspace_id,
+                    accepting_device_id,
+                    PublicKey::new(payload.responder_pubkey),
+                    username,
+                )
+                .await;
+
                 self.bus.publish(DomainEvent::WorkspaceInviteAccepted(
                     winx_domain::workspace::events::InviteAccepted {
                         invite_id: winx_domain::workspace::InviteId::from_uuid(payload.invite_id),
                         workspace_id,
-                        accepting_device_id: DeviceId::from_uuid(payload.responder_device_id),
+                        accepting_device_id,
                     },
                 ));
 
-                info!(%workspace_id, "invite accepted by peer");
+                info!(%workspace_id, %accepting_device_id, "invite accepted by peer");
             } else {
                 // Response: rejected
                 self.bus.publish(DomainEvent::WorkspaceInviteRejected(

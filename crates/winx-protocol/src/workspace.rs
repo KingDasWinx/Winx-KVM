@@ -52,6 +52,9 @@ pub struct WorkspaceInviteResponsePayload {
     pub responder_device_id: Uuid,
     pub responder_pubkey: [u8; 32],
     pub accepted: bool,
+    /// Username do device que aceitou (preenchido quando `accepted = true`).
+    #[serde(default)]
+    pub responder_username: String,
 }
 
 /// Cancel a pending invite.

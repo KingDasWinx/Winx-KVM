@@ -32,8 +32,11 @@ export default function CreateWorkspaceModal({ opened, onClose, initialPeerIds }
 
   const loadPeers = async () => {
     try {
-      const discoveredPeers = await ipc.listDiscoveredPeers();
-      setPeers(discoveredPeers);
+      const [discoveredPeers, device] = await Promise.all([
+        ipc.listDiscoveredPeers(),
+        ipc.getDeviceInfo(),
+      ]);
+      setPeers(discoveredPeers.filter((p) => p.id !== device.id));
     } catch (err) {
       console.error('Failed to load peers:', err);
     }

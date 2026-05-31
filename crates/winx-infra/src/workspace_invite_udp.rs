@@ -178,6 +178,7 @@ mod tests {
             responder_device_id: Uuid::new_v4(),
             responder_pubkey: pubkey,
             accepted: true,
+            responder_username: "Remote".to_string(),
         })
     }
 

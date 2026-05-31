@@ -17,7 +17,7 @@ export default function WorkspaceMembersPanel({ workspace, onInviteClick }: Prop
 
   useEffect(() => {
     ipc.listWorkspaceMembers(workspace.id).then(setMembers).catch(console.error);
-  }, [workspace.id, workspace.version]);
+  }, [workspace.id, workspace.version, workspace.member_count]);
 
   const handleRemove = async (deviceId: string) => {
     await ipc.removeWorkspaceMember(workspace.id, deviceId).catch(console.error);

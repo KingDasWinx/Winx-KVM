@@ -84,6 +84,14 @@ export default function WorkspacesPanel() {
     };
   }, [doRefresh, setActiveWorkspaceId, setPresence, t]);
 
+  useEffect(() => {
+    if (!detailWs) return;
+    const updated = workspaces.find((w) => w.id === detailWs.id);
+    if (updated && updated.version !== detailWs.version) {
+      setDetailWs(updated);
+    }
+  }, [workspaces, detailWs]);
+
   return (
     <>
       <Stack gap="md" id="workspaces-panel">

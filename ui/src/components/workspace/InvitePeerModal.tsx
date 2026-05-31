@@ -15,9 +15,25 @@ export default function InvitePeerModal({ workspaceId, onClose }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    if (workspaceId) {
-      ipc.listDiscoveredPeers().then(setPeers).catch(console.error);
-    }
+    if (!workspaceId) return;
+
+    const load = async () => {
+      try {
+        const [discovered, members, device] = await Promise.all([
+          ipc.listDiscoveredPeers(),
+          ipc.listWorkspaceMembers(workspaceId),
+          ipc.getDeviceInfo(),
+        ]);
+        const memberIds = new Set(members.map((m) => m.device_id));
+        setPeers(
+          discovered.filter((p) => p.id !== device.id && !memberIds.has(p.id))
+        );
+      } catch (err) {
+        console.error('Failed to load invite peers:', err);
+      }
+    };
+
+    void load();
   }, [workspaceId]);
 
   const handleInvite = async () => {
