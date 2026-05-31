@@ -4,7 +4,6 @@ import { useTranslation } from 'react-i18next';
 import { useWorkspaceStore } from '../../store/workspaceStore';
 import { onWinxEvent } from '../../ipc/events';
 import * as ipc from '../../ipc/commands';
-import type { UnlistenFn } from '@tauri-apps/api/event';
 
 const INVITE_TIMEOUT_SECS = 90;
 
@@ -13,26 +12,40 @@ export default function IncomingInviteModal() {
   const { pendingInvite, setPendingInvite, refresh } = useWorkspaceStore();
   const [secondsLeft, setSecondsLeft] = useState(INVITE_TIMEOUT_SECS);
   const [loading, setLoading] = useState(false);
-  const [unlistenFn, setUnlistenFn] = useState<UnlistenFn | null>(null);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    void onWinxEvent((event) => {
+      if (event.kind === 'workspace-invite-incoming') {
+        setPendingInvite({
+          invite_id: event.invite_id,
+          workspace_id: event.workspace_id,
+          workspace_name: event.workspace_name,
+          sender_device_id: event.peer_id,
+          sender_username: event.peer_username,
+          sender_fingerprint_hex: event.fingerprint,
+        });
+      } else if (event.kind === 'workspace-invite-expired') {
+        const current = useWorkspaceStore.getState().pendingInvite;
+        if (current?.invite_id === event.invite_id) {
+          setPendingInvite(null);
+        }
+      }
+    }).then((fn) => {
+      unlisten = fn;
+    });
+
+    return () => {
+      unlisten?.();
+    };
+  }, [setPendingInvite]);
 
   useEffect(() => {
     if (!pendingInvite) {
       setSecondsLeft(INVITE_TIMEOUT_SECS);
       return;
     }
-
-    const setupEventListener = async () => {
-      const unlisten = await onWinxEvent((event) => {
-        if (event.kind === 'workspace-invite-expired') {
-          if (event.invite_id === pendingInvite.invite_id) {
-            setPendingInvite(null);
-          }
-        }
-      });
-      setUnlistenFn(() => unlisten);
-    };
-
-    setupEventListener();
 
     const timer = setInterval(() => {
       setSecondsLeft((prev) => {
@@ -46,11 +59,8 @@ export default function IncomingInviteModal() {
 
     return () => {
       clearInterval(timer);
-      if (unlistenFn) {
-        unlistenFn();
-      }
     };
-  }, [pendingInvite, setPendingInvite, unlistenFn]);
+  }, [pendingInvite, setPendingInvite]);
 
   if (!pendingInvite) {
     return null;

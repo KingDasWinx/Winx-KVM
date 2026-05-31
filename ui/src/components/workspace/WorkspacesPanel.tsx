@@ -4,7 +4,6 @@ import { notifications } from '@mantine/notifications';
 import { useTranslation } from 'react-i18next';
 import { useWorkspaceStore } from '../../store/workspaceStore';
 import { onWinxEvent } from '../../ipc/events';
-import type { UnlistenFn } from '@tauri-apps/api/event';
 import WorkspaceCard from './WorkspaceCard';
 import CreateWorkspaceModal from './CreateWorkspaceModal';
 import WorkspaceDetailDrawer from './WorkspaceDetailDrawer';
@@ -16,7 +15,6 @@ export default function WorkspacesPanel() {
   const [isCreating, setIsCreating] = useState(false);
   const [detailWs, setDetailWs] = useState<WorkspaceDto | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [unlistenFn, setUnlistenFn] = useState<UnlistenFn | null>(null);
 
   const doRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -37,58 +35,54 @@ export default function WorkspacesPanel() {
   useEffect(() => {
     void doRefresh();
 
-    const setupEventListener = async () => {
-      const unlisten = await onWinxEvent((event) => {
-        if (event.kind === 'workspace-member-presence') {
-          setPresence(event.workspace_id, event.peer_id, event.is_online);
-          return;
-        }
+    let unlisten: (() => void) | undefined;
 
-        if (event.kind === 'workspace-connected') {
-          setActiveWorkspaceId(event.workspace_id);
-        }
+    void onWinxEvent((event) => {
+      if (event.kind === 'workspace-member-presence') {
+        setPresence(event.workspace_id, event.peer_id, event.is_online);
+        return;
+      }
 
-        if (event.kind === 'workspace-disconnected') {
-          setActiveWorkspaceId(null);
-        }
+      if (event.kind === 'workspace-connected') {
+        setActiveWorkspaceId(event.workspace_id);
+      }
 
+      if (event.kind === 'workspace-disconnected') {
+        setActiveWorkspaceId(null);
+      }
+
+      if (
+        event.kind === 'workspaces-updated' ||
+        event.kind === 'workspace-marked-orphan' ||
+        event.kind === 'workspace-connected' ||
+        event.kind === 'workspace-disconnected' ||
+        event.kind === 'workspace-invite-accepted' ||
+        event.kind === 'workspace-invite-rejected' ||
+        event.kind === 'workspace-invite-expired'
+      ) {
+        void doRefresh();
         if (
-          event.kind === 'workspaces-updated' ||
-          event.kind === 'workspace-marked-orphan' ||
-          event.kind === 'workspace-connected' ||
-          event.kind === 'workspace-disconnected' ||
-          event.kind === 'workspace-invite-accepted' ||
-          event.kind === 'workspace-invite-rejected' ||
-          event.kind === 'workspace-invite-expired' ||
-          event.kind === 'workspace-invite-incoming'
+          event.kind === 'workspaces-updated' &&
+          event.sync_from_remote &&
+          event.new_version !== undefined
         ) {
-          void doRefresh();
-          if (
-            event.kind === 'workspaces-updated' &&
-            event.sync_from_remote &&
-            event.new_version !== undefined
-          ) {
-            notifications.show({
-              title: t('toast.syncApplied.title'),
-              message: t('toast.syncApplied.message', {
-                name: event.workspace_name ?? t('toast.syncApplied.unknownName'),
-              }),
-              color: 'blue',
-            });
-          }
+          notifications.show({
+            title: t('toast.syncApplied.title'),
+            message: t('toast.syncApplied.message', {
+              name: event.workspace_name ?? t('toast.syncApplied.unknownName'),
+            }),
+            color: 'blue',
+          });
         }
-      });
-      setUnlistenFn(() => unlisten);
-    };
-
-    void setupEventListener();
+      }
+    }).then((fn) => {
+      unlisten = fn;
+    });
 
     return () => {
-      if (unlistenFn) {
-        unlistenFn();
-      }
+      unlisten?.();
     };
-  }, [doRefresh, setActiveWorkspaceId, setPresence, t, unlistenFn]);
+  }, [doRefresh, setActiveWorkspaceId, setPresence, t]);
 
   return (
     <>
